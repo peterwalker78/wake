@@ -582,13 +582,18 @@ pub fn render_status(ui: &Ui) {
     let s = &ui.w.status;
     w::clear(s);
     let conn = w::hbox(6, &["a"]);
+    let tabs_unknown = app::tabs_unknown(ui);
+    let secs = last_ok.map(|t| (glib::monotonic_time() - t) / 1_000_000).unwrap_or(0);
     let (dot, words, class) = if ui.demo {
         ("demo", "demo data".to_string(), "")
     } else if let Some(err) = &err {
         ("bad", err.clone(), "bad")
+    } else if secs > 15 {
+        ("late", format!("last checked {} ago", fmt::span(secs as u64)), "late")
+    } else if tabs_unknown.is_some() {
+        ("late", "can't see Konsole tabs".to_string(), "late")
     } else {
-        let secs = last_ok.map(|t| (glib::monotonic_time() - t) / 1_000_000).unwrap_or(0);
-        if secs > 15 { ("late", format!("last checked {} ago", fmt::span(secs as u64)), "late") } else { ("ok", "live".to_string(), "") }
+        ("ok", "live".to_string(), "")
     };
     conn.append(&w::dot(dot));
     let l = w::label(&words, &[]);
@@ -599,7 +604,14 @@ pub fn render_status(ui: &Ui) {
         l.add_css_class(class);
     }
     conn.append(&l);
-    conn.set_tooltip_text(Some(if ui.demo { "Made-up sessions and agents: nothing here is real." } else { "Wake reads your sessions and git (read only) and never writes to your projects." }));
+    let tip = if ui.demo {
+        "Made-up sessions and agents: nothing here is real.".to_string()
+    } else if let Some(why) = tabs_unknown.filter(|_| err.is_none() && secs <= 15) {
+        format!("{why} Run `wake doctor` in a terminal to see why.")
+    } else {
+        "Wake reads your sessions and git (read only) and never writes to your projects.".to_string()
+    };
+    conn.set_tooltip_text(Some(&tip));
     s.append(&conn);
     // Each key with its word is one piece; in a narrow window the later ones drop out (all of them
     // are behind `?`, which always stays).
@@ -1316,6 +1328,12 @@ fn stable_key(s: &SessionSummary) -> String {
     serde_json::to_string(&key).unwrap_or_default()
 }
 
+/// Whether Wake is still finding the tabs or has given up: the rows' "Where" words change with it
+/// even when no session does.
+fn loc_sig(ui: &Ui) -> String {
+    format!("{}{}", app::unsure(ui), app::tabs_unknown(ui).is_some())
+}
+
 fn monitor(ui: &Ui) {
     let (rows, total, filter, pf, pname, compact) = {
         let st = ui.st.borrow();
@@ -1330,7 +1348,7 @@ fn monitor(ui: &Ui) {
     };
     let stable: Vec<String> = rows.iter().map(stable_key).collect();
     let colours: Vec<String> = ui.st.borrow().ov.as_ref().map(|o| o.projects.iter().map(crate::setview::colour_of).collect()).unwrap_or_default();
-    let sig = format!("{filter:?}{pf:?}{compact}{stable:?}{}{:?}{colours:?}", crate::behind::sig(ui), prefs::sort_of(View::Monitor));
+    let sig = format!("{filter:?}{pf:?}{compact}{stable:?}{}{:?}{colours:?}{}", crate::behind::sig(ui), prefs::sort_of(View::Monitor), loc_sig(ui));
     let Some(had_focus) = begin(ui, View::Monitor, sig) else { return };
     let vw = &ui.w.views[&View::Monitor];
     if total == 0 {
@@ -1884,7 +1902,7 @@ fn history(ui: &Ui) {
     };
     let stable: Vec<String> = recent.iter().map(stable_key).collect();
     let found: Option<Vec<(String, &String)>> = results.as_ref().map(|r| r.iter().map(|(s, m)| (stable_key(s), m)).collect());
-    let sig = format!("{q}{compact}{found:?}{stable:?}{:?}", prefs::sort_of(View::History));
+    let sig = format!("{q}{compact}{found:?}{stable:?}{:?}{}", prefs::sort_of(View::History), loc_sig(ui));
     let Some(had_focus) = begin(ui, View::History, sig) else { return };
     let vw = &ui.w.views[&View::History];
     if q.is_empty() {

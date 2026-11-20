@@ -341,6 +341,8 @@ pub struct Widgets {
     pub sw_scroll: gtk::ScrolledWindow,
     pub modal: gtk::Box,
     pub toast: gtk::Label,
+    /// The pointer on the toast: it stays up while it is there.
+    pub toast_hover: gtk::EventControllerMotion,
 }
 
 pub struct App {
@@ -636,8 +638,16 @@ fn build(app: &gtk::Application, opts: Opts) {
     toast.set_halign(gtk::Align::Center);
     toast.set_valign(gtk::Align::End);
     toast.set_margin_bottom(92);
+    // A long message wraps, centred, rather than running wider than the window.
+    toast.set_wrap(true);
+    toast.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    toast.set_max_width_chars(72);
+    toast.set_justify(gtk::Justification::Center);
+    toast.set_margin_start(16);
+    toast.set_margin_end(16);
     toast.set_visible(false);
-    toast.set_can_target(false);
+    let toast_hover = gtk::EventControllerMotion::new();
+    toast.add_controller(toast_hover.clone());
     overlay.add_overlay(&toast);
     window.set_child(Some(&overlay));
 
@@ -678,6 +688,7 @@ fn build(app: &gtk::Application, opts: Opts) {
             sw_scroll,
             modal,
             toast,
+            toast_hover,
         },
         st: RefCell::new(AppState::default()),
         scope: scope::Model::new(scope::Look::from_settings()),
@@ -686,6 +697,13 @@ fn build(app: &gtk::Application, opts: Opts) {
         live: RefCell::new(HashMap::new()),
         peek: RefCell::new(peek::Peek::default()),
     });
+    {
+        let ui2 = ui.clone();
+        ui.w.toast_hover.connect_leave(move |_| {
+            let ticket = ui2.st.borrow().toast_gen;
+            hide_toast_after(&ui2, ticket, 1500);
+        });
+    }
     if !crate::motion::on() {
         ui.scope.borrow_mut().look.reduced_motion = true;
     }
@@ -1063,6 +1081,8 @@ fn apply_show(ui: &Ui, show: &str) {
         "behind" | "behind-pull" | "behind-wait" => crate::behind::show(ui, what, arg),
         "disk" | "disk-machine" | "disk-clear" | "disk-remove" | "set-project" => crate::disk::show(ui, what, arg), // disk.rs hook
         "readouts" => agents::toggle_readouts(ui),
+        // An error toast (a long one unless given): how it wraps.
+        "toast" => toast(ui, arg.as_deref().unwrap_or("Couldn't stop 3 of 5: claude (PID 48211) belongs to another user, so Wake can't stop it; codex (PID 50122) had already ended; claude (PID 50310) didn't stop when asked."), true),
         // As if Konsole had not answered for a while: "tab unknown" and the status bar's warning.
         "tabs-unknown" => {
             let since = ui.st.borrow().unsure_since;
@@ -1202,7 +1222,7 @@ fn apply_show(ui: &Ui, show: &str) {
                 agents::stop_one(ui, pid);
             }
         }
-        _ => eprintln!("wake: --show takes scroll[:px], panel-scroll[:px], agents-open, readouts, switcher, switcher-subs, session[:id], project[:id], pause, stale or stop[:pid]"),
+        _ => eprintln!("wake: --show takes scroll[:px], panel-scroll[:px], agents-open, readouts, switcher, switcher-subs, session[:id], project[:id], pause, stale, stop[:pid], toast[:text] or tabs-unknown"),
     }
 }
 
@@ -2244,9 +2264,17 @@ pub fn toast(ui: &Ui, msg: &str, bad: bool) {
         st.toast_gen += 1;
         st.toast_gen
     };
+    // Long enough to read: an error stays 5 s and 50 ms more for each character.
+    let ms = if bad { 5000 + 50 * msg.chars().count() as u64 } else { 3200 };
+    hide_toast_after(ui, ticket, ms);
+}
+
+/// Hides toast `ticket` after `ms`, unless another took its place or the pointer is on it (then
+/// leaving it hides it a moment later).
+fn hide_toast_after(ui: &Ui, ticket: u64, ms: u64) {
     let ui = ui.clone();
-    glib::timeout_add_local_once(Duration::from_millis(if bad { 5000 } else { 3200 }), move || {
-        if ui.st.borrow().toast_gen == ticket {
+    glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+        if ui.st.borrow().toast_gen == ticket && !ui.w.toast_hover.contains_pointer() {
             ui.w.toast.set_visible(false);
         }
     });

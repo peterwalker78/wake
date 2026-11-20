@@ -925,6 +925,9 @@ fn session(ui: &Ui, id: &str) {
         if let Some(j) = &s.job_id {
             lines.push(format!("background job {j} · attach: claude attach {j}"));
         }
+        if let Some(t) = &d.transcript {
+            lines.push(format!("transcript: {t}"));
+        }
         lines.push(format!("started {} · id {}", fmt::when(s.started_at.as_deref()), s.id));
         let f = w::wrap(&lines.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"), &["facts"]);
         f.set_selectable(true);

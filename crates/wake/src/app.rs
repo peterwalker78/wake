@@ -449,7 +449,7 @@ fn view_widgets(view: View) -> ViewW {
 
 fn build(app: &gtk::Application, opts: Opts) {
     let demo = opts.demo || crate::source::is_stand_in();
-    let src = if opts.demo { crate::source::demo_source() } else { crate::source::live_source() };
+    let src = if opts.demo { crate::source::demo_source() } else { crate::source::live_source(opts.screenshot.is_some()) };
     // Motion as Settings and the desktop want it, before anything is drawn.
     crate::motion::init();
     // A screenshot's window is the width it asks for from the start (Broadway sizes a window by its
@@ -723,6 +723,7 @@ fn build(app: &gtk::Application, opts: Opts) {
     // behind-the-remote shots, which show what they said.
     if opts.screenshot.is_some() {
         core.notify_behind = false;
+        core.quiet = true;
         if !opts.show.as_deref().is_some_and(|s| s.starts_with("behind")) {
             core.remote_every = None;
         }
@@ -2255,6 +2256,11 @@ fn kept(ui: &Ui, msg: &str, bad: bool) {
 }
 
 pub fn toast(ui: &Ui, msg: &str, bad: bool) {
+    // Errors go in Wake's log too (what was done is logged by the core already).
+    if bad {
+        let view = ui.st.borrow().view;
+        ui.src.note_error(&format!("Shown in {}", view.name()), msg);
+    }
     let t = &ui.w.toast;
     t.set_text(msg);
     if bad {

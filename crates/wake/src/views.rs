@@ -1766,7 +1766,22 @@ fn ideas(ui: &Ui) {
         };
         let meta_l = w::label(&meta, &["mt"]);
         meta_l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        text.append(&meta_l);
+        match i.brief.clone().filter(|_| i.state == "sent") {
+            // The brief it was sent in, opened in the desktop's default app.
+            Some(brief) => {
+                let line = w::hbox(8, &[]);
+                line.append(&meta_l);
+                let b = gtk::Button::with_label("brief");
+                b.add_css_class("link");
+                b.set_widget_name("open-brief");
+                b.set_tooltip_text(Some("Open the brief Wake sent the agent"));
+                let ui2 = ui.clone();
+                b.connect_clicked(move |_| open_brief(&ui2, &brief));
+                line.append(&b);
+                text.append(&line);
+            }
+            None => text.append(&meta_l),
+        }
         card.append(&text);
         // A narrow list puts the project and the button on a line of their own under the idea.
         let narrow = app::cards(&ui.st.borrow());
@@ -1820,6 +1835,23 @@ fn ideas(ui: &Ui) {
         vw.list.append(&row);
     }
     finish(ui, View::Ideas, had_focus);
+}
+
+/// Open `<data>/briefs/<id>.md` with the desktop's default app for it.
+fn open_brief(ui: &Ui, id: &str) {
+    let path = wake_core::store::Paths::from_env().data.join("briefs").join(format!("{id}.md"));
+    if ui.demo {
+        app::toast(ui, &format!("Demo: this would open the brief, {}.", fmt::tildify(&path.to_string_lossy())), false);
+        return;
+    }
+    if !path.exists() {
+        app::toast(ui, "That brief isn't there any more.", true);
+        return;
+    }
+    let uri = gtk::gio::File::for_path(&path).uri();
+    if let Err(e) = gtk::gio::AppInfo::launch_default_for_uri(&uri, None::<&gtk::gio::AppLaunchContext>) {
+        app::toast(ui, &format!("Couldn't open the brief: {e}"), true);
+    }
 }
 
 fn set_idea(ui: &Ui, id: &str, state: Option<&'static str>, project: Option<Option<String>>, msg: String) {

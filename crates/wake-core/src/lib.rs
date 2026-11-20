@@ -198,4 +198,10 @@ pub trait Source: Send + Sync {
     fn start_agent(&self, _req: &brief::StartAgent, _dry_run: bool) -> ActionResult {
         ActionResult { ok: false, message: "Starting agents isn't available here.".into(), steps: vec![] }
     }
+
+    // ---- Wake's log (added 2026-11-20; default body so other implementors still compile) ----
+
+    /// Record an error the person was shown (an error toast) in Wake's log, `log::note_error`.
+    /// `context` says where ("Shown in Projects"). Cheap (one appended line).
+    fn note_error(&self, _context: &str, _message: &str) {}
 }

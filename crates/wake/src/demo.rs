@@ -458,7 +458,7 @@ fn idea(id: &str, secs: i64, text: &str, project: Option<&str>, source: &str, st
         source: source.into(),
         state: state.into(),
         sent_at: (state == "sent").then(|| ago(secs.saturating_sub(600))),
-        brief: None,
+        brief: (state == "sent").then(|| "b3f9a1c07d2e4".into()),
     }
 }
 
@@ -592,7 +592,7 @@ impl Source for DemoSource {
             .collect();
         Some(SessionDetail {
             subagents: st.subagents(id),
-            transcript: None,
+            transcript: (!summary.deleted_by_claude && !cwd.is_empty()).then(|| format!("~/.claude/projects/{}/{id}.jsonl", cwd.replace('/', "-"))),
             prompts,
             files,
             commands: 23,
@@ -753,6 +753,7 @@ impl Source for DemoSource {
         for i in st.ideas.iter_mut().filter(|i| req.ideas.contains(&i.id)) {
             i.state = "sent".into();
             i.sent_at = Some(at.clone());
+            i.brief = Some(req.id.clone());
         }
         let agent = wake_core::brief::Agent::from_id(&req.agent).map_or("Claude", |a| a.label());
         ActionResult { ok: true, message: format!("Demo: {agent} would start in a new Konsole window in ~/Projects/{}.", req.project), steps: vec![] }

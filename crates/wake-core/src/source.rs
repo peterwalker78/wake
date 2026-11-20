@@ -345,6 +345,9 @@ impl Live {
     /// The Slipstream plugin bridge; call it about once a second. Writes card/card.json every 15 s
     /// and acts on a new jump request from the plugin (at most 30 s old), going to that session.
     pub fn plugin_tick(&self, dry_run: bool) -> Option<ActionResult> {
+        if lock(&self.inner.opts).quiet {
+            return None;
+        }
         let due = lock(&self.inner.plugin).0.is_none_or(|t| t.elapsed().as_secs_f64() > CARD_EVERY);
         if due {
             lock(&self.inner.plugin).0 = Some(Instant::now());
@@ -1220,6 +1223,9 @@ impl Source for Live {
     }
 
     fn set_options(&self, o: &crate::settings::CoreOptions) {
+        if o.quiet {
+            self.set_notifier(Arc::new(|_: &remote::Notice| {}));
+        }
         *lock(&self.inner.opts) = *o;
         self.inner.questions.set_ai(o.question_ai);
     }
@@ -1256,6 +1262,10 @@ impl Source for Live {
 
     fn mark_read(&self, thread: &str) {
         self.inner.questions.mark_read(thread)
+    }
+
+    fn note_error(&self, context: &str, message: &str) {
+        log::note_error(&self.inner.paths, context, message);
     }
 }
 
@@ -1967,7 +1977,7 @@ mod tests {
         let b = l.overview().behind.unwrap().into_iter().find(|b| b.project == p.id).unwrap();
         assert_eq!(b.alarm.as_deref(), Some("a session started working"));
         assert_eq!(sent.lock().unwrap().len(), 1);
-        assert!(sent.lock().unwrap()[0].body.contains("git pull --ff-only"));
+        assert!(sent.lock().unwrap()[0].body.contains("press Pull"));
         // Files change too: still the one notification.
         std::fs::write(t.here.join("new.txt"), "n").unwrap();
         l.inner.watch_behind();

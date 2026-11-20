@@ -7,9 +7,17 @@ use wake_core::Source;
 /// THE SEAM: the real source for this machine. `wake_core::Live` has landed, so this is it; to run
 /// the window on made-up data instead (as before it landed), return `demo_source()` here and make
 /// `is_stand_in` return true so the window says so.
-pub fn live_source() -> Arc<dyn Source> {
-    // `start` runs the index, Konsole and git threads; without them the window only sees live sessions.
-    let live = Arc::new(wake_core::Live::start());
+/// `quiet` (screenshots) is set before anything starts: no plugin card, no notifications.
+pub fn live_source(quiet: bool) -> Arc<dyn Source> {
+    let live = Arc::new(wake_core::Live::new(wake_core::LiveConfig::real()));
+    if quiet {
+        live.set_options(&wake_core::settings::CoreOptions { quiet: true, remote_every: None, notify_behind: false, ..Default::default() });
+    }
+    // The index, Konsole and git threads; without them the window only sees live sessions.
+    live.start_background();
+    if quiet {
+        return live;
+    }
     // Feed the Slipstream card (card.json) and act on its "go there" presses, once a second.
     let tick = Arc::downgrade(&live);
     let _ = std::thread::Builder::new().name("wake-plugin".into()).spawn(move || {

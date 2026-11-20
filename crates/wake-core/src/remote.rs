@@ -344,8 +344,8 @@ pub fn behind_for(project: &str, name: &str, roots: &[String], checks: &[&RepoCh
 /// "How far behind" in a few words, for the banner and the notification.
 pub fn how_far(b: &Behind) -> String {
     match b.count {
-        Some(n) => format!("{} behind {}", util_pl(n, "commit", "commits"), b.upstream),
-        None => format!("behind {} (new commits on {})", b.upstream, b.host),
+        Some(n) => format!("{} behind {}", util_pl(n, "commit", "commits"), b.host),
+        None => format!("behind: {} has new commits", b.host),
     }
 }
 
@@ -407,7 +407,8 @@ pub type Notifier = Arc<dyn Fn(&Notice) + Send + Sync>;
 
 /// The notice for a project that is behind.
 pub fn notice(b: &Behind) -> Notice {
-    Notice { project: b.project.clone(), summary: format!("{} is behind: pull before you build", b.project_name), body: format!("{} is {}. Pull first: {}", b.project_name, how_far(b), b.fix) }
+    let next = if b.can_pull { "Open Wake and press Pull before you build." } else { "Ask your agent to pull them in before you build." };
+    Notice { project: b.project.clone(), summary: format!("{} is behind: pull before you build", b.project_name), body: format!("{} is {}. {next}", b.project_name, how_far(b)) }
 }
 
 /// The `gdbus` call for a critical notification from "Wake".
@@ -782,7 +783,7 @@ pub(crate) mod tests {
         assert_eq!(b2.line, "In site: someone pushed new commits to GitHub that you don't have yet. Pull them before you start.");
         let one = behind_for("g", "Game", &["/p/game".into()], &[&a], &|_| 0).unwrap();
         assert_eq!(one.line, "Someone pushed 2 commits to GitHub that you don't have yet. Pull them before you start.");
-        assert_eq!(notice(&one).body, "Game is 2 commits behind origin/main. Pull first: git pull --ff-only");
+        assert_eq!(notice(&one).body, "Game is 2 commits behind GitHub. Open Wake and press Pull before you build.");
     }
 
     #[test]

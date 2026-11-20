@@ -349,11 +349,15 @@ pub fn pill(ui: &Ui, project: Option<&str>) -> Option<gtk::Label> {
     Some(l)
 }
 
-/// The fix, short enough for a project's row (in place of its description); the whole line is
-/// its tooltip.
+/// What is waiting, short enough for a project's row (in place of its description): "3 new
+/// commits to pull". The whole sentence is its tooltip, and in the panel.
 pub fn row_line(ui: &Ui, project: &str) -> Option<gtk::Label> {
     let b = of(ui, project)?;
-    let l = w::clip(&plain(&b), &["behind-line"]);
+    let short = match b.count {
+        Some(n) => format!("{} to pull", fmt::pl(n, "new commit", "new commits")),
+        None => "New commits to pull".to_string(),
+    };
+    let l = w::clip(&short, &["behind-line"]);
     l.set_tooltip_text(Some(&format!("{}\n{}", plain(&b), command_tip(&b))));
     Some(l)
 }

@@ -76,6 +76,9 @@ pub struct CoreOptions {
     /// None: never ask the remotes.
     pub remote_every: Option<Duration>,
     pub notify_behind: bool,
+    /// For screenshots: no Slipstream plugin card or jump requests, and no desktop notification
+    /// of any kind (a no-op notifier). Never set from the settings file.
+    pub quiet: bool,
 }
 
 impl Default for CoreOptions {
@@ -94,6 +97,7 @@ impl Settings {
             question_ai: Ai::from_id(&self.ai).unwrap_or_default(),
             remote_every: (self.remote_minutes > 0).then(|| Duration::from_secs(u64::from(self.remote_minutes) * 60)),
             notify_behind: self.notify_behind,
+            quiet: false,
         }
     }
 

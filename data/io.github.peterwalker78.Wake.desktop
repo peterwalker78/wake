@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wake
+Comment=Every agent session and project on one board
+Exec=wake
+Icon=io.github.peterwalker78.Wake
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=io.github.peterwalker78.Wake

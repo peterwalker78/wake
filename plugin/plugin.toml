@@ -1,0 +1,14 @@
+# Wake's card for Slipstream's plugin panel: how many agent sessions are waiting and working,
+# and the one waiting longest. It only reads the small summary Wake writes for it; it never
+# reaches the network, the session bus or any window. See README.md.
+name = "Wake"
+description = "Which agent sessions are waiting on you, and a way to get to them"
+exec = ["./wake-card"]
+every-secs = 20
+read = ["$XDG_DATA_HOME/wake/card"]
+keyword = "@"
+example = "@invites"
+
+[[actions]]
+id = "top"
+label = "Go to the agent session waiting longest"

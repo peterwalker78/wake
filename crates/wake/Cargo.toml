@@ -1,0 +1,17 @@
+[package]
+name = "wake"
+description = "A desktop board for terminal coding agents: every session and project, where each one is, and the way back to it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+wake-core = { path = "../wake-core" }
+gtk4.workspace = true
+serde_json.workspace = true
+# Text in the scope readouts, and Slipstream's fonts loaded from their files (Pango 1.56+).
+pango = { version = "0.22", features = ["v1_56"] }
+pangocairo = "0.22"

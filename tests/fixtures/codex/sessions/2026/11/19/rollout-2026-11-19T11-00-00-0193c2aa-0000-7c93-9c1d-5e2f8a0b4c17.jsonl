@@ -1,0 +1,6 @@
+{"timestamp":"2026-11-19T11:00:00.000Z","type":"session_meta","payload":{"id":"0193c2aa-0000-7c93-9c1d-5e2f8a0b4c17","session_id":"0193c2aa-0000-7c93-9c1d-5e2f8a0b4c17","cwd":"@ROOT@/home/Projects/beta","timestamp":"2026-11-19T11:00:00.000Z"}}
+{"timestamp":"2026-11-19T11:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd</environment_context>"}]}}
+{"timestamp":"2026-11-19T11:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add a README to beta"}]}}
+{"timestamp":"2026-11-19T11:00:03.000Z","type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"zzz"}}
+{"timestamp":"2026-11-19T11:00:04.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"*** Begin Patch\n*** Add File: README.md\n+hi\n*** End Patch"}}
+{"timestamp":"2026-11-19T11:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Added README.md."}]}}

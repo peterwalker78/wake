@@ -1,0 +1,3 @@
+# Never more than 2 parallel compile jobs, so a build fits in a couple of gigabytes of memory.
+[build]
+jobs = 2

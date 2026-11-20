@@ -1,0 +1,648 @@
+/* Wake: a calm operator console in Slipstream's palette.
+   Every colour is a named colour (@bg, @ink, @amber, ...). theme.rs defines them twice, a dark set
+   (Slipstream's: bg #0A0D12, ink #E7ECF3, cyan #38CEFF, mint #42E6A4, amber #FFB547, rose #FF7A8A,
+   violet #B79CFF) and a light set, plus the chosen accent and the project dot colours
+   (pc_ and the colour's name). Text colours are at least 4.5:1 on every background in both sets; @faint is for
+   lines and dots only. The peek preview is a terminal and stays dark in both. */
+
+window.wake {
+  background-color: @bg;
+  color: @ink;
+  font-family: "Atkinson Hyperlegible", sans-serif;
+  font-size: 14px;
+}
+window.wake * { outline-color: @accent; }
+/* GTK 4 marks every ancestor of the focused widget focus-visible too, so outline only the widget
+   that has the focus itself. List rows show focus with their selected bar instead of a box, and
+   containers (lists, panes, scrollers) never draw one. */
+window.wake *:focus-visible { outline-style: none; }
+window.wake *:focus:focus-visible { outline-style: solid; outline-width: 2px; outline-offset: 2px; outline-color: @accent; }
+window.wake row:focus:focus-visible, window.wake list:focus:focus-visible, window.wake listview:focus:focus-visible,
+window.wake scrolledwindow:focus:focus-visible, window.wake viewport:focus:focus-visible { outline-style: none; }
+list.table > row:focus:focus-visible:not(:selected), list.qlist > row:focus:focus-visible:not(:selected) { background-color: @rowfocus; box-shadow: inset 2px 0 @accent; }
+window.wake button { background: none; border: none; box-shadow: none; color: inherit; padding: 0; min-height: 0; min-width: 0; border-radius: 7px; font-weight: normal; }
+window.wake scrollbar { background: transparent; border: none; }
+window.wake scrollbar slider { background-color: @line2; min-width: 6px; min-height: 6px; border: none; }
+window.wake entry, window.wake textview.area {
+  background-color: @bg; color: @ink; border: 1px solid @line2; border-radius: 7px; box-shadow: none;
+  padding: 0 10px; min-height: 34px; caret-color: @accent;
+}
+window.wake textview.area { padding: 9px 10px; border-radius: 8px; }
+window.wake textview.area text { background-color: @bg; color: @ink; }
+window.wake entry:focus-within { border-color: @accent; box-shadow: 0 0 0 1px @accent; outline: none; }
+window.wake entry placeholder, window.wake entry > text > placeholder { color: @dim; }
+window.wake checkbutton check { background-color: @bg; border: 1px solid @line2; border-radius: 4px; min-width: 15px; min-height: 15px; color: @on_violet; }
+window.wake checkbutton check:checked { background-color: @violet; border-color: @violet; }
+window.wake tooltip { background-color: @float; color: @ink; border: 1px solid @line2; }
+
+.kbd { font-family: "JetBrains Mono", monospace; font-weight: 500; font-size: 10px; padding: 2px 5px; border: 1px solid @line2; border-radius: 4px; background-color: @panel2; color: @muted; }
+
+/* top bar */
+.top { min-height: 46px; padding: 0 14px; background-color: @panel; border-bottom: 1px solid @line; }
+.logo { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 3px; }
+window.wake button.cmd { background-color: @bg; border: 1px solid @line2; border-radius: 7px; padding: 6px 10px; color: @dim; font-size: 12.5px; }
+window.wake button.cmd:hover { border-color: @accent; color: @muted; }
+window.wake button.stat { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @muted; padding: 4px 2px; }
+.stat .n { color: @ink; font-weight: 700; }
+.stat .d { border-radius: 50%; min-width: 7px; min-height: 7px; }
+.stat.work .n { color: @mint; } .stat.work .d { background-color: @mint; }
+.stat.wait .n { color: @amber; } .stat.wait .d { background-color: @amber; }
+.stat.stalec .n, .stat.stalec { color: @amber; } .stat.stalec .d { background-color: @amber; }
+.stat.ideac .n { color: @violet; } .stat.ideac .d { background-color: @violet; }
+.stat.zero .n { color: @dim; } .stat.zero .d { background-color: @dim; }
+.clock { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 13px; }
+.badge { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 10px; letter-spacing: 1px; color: @amber; border: 1px solid alpha(@amber, .5); border-radius: 5px; padding: 3px 7px; }
+.indexing { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @accent; }
+
+/* rail */
+.rail { border-right: 1px solid @line; background-color: @panel; }
+.grp { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 2px; color: @dim; padding: 14px 14px 6px; }
+.nav, .plist { padding: 4px 8px; }
+window.wake .nav button, window.wake .plist button { padding: 7px 9px; border-radius: 7px; color: @muted; }
+window.wake .nav button { font-weight: 700; font-size: 13px; }
+window.wake .nav button:hover, window.wake .plist button:hover { background-color: @row; color: @ink; }
+window.wake .nav button.on, window.wake .plist button.on { background-color: @rowhi; color: @ink; }
+/* counts are plain numbers, never boxed like a key cap */
+.nav .n { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11px; color: @muted; }
+.nav .n.amber { color: @amber; }
+window.wake .plist button { font-size: 12.5px; }
+.plist .pc { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.plist .pz { font-family: "JetBrains Mono", monospace; font-size: 9px; color: @dim; border: 1px solid @line2; border-radius: 3px; padding: 1px 4px; }
+.empty-r { font-size: 12px; color: @dim; padding: 4px 9px; }
+
+/* the coloured dots */
+.d { border-radius: 50%; min-width: 8px; min-height: 8px; background-color: @dim; }
+.d.waiting { background-color: @amber; } .d.working, .d.running, .d.ok { background-color: @mint; } .d.idle { background-color: @muted; }
+.d.ended, .d.done { background-color: transparent; border: 1.5px solid @faint; min-width: 5px; min-height: 5px; }
+.d.unknown { background-color: transparent; border: 1.5px dashed @faint; min-width: 5px; min-height: 5px; }
+.d.late { background-color: @amber; } .d.bad { background-color: @rose; }
+.d.quiet { background-color: @dim; } .d.back { background-color: @cyan; } .d.demo { background-color: @amber; }
+.statusbar .d, .a .d { min-width: 6px; min-height: 6px; }
+
+/* main */
+.banner { padding: 8px 14px; background-color: alpha(@rose, .1); border-bottom: 1px solid alpha(@rose, .35); color: @rose; font-size: 12.5px; }
+.chips { padding: 9px 14px; border-bottom: 1px solid @line; min-height: 29px; }
+.ttl { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 13px; letter-spacing: .5px; margin-right: 6px; }
+window.wake button.chip { font-size: 11.5px; padding: 5px 10px; border-radius: 999px; border: 1px solid @line2; color: @muted; }
+window.wake button.chip:hover { border-color: @muted; color: @ink; }
+window.wake button.chip.on { background-color: @ink; color: @bg; border-color: @ink; font-weight: 700; }
+.chip .c { font-family: "JetBrains Mono", monospace; font-size: 10.5px; opacity: .75; margin-left: 3px; }
+window.wake button.chip.pf { border-color: @accent; color: @accent; }
+.meta { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; }
+.meta.below { margin-bottom: 5px; }
+
+/* capture */
+.capture { min-height: 54px; border-top: 1px solid @line; background-color: @panel; padding: 0 14px; }
+.capture .lbl { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 1.5px; color: @violet; }
+.capture entry:focus-within { border-color: @violet; box-shadow: 0 0 0 1px @violet; }
+window.wake dropdown.mini > button { background-color: @bg; color: @muted; border: 1px solid @line2; border-radius: 7px; padding: 5px 8px; font-size: 11.5px; min-width: 130px; }
+window.wake popover contents { background-color: @panel2; color: @ink; border: 1px solid @line2; }
+/* Drop-down lists in Wake's colours: GTK 4.22's theme gives every list its own grey (#2d2d2d) and
+   selected-row colour, which sat as a block inside this frame. */
+window.wake popover > arrow { background-color: @panel2; border: 1px solid @line2; }
+window.wake popover contents { border-radius: 10px; }
+window.wake popover listview, window.wake popover list, window.wake popover scrolledwindow, window.wake popover viewport { background: none; color: inherit; }
+window.wake popover listview > row, window.wake popover modelbutton { border-radius: 7px; color: inherit; }
+window.wake popover listview > row:hover, window.wake popover listview > row:selected, window.wake popover listview > row:selected:hover, window.wake popover modelbutton:hover { background-color: @rowhi; color: inherit; }
+.kept { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11px; color: @mint; }
+.kept.err { color: @rose; }
+
+/* tables */
+.thead { background-color: @panel; border-bottom: 1px solid @line2; }
+.thead .cell { padding: 9px 12px; }
+.th { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 1px; color: @dim; }
+list.table { background-color: transparent; }
+list.table > row { padding: 0; border-bottom: 1px solid @line; background-color: transparent; outline-offset: -2px; }
+list.table > row:hover { background-color: @row; }
+list.table > row:selected { background-color: @rowhi; box-shadow: inset 2px 0 @accent; color: @ink; }
+list.table > row.grouprow { border-bottom: none; }
+list.table > row.grouprow:hover { background-color: transparent; }
+.tr .cell { padding: 9px 12px; }
+.tr.gone { opacity: .55; }
+.pname { font-weight: 700; }
+.pj .title { font-weight: 700; color: @ink; font-size: 12.5px; }
+.desc { color: @muted; font-size: 12px; }
+.num { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; }
+.num.ink { color: @ink; }
+.happ { color: @muted; }
+.snip { font-size: 12.5px; color: @muted; }
+.ag { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; padding: 2px 5px; border-radius: 4px; }
+.ag.claude { color: @mint; background-color: alpha(@mint, .1); }
+.ag.codex { color: @violet; background-color: alpha(@violet, .12); }
+.ag.gemini { color: @cyan; background-color: alpha(@cyan, .1); }
+.state { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11px; }
+.state.working { color: @mint; } .state.waiting { color: @amber; } .state.idle { color: @muted; } .state.ended, .state.unknown { color: @dim; }
+.ev { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.happ.ask { color: @amber; }
+.loc { font-family: "JetBrains Mono", monospace; font-weight: 500; font-size: 10.5px; color: @muted; border: 1px solid @line2; border-radius: 5px; padding: 3px 7px; }
+window.wake button.loc { border: 1px solid @line2; border-radius: 5px; padding: 3px 7px; }
+window.wake button.loc:hover { border-color: @accent; color: @accent; }
+window.wake .loc.re { color: @accent; border-color: alpha(@accent, .4); }
+window.wake .loc.none { border-style: dashed; color: @dim; }
+.pill { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 10px; padding: 2px 6px; border-radius: 4px; background-color: @panel2; color: @muted; }
+.pill.amber { background-color: alpha(@amber, .14); color: @amber; }
+.pill.mint { background-color: alpha(@mint, .1); color: @mint; }
+.pill.paused { border: 1px solid @line2; background-color: transparent; }
+.kept-by { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @violet; }
+.gitc { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; }
+
+/* buttons */
+window.wake button.btn { font-weight: 700; font-size: 12px; padding: 7px 12px; border-radius: 7px; border: 1px solid @line2; background-color: @panel2; color: @ink; }
+window.wake button.btn:hover { border-color: @accent; }
+window.wake button.btn:disabled { opacity: .45; }
+window.wake button.btn.primary { background-color: @accent; border-color: @accent; color: @on_accent; }
+window.wake button.btn.mint { background-color: @mint; border-color: @mint; color: @on_mint; }
+window.wake button.btn.violet { background-color: @violet; border-color: @violet; color: @on_violet; }
+window.wake button.btn.ghost { background-color: transparent; border-color: transparent; color: @muted; }
+window.wake button.btn.ghost:hover { color: @ink; border-color: @line2; }
+window.wake button.btn.danger { color: @rose; }
+window.wake button.btn.danger:hover { border-color: @rose; }
+window.wake button.btn.danger-solid { background-color: @rose; border-color: @rose; color: @on_rose; }
+window.wake button.btn.sm { padding: 4px 8px; font-size: 11px; }
+window.wake button.btn .kbd { background-color: alpha(@bg, .22); border-color: alpha(@ink, .22); color: inherit; }
+window.wake button.link { color: @accent; font-size: 11.5px; padding: 0; }
+window.wake button.link:hover { text-decoration: underline; }
+
+/* states */
+.empty { padding: 48px 24px; color: @dim; }
+.empty .big { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 17px; color: @muted; }
+.loading { padding: 28px 16px; color: @dim; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.skel { min-height: 12px; border-radius: 4px; background-color: @panel2; margin: 4px 0; }
+.err { color: @rose; font-size: 12.5px; }
+
+/* ideas */
+.isec { padding: 12px 14px 6px; font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 2px; color: @dim; }
+list.table > row.idea-row { border-bottom: none; padding: 4px 14px; }
+list.table > row.idea-row:selected { background-color: transparent; box-shadow: none; }
+list.table > row.idea-row:selected .idea { box-shadow: 0 0 0 1px @accent; }
+.idea { border: 1px solid @line; border-radius: 9px; background-color: @panel; padding: 9px 12px; }
+.idea.done .tx { color: @muted; text-decoration-line: line-through; }
+.idea .tx { font-size: 13px; }
+.idea .mt { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.brief { margin: 8px 14px 14px; border: 1px dashed @violet; border-radius: 10px; padding: 12px 14px; background-color: alpha(@violet, .05); }
+.brief .pre { font-family: "JetBrains Mono", monospace; font-size: 12px; background-color: @bg; border: 1px solid @line; border-radius: 7px; padding: 10px 12px; }
+
+/* history and projects */
+.searchbox { padding: 12px 14px; border-bottom: 1px solid @line; }
+window.wake entry.search { font-size: 14px; min-height: 38px; border-radius: 8px; }
+.addrow { padding: 10px 14px; border-bottom: 1px solid @line; background-color: @panel; }
+
+/* agents */
+.memline { padding: 12px 14px; border-bottom: 1px solid @line; background-color: @panel; }
+.memtotal { font-family: "Chakra Petch", sans-serif; font-size: 15px; }
+.memstale { font-family: "Chakra Petch", sans-serif; font-size: 15px; color: @amber; }
+.memok { color: @mint; font-size: 13px; }
+.memfree { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; }
+.memfree.low { color: @rose; }
+.pid { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 12px; }
+.tree { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; }
+.why { color: @rose; font-size: 12px; }
+.noreadout { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; border: 1px dashed @line; border-radius: 7px; padding: 8px 9px; }
+.agentrow .cell { padding: 7px 12px; }
+.pgrp { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9px; letter-spacing: 2px; color: @dim; padding: 10px 14px 4px; }
+.confirm-list { background-color: @bg; border: 1px solid @line; border-radius: 8px; padding: 8px 10px; }
+.mono { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
+
+/* side panel */
+.drawer { background-color: @panel; border-left: 1px solid @line2; }
+.dh { padding: 13px 15px; border-bottom: 1px solid @line; }
+.h2 { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 17px; }
+window.wake button.x { padding: 2px; }
+.dh .desc { font-style: italic; font-size: 12.5px; }
+.dbody { padding: 14px 15px 20px; }
+.dact { padding: 11px 15px; border-bottom: 1px solid @line; }
+.sec { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 1.5px; color: @dim; margin-bottom: 7px; }
+.sec.amber { color: @amber; }
+.mint { color: @mint; font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; }
+.box { border-radius: 9px; padding: 10px 12px; font-size: 13px; border: 1px solid @line2; }
+.box.q { background-color: alpha(@amber, .07); border-color: alpha(@amber, .35); }
+.box.q .h { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 14.5px; }
+.box .w { color: @muted; font-size: 12px; }
+.box.next { background-color: alpha(@mint, .06); border-color: alpha(@mint, .25); }
+.box.next .t { font-weight: 700; }
+.box.next entry { border-color: @mint; }
+.box.ret { background-color: alpha(@cyan, .06); border-color: alpha(@cyan, .22); font-size: 12.5px; }
+.box.ret .u { color: @rose; }
+.box.away { background-color: @bg; border-color: @line; font-size: 12.5px; }
+.box.keptby { background-color: alpha(@violet, .07); border-color: alpha(@violet, .3); color: @violet; font-size: 12px; }
+.box.tight { margin: 0 4px 8px; padding: 8px 10px; }
+.asked { background-color: alpha(@cyan, .05); border: 1px solid alpha(@cyan, .14); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; margin-bottom: 5px; }
+.at { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; }
+.did { font-size: 12px; padding: 3px 0; }
+.did .p { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
+.facts { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; }
+window.wake button.srow { padding: 8px 6px; border-bottom: 1px solid @line; border-radius: 0; font-size: 12.5px; }
+window.wake button.srow:hover { background-color: @row; }
+.sub-l { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.repo { border: 1px solid @line; border-radius: 8px; padding: 9px 11px; font-size: 12.5px; margin-bottom: 6px; }
+.repo .rn { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11.5px; }
+.repo .ex { color: @muted; font-size: 12px; }
+.repo .ex.w { color: @amber; } .repo .ex.ok { color: @mint; }
+.none { color: @dim; font-size: 12px; padding: 6px 4px; }
+.none.pad { padding: 16px 14px; } .pad4 { padding: 0 4px 8px; } .none.violet { color: @violet; }
+
+/* subagents (panel and switcher) */
+.sub { border: 1px solid @line; border-radius: 8px; margin-bottom: 6px; }
+.sub.sel { border-color: @accent; background-color: @rowhi; }
+window.wake button.subbtn { padding: 7px 9px; border-radius: 8px; }
+window.wake button.subbtn:hover { background-color: @row; }
+.sub .h { font-size: 12.5px; }
+.sub .task { font-weight: 700; }
+.sub .ty { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9px; padding: 2px 5px; border-radius: 4px; background-color: @panel2; color: @violet; }
+.sub .dur { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; }
+.sub .one { font-size: 11.5px; color: @muted; padding-left: 16px; }
+.sub .one.live { color: @mint; font-family: "JetBrains Mono", monospace; font-size: 10.5px; }
+.sub .d { min-width: 7px; min-height: 7px; }
+.steps { margin: 2px 9px 9px 25px; border-left: 2px solid @line2; padding-left: 9px; font-size: 11.5px; }
+.steps .ret { color: @mint; }
+
+/* switcher */
+.scrim { background-color: @scrim; }
+.pal { background-color: alpha(@float, .98); border: 1px solid @line3; border-radius: 12px; box-shadow: 0 30px 70px -14px @shadow; }
+.pal-in { padding: 10px 14px; border-bottom: 1px solid @line; }
+.pal-in .mark { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 11px; letter-spacing: 2.5px; color: @accent; }
+window.wake entry.bare, window.wake entry.bare:focus-within { background: none; border: none; box-shadow: none; font-size: 15px; padding: 0; }
+.swlist-scroll { border-right: 1px solid @line; }
+.swinside { padding: 0 10px 8px; }
+.prow { padding: 7px 14px; }
+.prow:hover { background-color: @row; }
+.prow.sel { background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
+.prow .t { font-size: 13px; }
+.prow .st { margin-left: 6px; font-size: 10.5px; font-weight: 500; }
+.prow .q { font-size: 11.5px; color: @amber; padding-left: 18px; }
+.ih { padding: 10px 4px 8px; }
+.ih .b { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 13px; }
+.ih .s { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @muted; }
+.pal-ft { padding: 8px 14px; border-top: 1px solid @line; font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+
+/* dialogs */
+.modal { background-color: @panel; border: 1px solid @line2; border-radius: 12px; padding: 18px 20px; box-shadow: 0 30px 70px -20px @shadow; }
+.flabel { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 1.5px; color: @dim; }
+.hint { font-size: 11.5px; color: @dim; }
+.plain { color: @ink; }
+
+/* status bar & toast */
+.statusbar { min-height: 28px; padding: 0 14px; background-color: @panel; border-top: 1px solid @line; font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.statusbar .hint { font-size: 10.5px; margin-right: 2px; }
+.statusbar .late { color: @amber; } .statusbar .bad { color: @rose; }
+.statusbar .kbd { padding: 1px 4px; }
+.toast { background-color: @float; border: 1px solid @accent; border-radius: 9px; padding: 9px 14px; font-size: 13px; }
+.toast.bad { border-color: @rose; }
+
+/* the window's own title bar, kept quiet */
+window.wake headerbar { background-color: @panel; border-bottom: 1px solid @line; box-shadow: none; min-height: 32px; color: @muted; }
+window.wake headerbar .title { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 2px; }
+/* The window controls sit inside the bar with the same gap from the edge as from the top, and the
+   round button is centred on its own icon (no theme margins pushing it into the corner). */
+window.wake headerbar { padding: 0 10px; }
+window.wake headerbar windowcontrols { margin: 0; padding: 0; }
+window.wake headerbar windowcontrols button { min-width: 24px; min-height: 24px; margin: 6px 0; padding: 0; border-radius: 50%; background-color: alpha(@ink, .06); }
+window.wake headerbar windowcontrols button image { margin: 0; padding: 0; -gtk-icon-size: 14px; }
+window.wake scrolledwindow, window.wake viewport, window.wake stack { background-color: transparent; }
+window.wake headerbar, window.wake headerbar:backdrop { background-image: none; background-color: @panel; }
+window.wake button.link { text-decoration-line: none; }
+window.wake scrolledwindow.areaframe { border: 1px solid @line2; border-radius: 8px; background-color: @bg; }
+window.wake scrolledwindow.areaframe:focus-within { border-color: @accent; }
+window.wake scrolledwindow.areaframe textview.area { border: none; }
+
+/* agents: Stop stays quiet until its row is hovered, selected or focused; stale rows show it red */
+window.wake .agentrow button.btn.stop.ghost, window.wake .agentrow button.btn.stop.ghost:disabled { opacity: 0; }
+window.wake list.table > row:hover .agentrow button.btn.stop.ghost, window.wake list.table > row:selected .agentrow button.btn.stop.ghost, window.wake .agentrow button.btn.stop.ghost:focus-visible { opacity: 1; }
+window.wake button.subcount { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @muted; padding: 1px 6px; border: 1px solid @line2; border-radius: 4px; }
+window.wake button.subcount.running { color: @mint; border-color: alpha(@mint, .35); }
+window.wake button.subcount:hover { border-color: @accent; }
+list.table > row.subrow { border-bottom: none; }
+list.table > row.subrow:hover { background-color: transparent; }
+.subpad { margin: 0 14px 4px 230px; }
+.agentrow .cell .readout { margin: 0; }
+
+/* ideas: the d key cap shows on the selected row only */
+list.table > row.idea-row:not(:selected) button.done .kbd { opacity: 0; }
+
+/* Hold-to-peek preview: a calm terminal floating over Wake. */
+window.wake popover.peek-pop contents { padding: 0; background-color: #07090D; border: 1px solid #2A3A4C; border-radius: 12px; box-shadow: 0 18px 60px rgba(0,0,0,.6); }
+.peek { background-color: #07090D; border-radius: 12px; }
+.peek-head { padding: 14px 18px 10px; border-bottom: 1px solid #1A232E; }
+.peek-title { font-family: "Chakra Petch", sans-serif; font-size: 16px; font-weight: 600; color: #E7ECF3; }
+.peek-meta { font-size: 12px; color: #8995A6; }
+.peek-source { font-family: "JetBrains Mono", monospace; font-size: 11px; color: #38CEFF; padding: 3px 8px; border: 1px solid rgba(56,206,255,.35); border-radius: 999px; }
+.peek-scroll { background-color: #07090D; }
+.peek-term { font-family: "JetBrains Mono", monospace; font-size: 12px; color: #C9D3DF; padding: 12px 18px; }
+.peek-note { font-size: 12px; color: #FFB547; padding: 6px 18px; }
+.peek-subs { padding: 8px 18px; border-top: 1px solid #1A232E; background-color: #0B0F15; }
+.peek-sub-mark { color: #42E6A4; font-family: "JetBrains Mono", monospace; }
+.peek-sub-task { font-size: 12px; color: #E7ECF3; }
+.peek-sub-live { font-family: "JetBrains Mono", monospace; font-size: 11px; color: #8995A6; }
+.peek-foot { padding: 8px 18px 12px; border-top: 1px solid #1A232E; font-size: 11.5px; color: #8995A6; }
+.peek.peek-inside { border: 1px solid #2A3A4C; box-shadow: 0 18px 60px rgba(0,0,0,.6); }
+.peek-scroll, .peek-scroll > viewport { background-color: #07090D; }
+.peek-scroll undershoot.top, .peek-scroll undershoot.bottom, .peek-scroll overshoot.top, .peek-scroll overshoot.bottom { background: none; box-shadow: none; }
+
+/* Calm pass: fewer boxes, weights and colours; more room. Later rules win over the ones above. */
+.quiet-top { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @dim; }
+.pj .title { font-weight: normal; color: @soft; }
+.pill { background-color: transparent; padding: 0; font-weight: normal; color: @muted; }
+.loc, window.wake button.loc { border-color: transparent; padding: 3px 0; }
+window.wake button.loc:hover { border-color: @line2; padding: 3px 7px; }
+window.wake .loc.re { color: @muted; border-color: transparent; }
+window.wake .loc.none { border-style: none; }
+.state { font-weight: 500; }
+.th { font-weight: 500; letter-spacing: 1.5px; }
+.tr .cell { padding: 11px 12px; }
+.statusbar .hint.sep { color: @faint; margin: 0 4px; }
+.statusbar .kbd { background-color: transparent; }
+
+/* side panel: one line of where and what, two actions, then sections that open on demand */
+.dh { padding: 18px 20px 6px; border-bottom: none; }
+.dh .h2 { font-size: 18px; }
+.dline { margin-top: 6px; font-size: 12.5px; }
+.dline .state { font-family: "Atkinson Hyperlegible", sans-serif; font-size: 12.5px; font-weight: normal; }
+.where { color: @muted; font-size: 12.5px; font-family: "Atkinson Hyperlegible", sans-serif; }
+.dact { padding: 12px 20px 16px; border-bottom: 1px solid @line; }
+.dbody { padding: 18px 20px 24px; }
+.now { margin-bottom: 18px; }
+.lead { font-size: 13.5px; color: @ink; }
+.lead.strong { font-size: 14.5px; }
+.lead.quiet { color: @muted; }
+.box.q { margin-bottom: 18px; padding: 12px 14px; }
+.folds { border-top: 1px solid @line; }
+window.wake button.foldbtn { padding: 12px 2px; border-radius: 0; border-bottom: 1px solid @line; }
+window.wake button.foldbtn:hover { background-color: @row; }
+.foldbtn .chev { color: @faint; font-size: 11px; min-width: 12px; }
+.foldbtn .ft { font-size: 13px; color: @soft; }
+.fnote { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; }
+.fnote.mint { color: @mint; } .fnote.amber { color: @amber; }
+.foldin { padding: 10px 0 16px 20px; border-bottom: 1px solid @line; }
+.asked { background-color: transparent; border: none; border-left: 2px solid @line; border-radius: 0; padding: 2px 10px; margin-bottom: 6px; }
+.repo { border: none; border-left: 2px solid @line; border-radius: 0; padding: 2px 10px; }
+
+/* the keys overlay */
+.keygrp { margin-top: 4px; }
+.keyname { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @accent; }
+.pill.paused { border: none; padding: 0; }
+.foldbtn .chev { font-size: 13px; color: @dim; }
+window.wake button.subcount { border-color: transparent; padding: 1px 2px; }
+window.wake button.subcount.running { border-color: transparent; }
+window.wake button.subcount:hover { border-color: @line2; }
+
+/* ---- Questions (view 6; crates/wake/src/questions.rs). Added by the Questions builder: one block, keep it last. ---- */
+.qside { border-right: 1px solid @line; background-color: @float; }
+.qfilter { padding: 12px 12px 6px; }
+window.wake .qside button.qnew { margin: 2px 8px 8px; }
+list.qlist { background-color: transparent; }
+list.qlist > row { padding: 9px 12px; border-radius: 7px; margin: 0 6px 2px; background-color: transparent; outline-offset: -2px; }
+list.qlist > row:hover { background-color: @row; }
+list.qlist > row:selected { background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
+.qrow .qt { font-size: 13px; color: @soft; }
+list.qlist > row:selected .qrow .qt { color: @ink; }
+.qrow .qm { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.qrow .qtag { color: @violet; }
+.qnone { font-size: 12px; color: @dim; padding: 6px 4px; }
+.qthread { padding: 28px 24px 36px; }
+.qturn { }
+.qq { font-size: 14.5px; font-weight: 700; color: @ink; background-color: @panel2; border-radius: 9px; padding: 10px 14px; }
+.qmeta { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; margin: -4px 0 2px 14px; }
+.qa { padding: 0 14px; }
+.qtext { font-size: 14.5px; color: @soft; }
+.qcode { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: @soft; background-color: @codebg; border: 1px solid @line; border-radius: 7px; padding: 9px 12px; }
+.qstate { font-size: 12px; color: @muted; padding: 0 14px; }
+.qerrline { padding: 0 14px; }
+.qerr { font-size: 12.5px; color: @err; }
+.qbarwrap { border-top: 1px solid @line; background-color: @panel; padding: 10px 24px 8px; }
+window.wake textview.qinput { font-size: 14px; }
+.qfoot { padding: 0 2px; }
+.qmark { color: @dim; }
+/* questions: Markdown tables */
+.qtable { margin: 2px 0; }
+.qtable .qth { font-size: 11px; font-weight: 700; letter-spacing: .4px; color: @muted; padding: 0 16px 8px 0; border-bottom: 1px solid @line2; }
+.qtable .qtd { font-size: 13.5px; padding: 9px 16px 9px 0; border-bottom: 1px solid @line; }
+.qtable .qtd.qlast { border-bottom: none; }
+/* GTK's scroll edge shading (the dark gradient block that appeared when scrolling up the side panel)
+   and its "more below" lines: off on every scroller, in this window or any other Wake shows. */
+scrolledwindow > undershoot, scrolledwindow > overshoot,
+scrolledwindow > undershoot.top, scrolledwindow > undershoot.bottom, scrolledwindow > undershoot.left, scrolledwindow > undershoot.right,
+scrolledwindow > overshoot.top, scrolledwindow > overshoot.bottom, scrolledwindow > overshoot.left, scrolledwindow > overshoot.right,
+scrolledwindow > overshoot:backdrop { background: none; background-image: none; box-shadow: none; border: none; outline: none; }
+
+/* ---- Sortable table headers: a column name is a quiet button; the sorted one says which way. ---- */
+window.wake button.thb { padding: 0; border-radius: 4px; }
+window.wake button.thb .th { color: @dim; }
+window.wake button.thb:hover .th, window.wake button.thb:focus-visible .th { color: @ink; }
+window.wake button.thb.on .th { color: @soft; }
+window.wake button.thb .arrow { font-size: 9px; color: @accent; margin-left: 4px; }
+
+/* ---- Project dots: the project's own colour; filled while something is open in it, a ring when
+   nothing is; amber (state, not project) only while a session waits for you. ---- */
+.d.ring { background-color: transparent; border: 2px solid @faint; min-width: 4px; min-height: 4px; }
+.d.pc-red { background-color: @pc_red; } .d.pc-red.ring { background-color: transparent; border-color: @pc_red; }
+.d.pc-orange { background-color: @pc_orange; } .d.pc-orange.ring { background-color: transparent; border-color: @pc_orange; }
+.d.pc-wine { background-color: @pc_wine; } .d.pc-wine.ring { background-color: transparent; border-color: @pc_wine; }
+.d.pc-pink { background-color: @pc_pink; } .d.pc-pink.ring { background-color: transparent; border-color: @pc_pink; }
+.d.pc-magenta { background-color: @pc_magenta; } .d.pc-magenta.ring { background-color: transparent; border-color: @pc_magenta; }
+.d.pc-purple { background-color: @pc_purple; } .d.pc-purple.ring { background-color: transparent; border-color: @pc_purple; }
+.d.pc-indigo { background-color: @pc_indigo; } .d.pc-indigo.ring { background-color: transparent; border-color: @pc_indigo; }
+.d.pc-blue { background-color: @pc_blue; } .d.pc-blue.ring { background-color: transparent; border-color: @pc_blue; }
+.d.pc-sky { background-color: @pc_sky; } .d.pc-sky.ring { background-color: transparent; border-color: @pc_sky; }
+.d.pc-teal { background-color: @pc_teal; } .d.pc-teal.ring { background-color: transparent; border-color: @pc_teal; }
+.d.pc-mint { background-color: @pc_mint; } .d.pc-mint.ring { background-color: transparent; border-color: @pc_mint; }
+.d.pc-green { background-color: @pc_green; } .d.pc-green.ring { background-color: transparent; border-color: @pc_green; }
+.d.pc-lime { background-color: @pc_lime; } .d.pc-lime.ring { background-color: transparent; border-color: @pc_lime; }
+.d.pc-slate { background-color: @pc_slate; } .d.pc-slate.ring { background-color: transparent; border-color: @pc_slate; }
+.d.waitring { background-color: @amber; border: none; }
+.d.tag { min-width: 6px; min-height: 6px; }
+
+/* ---- Swatches (Settings and the project panel): a row of round buttons, the chosen one ringed. ---- */
+window.wake button.swatch { min-width: 18px; min-height: 18px; border-radius: 50%; padding: 0; border: 2px solid transparent; }
+window.wake button.swatch.on { box-shadow: 0 0 0 2px @bg, 0 0 0 4px @ink; }
+window.wake button.swatch:hover { box-shadow: 0 0 0 2px @bg, 0 0 0 4px @dim; }
+window.wake button.swatch.on:hover { box-shadow: 0 0 0 2px @bg, 0 0 0 4px @ink; }
+window.wake button.swatch.pc-red { background-color: @pc_red; } window.wake button.swatch.pc-wine { background-color: @pc_wine; }
+window.wake button.swatch.pc-pink { background-color: @pc_pink; } window.wake button.swatch.pc-magenta { background-color: @pc_magenta; }
+window.wake button.swatch.pc-purple { background-color: @pc_purple; } window.wake button.swatch.pc-indigo { background-color: @pc_indigo; }
+window.wake button.swatch.pc-blue { background-color: @pc_blue; } window.wake button.swatch.pc-sky { background-color: @pc_sky; }
+window.wake button.swatch.pc-teal { background-color: @pc_teal; } window.wake button.swatch.pc-green { background-color: @pc_green; }
+window.wake button.swatch.pc-lime { background-color: @pc_lime; } window.wake button.swatch.pc-slate { background-color: @pc_slate; }
+window.wake button.swatch.pc-orange { background-color: @pc_orange; } window.wake button.swatch.pc-mint { background-color: @pc_mint; }
+
+/* ---- Settings (view ,): a centred column of rounded cards, one setting per row, its control on
+   the right. The rows are a list (j/k move), drawn as cards: hairlines between rows, rounded ends. ---- */
+list.setlist { background: none; margin-bottom: 40px; }
+list.setlist > row, list.setlist > row:hover, list.setlist > row:selected { border: none; box-shadow: none; background-color: transparent; }
+list.setlist > row.sethead { padding: 30px 2px 4px; }
+.setttl { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 20px; letter-spacing: .3px; color: @ink; }
+.setwhere { font-size: 12px; color: @dim; }
+list.setlist > row.setsecrow { padding: 24px 4px 8px; }
+.setsec { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 10px; letter-spacing: 1.5px; color: @dim; }
+list.setlist > row.setnoterow { padding: 14px 0 0; }
+.setnote { padding: 10px 12px; border-radius: 8px; border: 1px solid alpha(@amber, .4); background-color: alpha(@amber, .07); color: @ink; font-size: 12.5px; }
+list.setlist > row.setrow { background-color: @panel; border: 1px solid @line; border-top-width: 0; outline-offset: -2px; }
+list.setlist > row.setrow.first { border-top-width: 1px; border-top-left-radius: 10px; border-top-right-radius: 10px; }
+list.setlist > row.setrow.last { border-bottom-left-radius: 10px; border-bottom-right-radius: 10px; }
+list.setlist > row.setrow:hover { background-color: @row; }
+list.setlist > row.setrow:selected { background-color: @panel; }
+list.setlist > row.setrow:selected:hover { background-color: @row; }
+/* The keyboard's row: lit, with the accent at its left edge. */
+list.setlist > row.setrow:focus:focus-visible, list.setlist.keyed > row.setrow:selected { background-color: @rowhi; box-shadow: inset 3px 0 @accent; }
+.setrow .cell { padding: 0 16px; min-height: 54px; }
+.setrow .cell > box:first-child { padding: 9px 0; }
+.setname { font-size: 13.5px; color: @ink; }
+.sethint { font-size: 12px; color: @dim; }
+/* Joined choices: one rounded group, the chosen one a raised pill inside it. */
+.segs { background-color: @bg; border: 1px solid @line2; border-radius: 9px; padding: 2px; }
+window.wake .segs > button.seg { font-size: 12.5px; padding: 4px 13px; border-radius: 7px; color: @muted; min-height: 22px; }
+window.wake .segs > button.seg:hover { color: @ink; background-color: @row; }
+window.wake .segs > button.seg.on { background-color: @rowhi; color: @ink; font-weight: 700; box-shadow: inset 0 0 0 1px @line3; }
+window.wake .segs > button.seg:disabled { color: @faint; background: none; }
+/* Accent swatches. */
+window.wake button.swatch.acc-cyan { background-color: @acc_cyan; } window.wake button.swatch.acc-mint { background-color: @acc_mint; }
+window.wake button.swatch.acc-violet { background-color: @acc_violet; } window.wake button.swatch.acc-blue { background-color: @acc_blue; }
+window.wake .setswatches { padding: 0 6px; }
+window.wake .setswatches button.swatch { min-width: 20px; min-height: 20px; }
+window.wake .setswatches button.swatch.on, window.wake .setswatches button.swatch.on:hover { box-shadow: 0 0 0 2px @panel, 0 0 0 4px @ink; }
+window.wake .setswatches button.swatch:hover { box-shadow: 0 0 0 2px @panel, 0 0 0 4px @line3; }
+/* Switches in Wake's colours (no GTK grey). */
+window.wake switch { background-color: @line2; border: none; border-radius: 999px; padding: 2px; box-shadow: none; outline: none; min-width: 0; }
+window.wake switch:checked { background-color: @accent; }
+window.wake switch > slider { background-color: @knob; background-image: none; border: none; border-radius: 999px; min-width: 18px; min-height: 18px; margin: 0; box-shadow: 0 1px 2px alpha(@shadow, .3); }
+window.wake switch:checked > slider, window.wake switch:checked:hover > slider, window.wake switch:hover > slider { background-color: @knob; background-image: none; }
+window.wake switch > image { opacity: 0; }
+/* The drop-down: like Wake's other drop-downs, a little larger. */
+window.wake dropdown.setdrop > button { background-color: @bg; color: @ink; border: 1px solid @line2; border-radius: 8px; padding: 5px 10px; font-size: 12.5px; min-width: 150px; box-shadow: none; }
+window.wake dropdown.setdrop > button:hover { border-color: @line3; }
+
+/* Agents' small waves: on the screensaver's dark backing in the light theme (bright dots need it). */
+drawingarea.miniwave { background-color: @wavebg; border-radius: 5px; }
+window.wake .swatches button.swatch { min-width: 16px; min-height: 16px; border-width: 0; }
+
+/* ---- Motion (2026-11-20): quick and quiet, 150–220 ms, easing out. GTK switches all of it off
+   when motion is reduced (gtk-enable-animations), so nothing here ever moves then. ---- */
+/* Appearing (motion.rs pop): one animation under two names, so swapping .pa and .pb restarts it. */
+@keyframes wake-fade-a { from { opacity: 0; } to { opacity: 1; } }
+@keyframes wake-fade-b { from { opacity: 0; } to { opacity: 1; } }
+@keyframes wake-pop-a { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes wake-pop-b { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+.scrim.pa, .peek.pa { animation: wake-fade-a 150ms ease-out; }
+.scrim.pb, .peek.pb { animation: wake-fade-b 150ms ease-out; }
+.pal.pa, .modal.pa, .toast.pa { animation: wake-pop-a 180ms ease-out; }
+.pal.pb, .modal.pb, .toast.pb { animation: wake-pop-b 180ms ease-out; }
+/* The selection bar gliding between rows; the row's own bar waits until it arrives. */
+.selbar { background-color: @accent; min-width: 2px; border-radius: 1px; }
+/* While it travels: a soft glow, so the stretch reads as light moving rather than a box resizing. */
+.selbar.moving { box-shadow: 0 0 6px alpha(@accent, .55); }
+list.table > row.glide:selected, list.table > row.glide:focus:focus-visible:not(:selected) { box-shadow: none; }
+
+/* ---- Why it stopped ---- */
+.why-line { font-size: 12.5px; color: @soft; }
+.why-line.amber { color: @amber; }
+.why-line.dim { color: @dim; }
+window.wake button.link.plink { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; padding: 0; }
+window.wake button.link.plink:hover { color: @accent; }
+.box.q button.q-go { margin-top: 6px; }
+window.wake button.btn.quiet-stop { opacity: .75; }
+window.wake button.btn.quiet-stop:hover, window.wake button.btn.quiet-stop:focus-visible { opacity: 1; }
+
+/* ---- Subagents: running first, the finished folded into one line ---- */
+window.wake button.donebtn { padding: 7px 9px; border-radius: 8px; }
+window.wake button.donebtn:hover { background-color: @row; }
+.donebtn .dl { font-size: 12.5px; color: @muted; }
+.donebtn .chev { color: @dim; font-size: 12px; min-width: 12px; }
+.donefold { margin-top: 2px; }
+
+/* Agents: a session's subagents as a compact tree under its task column. */
+list.table > row.subrow { border-bottom: none; }
+/* Subagents are rows of the same table (same cells, fonts and padding as a session's row), joined
+   to the session by a connector drawn in the wave column. */
+.subtree, .subtree.inner { margin: 0; padding: 0; border: none; }
+.subtr .cell.conncell { padding-top: 0; padding-bottom: 0; }
+.subtr.span .cell { padding-top: 0; padding-bottom: 0; }
+/* The connector's cell keeps a row's side padding, so a passing line meets the rows' line exactly. */
+.subtr.span .cell.conncell { padding-left: 12px; padding-right: 12px; }
+window.wake button.subbtn { padding: 0; margin: 0; border-radius: 0; background: none; }
+window.wake button.subbtn:hover { background-color: @row; }
+window.wake button.subbtn:focus:focus-visible { outline-style: none; background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
+.subtr .pj .title { font-size: 12.5px; }
+.subtr .desc.nowline { color: @mint; font-family: "JetBrains Mono", monospace; font-size: 10.5px; }
+.subtr.inner .pj .title { color: @soft; }
+.subtr .chev { color: @dim; font-size: 11px; min-width: 12px; }
+/* Each subagent, the fold and each finished one is a list row of its own (selected, hovered and
+   focused like a session's row), with no border between them, so the connector runs unbroken. */
+list.table > row.treerow { border-bottom: none; }
+.treebtn .tt { font-size: 12.5px; color: @ink; }
+.treebtn .tt.dimmer { color: @muted; }
+.treebtn .tnow { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.treebtn .chev { color: @dim; font-size: 11px; }
+.treebtn .d { min-width: 7px; min-height: 7px; }
+.tsteps { margin: 2px 9px 8px 26px; }
+
+/* ---- Keyboard. One focus indicator at a time: ---- */
+/* An entry shows focus with its own border; the text node inside it is the widget that has the
+   focus, and the outline rule above drew a second, offset box over the entry (the capture bar's
+   "weird second box"). Text areas show focus on their frame. */
+window.wake text:focus:focus-visible, window.wake textview:focus:focus-visible { outline-style: none; }
+/* The selected row keeps its place marker when the keyboard is elsewhere (the panel, the rail), but
+   quietly: the accent belongs to whatever has the focus. */
+list.table > row:selected:not(:focus) { box-shadow: inset 2px 0 @line3; }
+list.table > row.idea-row:selected:not(:focus) .idea { box-shadow: 0 0 0 1px @line3; }
+list.table > row.idea-row:selected:focus .idea { box-shadow: 0 0 0 1px @accent; }
+list.table > row.idea-row:selected:not(:focus) { box-shadow: none; }
+/* The region the keyboard is in (class "here", set only after keyboard use): its heading in the
+   accent and a thin accent edge along its top. Nothing is boxed. */
+window.wake .here { box-shadow: inset 0 2px alpha(@accent, .75); }
+window.wake .rail.here .grp, window.wake .chips.here .ttl, window.wake .capture.here .lbl, window.wake .cappick.here .flabel { color: @accent; }
+window.wake .pane.here .thead .th { color: @accent; }
+window.wake .drawer.here .dh .h2 { color: @accent; }
+/* Rail and chip buttons draw focus inside their own shape, never clipped by the rail. */
+window.wake .rail button:focus:focus-visible, window.wake .chips button:focus:focus-visible { outline-offset: -2px; }
+
+/* ---- Capture: the project picker above the bar ---- */
+.capture entry { min-height: 36px; }
+.cappick { background-color: @panel; border-top: 1px solid @line; padding: 10px 14px 8px; }
+.cappick entry.capfilter { min-height: 28px; min-width: 200px; font-size: 13px; }
+window.wake button.capitem { padding: 5px 10px; border-radius: 7px; color: @muted; }
+window.wake button.capitem:hover { background-color: @row; color: @ink; }
+window.wake button.capitem.on { background-color: @rowhi; color: @ink; box-shadow: inset 2px 0 @accent; font-weight: 700; }
+.caplist { padding: 2px 0; }
+.capnone { padding: 6px 10px; }
+
+/* ---- Ideas sent to an agent ---- */
+.idea.sent .tx { color: @muted; }
+.typed { font-size: 12px; color: @ink; background-color: @bg; border: 1px solid @line; border-radius: 7px; padding: 8px 10px; }
+/* A drop-down clips outside its own box, so its focus is its border, as an entry's is. */
+window.wake dropdown > button:focus:focus-visible { outline-style: none; border-color: @accent; box-shadow: 0 0 0 1px @accent; }
+/* A tick box: one ring, round the box itself (GTK's theme adds its own on the inner check). */
+window.wake checkbutton:focus:focus-visible { outline-style: none; }
+window.wake checkbutton:focus:focus-visible > check { outline: 2px solid @accent; outline-offset: 2px; }
+/* "Go to a session" sits in a clipping wrapper: its focus is its border too. */
+window.wake button.cmd:focus:focus-visible { outline-style: none; border-color: @accent; box-shadow: 0 0 0 1px @accent; }
+
+/* A narrow window (layout.rs): the slim rail, and the side panel lying over the list. */
+.rail.slim .nav, .rail.slim .plist { padding: 4px 6px; }
+window.wake .rail.slim .nav button, window.wake .rail.slim .plist button { padding: 7px 6px; }
+.rail.slim .nav { border-bottom: 1px solid @line; padding-bottom: 10px; margin-top: 10px; margin-bottom: 6px; }
+.rail .ini { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 14px; }
+.rail.slim .nav .n { font-size: 10px; }
+.paneledge { background-image: linear-gradient(to left, alpha(@shadow, .45), alpha(@shadow, 0)); }
+/* Phone patterns (layout.rs): ☰ and ⌕ in the top bar, the rail as a drawer, the way back from
+   pushed details, two-line rows, More ▾ and Sort ▾ menus, dialogs as bottom sheets. */
+window.wake button.iconbtn { padding: 4px 10px; border: 1px solid @line2; border-radius: 7px; color: @muted; font-size: 15px; min-width: 18px; }
+window.wake button.iconbtn:hover { border-color: @accent; color: @ink; }
+.searchicon { font-size: 17px; }
+.railscrim { background-color: @scrim; }
+.rail.drawer-rail { box-shadow: 0 0 40px @shadow; border-right: 1px solid @line2; }
+.backbar { padding: 10px 14px 0; }
+window.wake button.back { color: @accent; font-weight: 700; font-size: 13px; padding: 4px 8px; margin-left: -8px; }
+window.wake button.back:hover { background-color: @row; }
+.cardrow .card { padding: 2px 0; }
+.cardrow .card .num { font-size: 11px; }
+.cardhead { padding: 6px 14px; }
+window.wake button.sortbtn, window.wake menubutton.sortbtn > button, window.wake menubutton.more > button { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @muted; padding: 3px 9px; border: 1px solid @line2; border-radius: 999px; }
+window.wake menubutton.more > button:hover, window.wake menubutton.sortbtn > button:hover { border-color: @accent; color: @ink; }
+.moremenu, .sortmenu { padding: 4px; }
+window.wake button.menuitem { padding: 6px 12px; border-radius: 6px; color: @muted; }
+window.wake button.menuitem:hover { background-color: @row; color: @ink; }
+window.wake button.menuitem.on { color: @accent; font-weight: 700; }
+.modal.sheet { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom: none; }
+.cardrow { padding: 9px 14px; }
+/* The slim rail's full form, slid out over the content (layout.rs): a soft shadow on its right. */
+.rail.peek-rail { border-right: 1px solid @line2; }
+.peekedge { background-image: linear-gradient(to right, alpha(@shadow, .4), alpha(@shadow, 0)); }

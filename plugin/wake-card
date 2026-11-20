@@ -1,0 +1,144 @@
+#!/usr/bin/python3 -I
+"""Wake's Slipstream card. Standard library only.
+
+    wake-card                 print the card (one line of JSON)
+    wake-card search TEXT     print explorer answers for "@TEXT"
+    wake-card press ID        ask Wake to jump: ID is "top" or "go:<sessionId>"
+
+Reads $SLIPSTREAM_PLUGIN_READ_0/card.json, which Wake writes. A press can't reach Konsole from
+the sandbox, so it leaves a request in $SLIPSTREAM_PLUGIN_STATE/request.json for Wake to act on.
+"""
+
+import json
+import os
+import re
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+
+STALE_SECS = 120
+MAX_BYTES = 256 * 1024
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+ICONS = {"waiting": "bell", "working": "run", "idle": "pause"}
+
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def load():
+    folder = os.environ.get("SLIPSTREAM_PLUGIN_READ_0") or os.path.expanduser(
+        "~/.local/share/wake/card")
+    try:
+        with open(os.path.join(folder, "card.json"), encoding="utf-8") as f:
+            data = json.loads(f.read(MAX_BYTES))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def count(data, key):
+    value = data.get(key)
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
+def text(value, limit=60):
+    value = " ".join(str(value or "").split())
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def age_secs(data):
+    try:
+        at = datetime.fromisoformat(str(data.get("updatedAt")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return time.time() - at.timestamp()
+
+
+def sessions(data):
+    out = []
+    for s in data.get("sessions") or []:
+        if isinstance(s, dict) and ID_RE.match(str(s.get("id", ""))):
+            out.append(s)
+        if len(out) >= 50:
+            break
+    return out
+
+
+def card():
+    data = load()
+    if data is None:
+        return {"lines": ["Wake is not running", "Start it with: wake serve"], "glance": "-"}
+    waiting, working, ideas = count(data, "waiting"), count(data, "working"), count(data, "ideas")
+    lines = ["%d waiting · %d working · %d ideas" % (waiting, working, ideas)]
+    top = data.get("top") if isinstance(data.get("top"), dict) else None
+    buttons = []
+    if top and top.get("title"):
+        lines.append("Waiting longest: " + text(top.get("title")))
+        if top.get("project"):
+            lines.append(text(top.get("project")))
+        if ID_RE.match(str(top.get("id", ""))):
+            buttons.append({"id": "top", "label": "Go to it"})
+    age = age_secs(data)
+    if age is None or age > STALE_SECS:
+        lines.append("Wake has not updated this for a while")
+    out = {"lines": lines[:6], "glance": "%d waiting" % waiting if waiting else "%d working" % working,
+           "attention": waiting > 0}
+    if buttons:
+        out["buttons"] = buttons
+    return out
+
+
+def search(query):
+    data = load()
+    if data is None:
+        return {"results": []}
+    words = query.lower().split()
+    results = []
+    for s in sessions(data):
+        hay = ("%s %s" % (s.get("title", ""), s.get("project", ""))).lower()
+        if all(w in hay for w in words):
+            state = str(s.get("state", ""))
+            detail = " · ".join(x for x in (text(s.get("project"), 24), state) if x)
+            results.append({"id": "go:" + s["id"], "label": "Go to " + text(s.get("title"), 50),
+                            "detail": detail, "icon": ICONS.get(state, "eye")})
+        if len(results) >= 6:
+            break
+    return {"results": results}
+
+
+def press(button):
+    data = load() or {}
+    if button == "top":
+        top = data.get("top") if isinstance(data.get("top"), dict) else {}
+        session = str(top.get("id", ""))
+    elif button.startswith("go:"):
+        session = button[3:]
+        if session not in {s["id"] for s in sessions(data)}:
+            session = ""
+    else:
+        session = ""
+    state = os.environ.get("SLIPSTREAM_PLUGIN_STATE")
+    if ID_RE.match(session) and state and os.path.isdir(state):
+        request = {"id": uuid.uuid4().hex, "action": "jump", "session": session,
+                   "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        tmp = os.path.join(state, ".request.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(request, f)
+        os.replace(tmp, os.path.join(state, "request.json"))
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[0] == "search":
+        emit(search(argv[1]))
+        return
+    if len(argv) >= 2 and argv[0] == "press":
+        press(argv[1])
+    emit(card())
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

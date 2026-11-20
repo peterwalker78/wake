@@ -1,0 +1,1836 @@
+//! `Live`: the real [`Source`], reading this machine.
+//!
+//! Heavy work runs on Live's own threads once [`Live::start_background`] is called: indexing every
+//! 10 s, Konsole locations every 5 s, git totals every minute. `Source` methods answer from what is
+//! ready. The command line uses `Live::new` without threads and calls `index_now` itself.
+//!
+//! Where each session is (which Konsole tab) is decided in one place, [`Inner::refresh_locations`],
+//! from one reading of Konsole and one scan of /proc ([`Desktop::assign`]: a tab goes to at most one
+//! session). Every view, the Agents rows and "go to" read that one map. When Konsole does not answer,
+//! the last map is kept for 15 s and the overview says the locations are unsure.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+use serde_json::{Map, Value};
+
+use crate::desktop::{self, Desktop, Placee, Runner};
+use crate::index::{self, Acc, Indexer};
+use crate::live::{self, LiveInfo};
+use crate::look::{self, Look, ScreenCache};
+use crate::procs::{self, Actor, Explorer, Inputs, RealActor, SessionView};
+use crate::remote::{self, Notifier, RepoCheck, Watch};
+use crate::store::{self, IdeaRec, Paths, PauseRec, ProjectRec, Store};
+use crate::types::*;
+use crate::util;
+use crate::{Source, brief, gitinfo};
+use crate::{attrib, disk};
+
+pub const RECENT_DAYS: f64 = 14.0;
+const INDEX_EVERY: Duration = Duration::from_secs(10);
+const SIDE_EVERY: Duration = Duration::from_secs(5);
+const CARD_EVERY: f64 = 15.0;
+/// When Konsole stops answering, keep showing the tabs last seen for this long.
+const KEEP_LOCATIONS: Duration = Duration::from_secs(15);
+
+/// How a `Live` reaches the machine. Tests swap in fakes.
+pub struct LiveConfig {
+    pub paths: Paths,
+    pub proc_root: PathBuf,
+    /// Runs qdbus-qt6 / gdbus for the desktop part.
+    pub runner: Runner,
+    /// Path to systemd-run, Some("") for none, None to look it up.
+    pub systemd_run: Option<String>,
+    pub actor: Arc<dyn Actor>,
+}
+
+impl LiveConfig {
+    pub fn real() -> LiveConfig {
+        LiveConfig { paths: Paths::from_env(), proc_root: PathBuf::from("/proc"), runner: desktop::default_runner(), systemd_run: None, actor: Arc::new(RealActor { root: PathBuf::from("/proc") }) }
+    }
+}
+
+type LiveMap = Arc<HashMap<String, LiveInfo>>;
+
+/// Which agent process is in which Konsole tab (by owner pid), and how sure Wake is of it.
+#[derive(Default)]
+struct Locations {
+    map: HashMap<u32, Location>,
+    /// When Konsole was last read successfully.
+    ok_at: Option<Instant>,
+    /// Why the last reading failed, if it did.
+    failing: Option<String>,
+}
+
+struct Inner {
+    paths: Paths,
+    store: Store,
+    indexer: Indexer,
+    desktop: Desktop,
+    explorer: Explorer,
+    actor: Arc<dyn Actor>,
+    proc_root: PathBuf,
+    locations: RwLock<Locations>,
+    live_cache: Mutex<Option<(Instant, LiveMap)>>,
+    index_error: Mutex<Option<String>>,
+    side_error: Mutex<Option<String>>,
+    stop: AtomicBool,
+    background: AtomicBool,
+    plugin: Mutex<(Option<Instant>, Option<f64>)>,
+    /// Runs read-only commands for `screen` (Konsole's text, `claude logs`).
+    runner: Runner,
+    look: Look,
+    screens: ScreenCache,
+    /// Quick questions answered by the person's own claude (Questions view).
+    questions: crate::questions::Questions,
+    /// Behind the remote: each repo's last check, and the alarm per behind-episode.
+    remote: Mutex<RemoteState>,
+    /// Sends the one "you're building while behind" notification; tests swap in a fake.
+    notifier: Mutex<Notifier>,
+    /// What Settings asks of the core: how often to ask remotes, whether to notify.
+    opts: Mutex<crate::settings::CoreOptions>,
+    /// Disk, resources and attribution (added 2026-11-20).
+    overrides: attrib::Overrides,
+    procs_cache: Mutex<Option<(Instant, ProcOverview)>>,
+    disk: Mutex<DiskState>,
+    disk_places: disk::Places,
+}
+
+/// The last disk measurement and what has been asked for since.
+#[derive(Default)]
+struct DiskState {
+    report: Option<DiskReport>,
+    /// Projects to measure now ("" = everything).
+    asked: Vec<String>,
+}
+
+#[derive(Default)]
+struct RemoteState {
+    /// By repo path.
+    checks: HashMap<String, RepoCheck>,
+    watch: Watch,
+    /// Projects to ask about now, whatever the schedule says ("" = all).
+    asked: Vec<String>,
+}
+
+/// The real source. Cheap to share behind an `Arc`.
+pub struct Live {
+    inner: Arc<Inner>,
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.inner.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn wait(stop: &AtomicBool, d: Duration) {
+    let end = Instant::now() + d;
+    while !stop.load(Ordering::SeqCst) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+impl Live {
+    pub fn new(cfg: LiveConfig) -> Live {
+        let overrides = attrib::Overrides::new(&cfg.paths.data);
+        let disk_state = DiskState { report: store::read_json(&cfg.paths.data.join("disk.json")), asked: Vec::new() };
+        let disk_places = disk::Places { proc_root: cfg.proc_root.clone(), ..disk::Places::real(&cfg.paths) };
+        let store = Store::new(cfg.paths.clone());
+        let _ = store.ensure_data_dir();
+        let questions = crate::questions::Questions::new(&cfg.paths, crate::questions::find_claude(&cfg.paths));
+        for ai in [crate::questions::Ai::Codex, crate::questions::Ai::Gemini] {
+            questions.set_tool(ai, crate::questions::find_tool(&cfg.paths, ai));
+        }
+        Live {
+            inner: Arc::new(Inner {
+                indexer: Indexer::new(cfg.paths.clone()),
+                desktop: Desktop::new(cfg.runner.clone(), &cfg.proc_root, cfg.systemd_run.as_deref()),
+                look: Look::new(cfg.runner.clone(), &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(), cfg.paths.data.join("kwin"), std::process::id(), true),
+                runner: cfg.runner.clone(),
+                screens: ScreenCache::default(),
+                explorer: Explorer::new(&cfg.proc_root),
+                actor: cfg.actor,
+                proc_root: cfg.proc_root,
+                paths: cfg.paths,
+                store,
+                locations: RwLock::new(Locations::default()),
+                live_cache: Mutex::new(None),
+                index_error: Mutex::new(None),
+                side_error: Mutex::new(None),
+                stop: AtomicBool::new(false),
+                background: AtomicBool::new(false),
+                plugin: Mutex::new((None, None)),
+                questions,
+                remote: Mutex::new(RemoteState::default()),
+                notifier: Mutex::new(remote::runner_notifier(cfg.runner.clone())),
+                opts: Mutex::new(crate::settings::CoreOptions::default()),
+                overrides,
+                procs_cache: Mutex::new(None),
+                disk: Mutex::new(disk_state),
+                disk_places,
+            }),
+        }
+    }
+
+    /// The real machine, with background threads running.
+    pub fn start() -> Live {
+        let l = Live::new(LiveConfig::real());
+        l.start_background();
+        l
+    }
+
+    /// Index, Konsole and git threads. They stop when this `Live` is dropped.
+    pub fn start_background(&self) {
+        if self.inner.background.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let a = self.inner.clone();
+        let _ = std::thread::Builder::new().name("wake-index".into()).spawn(move || {
+            while !a.stop.load(Ordering::SeqCst) {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.indexer.run()));
+                *lock(&a.index_error) = r.err().map(|_| "Indexing failed; Wake keeps showing what it had.".to_string());
+                wait(&a.stop, INDEX_EVERY);
+            }
+        });
+        let b = self.inner.clone();
+        let _ = std::thread::Builder::new().name("wake-side".into()).spawn(move || {
+            let mut last_git: Option<Instant> = None;
+            let mut first = true;
+            while !b.stop.load(Ordering::SeqCst) {
+                // A panic in one pass is recorded and the loop goes on, so locations and git totals
+                // never silently freeze for the rest of the session.
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // Locations first, once, so a fresh window does not show every session as
+                    // "background" while git runs; then git (milliseconds per project; an unchecked
+                    // project would read as "all on GitHub"), then locations every pass.
+                    if first {
+                        b.refresh_locations(false);
+                    }
+                    if last_git.is_none_or(|t| t.elapsed().as_secs_f64() > gitinfo::CACHE_SECONDS) {
+                        last_git = Some(Instant::now());
+                        for p in b.store.load_projects() {
+                            if b.stop.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            if !p.removed {
+                                gitinfo::project_git(&p, true);
+                            }
+                        }
+                    }
+                    // Behind the remote: notice building starting in a project that is behind.
+                    b.watch_behind();
+                    if !first {
+                        b.refresh_locations(false);
+                    }
+                }));
+                first = false;
+                *lock(&b.side_error) = r.err().map(|_| "Checking git and Konsole tabs failed once; Wake keeps trying.".to_string());
+                wait(&b.stop, SIDE_EVERY);
+            }
+        });
+        // Disk: measured hourly and when asked, at the lowest CPU and I/O priority.
+        let d = self.inner.clone();
+        let _ = std::thread::Builder::new().name("wake-disk".into()).spawn(move || {
+            disk::lower_priority();
+            let measured = lock(&d.disk).report.as_ref().and_then(|r| r.measured_at.as_deref().and_then(util::parse_iso));
+            // A measurement under an hour old (from disk.json) waits for its hour; else start soon,
+            // after Wake's own start-up work.
+            let mut next_full = Instant::now()
+                + match measured {
+                    Some(t) if util::now() - t < disk::EVERY.as_secs_f64() => Duration::from_secs_f64(disk::EVERY.as_secs_f64() - (util::now() - t)),
+                    _ => Duration::from_secs(20),
+                };
+            while !d.stop.load(Ordering::SeqCst) {
+                let asked = std::mem::take(&mut lock(&d.disk).asked);
+                let full = Instant::now() >= next_full || asked.iter().any(|a| a.is_empty());
+                if full {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.measure_disk(None)));
+                    next_full = Instant::now() + disk::EVERY;
+                } else {
+                    for p in asked {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.measure_disk(Some(&p))));
+                    }
+                }
+                while !d.stop.load(Ordering::SeqCst) && Instant::now() < next_full && lock(&d.disk).asked.is_empty() {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        });
+        // Asking remotes can take seconds per repo (20 s at worst, offline), so it has its own
+        // thread and never holds up locations or git totals. One repo at a time.
+        let c = self.inner.clone();
+        let _ = std::thread::Builder::new().name("wake-remote".into()).spawn(move || {
+            wait(&c.stop, Duration::from_secs(3));
+            while !c.stop.load(Ordering::SeqCst) {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.check_remotes_pass()));
+                let end = Instant::now() + Duration::from_secs(30);
+                while !c.stop.load(Ordering::SeqCst) && Instant::now() < end && lock(&c.remote).asked.is_empty() {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        });
+    }
+
+    /// Replace the notification sender (tests; never send a real one from a test).
+    pub fn set_notifier(&self, n: Notifier) {
+        *lock(&self.inner.notifier) = n;
+    }
+
+    /// One indexing pass now (the command line uses this; the app has the background thread).
+    pub fn index_now(&self) -> u32 {
+        self.inner.indexer.run()
+    }
+
+    pub fn indexer(&self) -> &Indexer {
+        &self.inner.indexer
+    }
+
+    pub fn store(&self) -> &Store {
+        &self.inner.store
+    }
+
+    pub fn paths(&self) -> &Paths {
+        &self.inner.paths
+    }
+
+    pub fn desktop(&self) -> &Desktop {
+        &self.inner.desktop
+    }
+
+    /// Measure the disk now, on this thread, at the lowest priority (the command line's `wake
+    /// disk`); keeps the result in disk.json like the background thread does.
+    pub fn measure_disk_now(&self) -> Option<DiskReport> {
+        disk::lower_priority();
+        self.inner.measure_disk(None);
+        let projects = self.inner.store.load_projects();
+        let sessions = self.inner.all_summaries(&projects, true);
+        self.inner.disk_report(&sessions)
+    }
+
+    /// Place every agent process in a Konsole tab now (reading Konsole afresh).
+    pub fn refresh_locations(&self) {
+        self.inner.refresh_locations(true);
+    }
+
+    /// The Slipstream plugin bridge; call it about once a second. Writes card/card.json every 15 s
+    /// and acts on a new jump request from the plugin (at most 30 s old), going to that session.
+    pub fn plugin_tick(&self, dry_run: bool) -> Option<ActionResult> {
+        let due = lock(&self.inner.plugin).0.is_none_or(|t| t.elapsed().as_secs_f64() > CARD_EVERY);
+        if due {
+            lock(&self.inner.plugin).0 = Some(Instant::now());
+            let _ = self.write_card();
+        }
+        let req = self.inner.paths.plugin_state.join("request.json");
+        let m = std::fs::metadata(&req).ok().map(|m| {
+            use std::os::unix::fs::MetadataExt;
+            m.mtime() as f64 + m.mtime_nsec() as f64 / 1e9
+        });
+        let changed = {
+            let mut g = lock(&self.inner.plugin);
+            let c = m.is_some() && m != g.1;
+            if c {
+                g.1 = m;
+            }
+            c
+        };
+        if changed { self.card_request(&req, dry_run) } else { None }
+    }
+
+    /// card/card.json for the Slipstream plugin: counts, the one waiting longest, live sessions.
+    pub fn write_card(&self) -> Result<(), String> {
+        let ov = self.overview();
+        let rank = |s: State| match s {
+            State::Waiting => 0,
+            State::Working => 1,
+            _ => 2,
+        };
+        let mut live: Vec<&SessionSummary> = ov.sessions.iter().filter(|s| matches!(s.state, State::Waiting | State::Working | State::Idle)).collect();
+        live.sort_by(|a, b| (rank(a.state), a.last_at.as_deref().unwrap_or("")).cmp(&(rank(b.state), b.last_at.as_deref().unwrap_or(""))));
+        let ok = |id: &str| !id.is_empty() && id.len() <= 80 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        let state_s = |s: State| match s {
+            State::Waiting => "waiting",
+            State::Working => "working",
+            _ => "idle",
+        };
+        let rows: Vec<Value> = live
+            .iter()
+            .filter(|s| ok(&s.id))
+            .take(50)
+            .map(|s| {
+                serde_json::json!({"id": s.id, "title": s.title, "project": s.project_name.clone().unwrap_or_else(|| "home".into()),
+                "state": state_s(s.state)})
+            })
+            .collect();
+        let top = rows.iter().find(|r| r["state"] == "waiting").map(|r| serde_json::json!({"id": r["id"], "title": r["title"], "project": r["project"]}));
+        let card = serde_json::json!({"working": ov.counts.working, "waiting": ov.counts.waiting, "idle": ov.counts.idle,
+            "ideas": ov.ideas, "top": top, "sessions": rows, "updatedAt": util::now_iso()});
+        self.inner.store.writer.write_json(&self.inner.paths.data.join("card").join("card.json"), &card).map_err(|e| e.0)
+    }
+
+    fn card_request(&self, req_path: &Path, dry_run: bool) -> Option<ActionResult> {
+        let req: Value = store::read_json(req_path).unwrap_or(Value::Null);
+        let rid = match req.get("id") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Number(n)) => n.to_string(),
+            _ => return None,
+        };
+        let done = self.inner.paths.data.join("card").join("last-request");
+        let last = std::fs::read_to_string(&done).unwrap_or_default();
+        if rid.is_empty() || rid == last.trim() || req.get("action").and_then(Value::as_str) != Some("jump") {
+            return None;
+        }
+        let _ = self.inner.store.writer.write_atomic(&done, rid.as_bytes());
+        let at = req.get("at").and_then(Value::as_str).and_then(util::parse_iso)?;
+        if util::now() - at > 30.0 {
+            return None;
+        }
+        let session = req.get("session").and_then(Value::as_str)?;
+        Some(self.go_to(session, dry_run))
+    }
+}
+
+impl Inner {
+    fn live(&self) -> Arc<HashMap<String, LiveInfo>> {
+        let mut c = lock(&self.live_cache);
+        if let Some((at, data)) = c.as_ref()
+            && at.elapsed().as_secs_f64() < 1.0
+        {
+            return data.clone();
+        }
+        let data = Arc::new(live::read_live(&self.paths, &self.proc_root));
+        *c = Some((Instant::now(), data.clone()));
+        data
+    }
+
+    /// Every agent process that could be in a tab, with whom a tab showing it is credited to: an
+    /// attach client's tab goes to the session it attaches to.
+    fn placees(&self) -> Vec<Placee> {
+        let infos = self.live();
+        self.explorer
+            .scan()
+            .into_iter()
+            .filter_map(|p| {
+                let agent = procs::agent_of(&p.argv, p.exe.as_deref())?;
+                let role = if agent == Agent::Claude { procs::role_of(&p.argv) } else { procs::Role::Main };
+                let owner = match role {
+                    procs::Role::Daemon | procs::Role::PtyHost => return None,
+                    procs::Role::Attach(job) => infos.values().find(|i| i.alive && i.job_id.as_deref() == Some(job.as_str())).map_or(p.pid, |i| i.pid),
+                    _ => p.pid,
+                };
+                Some(Placee { pid: p.pid, owner })
+            })
+            .collect()
+    }
+
+    /// The one place locations are decided (see the module doc).
+    fn refresh_locations(&self, fresh: bool) {
+        match self.desktop.tabs(fresh) {
+            Ok(tabs) => {
+                let map = if tabs.is_empty() { HashMap::new() } else { self.desktop.assign(&tabs, &self.placees()) };
+                *self.locations.write().unwrap_or_else(|e| e.into_inner()) = Locations { map, ok_at: Some(Instant::now()), failing: None };
+            }
+            Err(why) => {
+                let mut l = self.locations.write().unwrap_or_else(|e| e.into_inner());
+                if l.ok_at.is_none_or(|t| t.elapsed() > KEEP_LOCATIONS) {
+                    l.map.clear();
+                }
+                l.failing = Some(why);
+            }
+        }
+    }
+
+    /// In the background the side thread keeps locations fresh; without it (the command line, tests
+    /// that never start it) read them now when they are older than Konsole's own 2 s cache.
+    fn locations_now(&self) {
+        if self.background.load(Ordering::SeqCst) {
+            return;
+        }
+        let stale = self.locations.read().unwrap_or_else(|e| e.into_inner()).ok_at.is_none_or(|t| t.elapsed().as_secs_f64() > desktop::CACHE_SECS);
+        if stale {
+            self.refresh_locations(false);
+        }
+    }
+
+    fn location(&self, pid: u32) -> Option<Location> {
+        self.locations.read().unwrap_or_else(|e| e.into_inner()).map.get(&pid).cloned()
+    }
+
+    /// Why the locations shown may be wrong, or None when they are current.
+    fn locations_unsure(&self) -> Option<String> {
+        let l = self.locations.read().unwrap_or_else(|e| e.into_inner());
+        match (&l.failing, l.ok_at) {
+            (None, Some(_)) => None,
+            (None, None) => Some("Wake is still finding which Konsole tab each session is in.".into()),
+            (Some(why), Some(at)) if !l.map.is_empty() => Some(format!("{why} Showing the tabs seen {} ago.", util::ago(Some(at.elapsed().as_secs_f64())))),
+            (Some(why), _) => Some(why.clone()),
+        }
+    }
+
+    fn summary(&self, acc: &Acc, projects: &[ProjectRec], infos: &HashMap<String, LiveInfo>, now: f64, counts: bool) -> SessionSummary {
+        let mut s = index::base_summary(acc, projects, &self.paths.home);
+        let info = infos.get(&acc.id);
+        live::apply_live(&mut s, Some(acc), info, now);
+        if counts {
+            s.subagents = index::subagent_counts(acc, now);
+        }
+        if let Some(i) = info.filter(|i| i.alive) {
+            s.location = self.location(i.pid);
+        }
+        s
+    }
+
+    fn all_summaries(&self, projects: &[ProjectRec], recent_only: bool) -> Vec<SessionSummary> {
+        let infos = self.live();
+        let now = util::now();
+        let cutoff = util::iso_from_epoch(now - RECENT_DAYS * 86400.0);
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        // Sessions Questions started are not work: they stay out of every list.
+        let hider = self.questions.hider();
+        let answers = self.overrides.all();
+        for acc in self.indexer.all_lite() {
+            if hider.hides(&acc.id, acc.launch_cwd.as_deref()) {
+                continue;
+            }
+            let info = infos.get(&acc.id);
+            let is_live = info.is_some_and(|i| i.alive);
+            let recent = acc.last_at.as_deref().unwrap_or("") >= cutoff.as_str();
+            if recent_only && !(is_live || recent) {
+                continue;
+            }
+            seen.insert(acc.id.clone());
+            let untitled = acc.prompts == 0 && acc.ai_title.is_none() && acc.custom_title.is_none();
+            let name = if is_live { live::real_name(info) } else { None };
+            if untitled && name.is_none() {
+                continue; // empty session (or an idle one never used): nothing to show
+            }
+            let mut s = self.summary(&acc, projects, &infos, now, is_live || recent);
+            attrib::apply_to(&answers, &mut s, projects);
+            if untitled && let Some(n) = name {
+                s.title = n;
+            }
+            out.push(s);
+        }
+        for (sid, info) in infos.iter() {
+            if !seen.contains(sid) && info.alive && live::real_name(Some(info)).is_some() && !hider.hides(sid, info.cwd.as_deref()) {
+                let mut s = live::live_only_summary(info, projects, &self.paths.home, now);
+                s.location = self.location(info.pid);
+                attrib::apply_to(&answers, &mut s, projects);
+                out.push(s);
+            }
+        }
+        out.sort_by(|a, b| b.last_at.cmp(&a.last_at));
+        out
+    }
+
+    fn project_summary(&self, p: &ProjectRec, sessions: &[SessionSummary], ideas: &[IdeaRec], pauses: &HashMap<String, PauseRec>, now: f64) -> ProjectSummary {
+        let cutoff = util::iso_from_epoch(now - RECENT_DAYS * 86400.0);
+        let mine: Vec<&SessionSummary> = sessions.iter().filter(|s| s.project.as_deref() == Some(p.id.as_str())).collect();
+        let mut livec = LiveCounts::default();
+        for s in &mine {
+            match s.state {
+                State::Working => livec.working += 1,
+                State::Waiting => livec.waiting += 1,
+                State::Idle => livec.idle += 1,
+                _ => {}
+            }
+        }
+        let last = mine.iter().filter_map(|s| s.last_at.clone()).max();
+        let mut by_last = mine.clone();
+        by_last.sort_by(|a, b| b.last_at.cmp(&a.last_at));
+        ProjectSummary {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            roots: p.roots.clone(),
+            removed: p.removed,
+            desc: p.desc.clone(),
+            next: p.next.clone(),
+            why: p.why.clone(),
+            live: livec,
+            last_at: last,
+            sessions_14d: mine.iter().filter(|s| s.last_at.as_deref().unwrap_or("") >= cutoff.as_str()).count() as u32,
+            ideas: ideas.iter().filter(|i| i.project.as_deref() == Some(p.id.as_str()) && i.state == "inbox").count() as u32,
+            git: gitinfo::cached_totals(p).unwrap_or_default(),
+            paused: pauses.get(&p.id).map(|r| PauseNote { at: r.at.clone(), note: r.note.clone() }),
+            last_summary: by_last.iter().find_map(|s| s.away_summary.clone()),
+            git_checked: gitinfo::cached_totals(p).is_some(),
+            color: Some(p.color.as_deref().and_then(store::colour_name).unwrap_or_else(|| store::default_colour(&p.name)).to_string()),
+        }
+    }
+
+    /// Ask the remote of every repo that is due (ten minutes since its last check) or asked for.
+    fn check_remotes_pass(&self) {
+        let asked = std::mem::take(&mut lock(&self.remote).asked);
+        let all = asked.iter().any(|a| a.is_empty());
+        for p in self.store.load_projects().into_iter().filter(|p| !p.removed) {
+            let wanted = all || asked.contains(&p.id);
+            let repos = match gitinfo::cached_repos(&p) {
+                Some(r) if !wanted => r,
+                _ => gitinfo::project_git(&p, wanted).0,
+            };
+            for r in repos {
+                if self.stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                // Settings may turn the schedule off; an explicit ask still goes through.
+                let every = lock(&self.opts).remote_every;
+                let due = every.is_some_and(|every| lock(&self.remote).checks.get(&r.state.path).is_none_or(|c| c.at.elapsed() >= every));
+                if due || wanted {
+                    let c = remote::check_repo(&r.state.path);
+                    lock(&self.remote).checks.insert(r.state.path.clone(), c);
+                }
+            }
+        }
+    }
+
+    /// Every tracked project that is behind, from git's cache and the last remote checks (never
+    /// blocks on git or the network).
+    fn behind_list(&self, projects: &[ProjectRec]) -> Vec<Behind> {
+        let r = lock(&self.remote);
+        let mut out = Vec::new();
+        for p in projects.iter().filter(|p| !p.removed) {
+            let Some(repos) = gitinfo::cached_repos(p) else { continue };
+            // A repo not asked yet still counts as behind when its last fetch says so.
+            let local: Vec<RepoCheck> = repos
+                .iter()
+                .filter(|x| !r.checks.contains_key(&x.state.path))
+                .filter_map(|x| {
+                    let n = x.state.behind.filter(|n| *n > 0)?;
+                    Some(RepoCheck {
+                        path: x.state.path.clone(),
+                        upstream: x.state.upstream.clone().unwrap_or_default(),
+                        host: "the remote".into(),
+                        outcome: remote::Outcome::Behind { count: Some(n), ahead: x.state.ahead.unwrap_or(0) },
+                        remote_sha: None,
+                        problem: None,
+                        asked_at: None,
+                        at: Instant::now(),
+                    })
+                })
+                .collect();
+            let checks: Vec<&RepoCheck> = repos.iter().filter_map(|x| r.checks.get(&x.state.path)).chain(local.iter()).collect();
+            let dirty = |path: &str| repos.iter().find(|x| x.state.path == path).map_or(0, |x| x.state.dirty_files + x.state.untracked);
+            if let Some(mut b) = remote::behind_for(&p.id, &p.name, &p.roots, &checks, &dirty) {
+                b.alarm = r.watch.alarm(&p.id);
+                out.push(b);
+            }
+        }
+        out
+    }
+
+    /// Every 5 s: while a project is behind, keep its git fresh and watch for building starting
+    /// in it (a session going from idle to working, or its tree going from clean to dirty). The
+    /// first time per behind-episode: the alarm, and one desktop notification.
+    fn watch_behind(&self) {
+        let projects = self.store.load_projects();
+        let behind_ids: Vec<String> = self.behind_list(&projects).into_iter().map(|b| b.project).collect();
+        if behind_ids.is_empty() {
+            let mut r = lock(&self.remote);
+            for p in &projects {
+                r.watch.observe(&p.id, false, &[], None);
+            }
+            return;
+        }
+        for p in projects.iter().filter(|p| behind_ids.contains(&p.id)) {
+            // Fresh status (dirty files, HEAD) and, without the network, whether a pull or commit
+            // here has changed the answer.
+            let (repos, _) = gitinfo::project_git(p, true);
+            for x in repos {
+                let prev = lock(&self.remote).checks.get(&x.state.path).filter(|c| c.is_behind()).cloned();
+                if let Some(prev) = prev {
+                    let c = remote::recheck(&prev);
+                    lock(&self.remote).checks.insert(x.state.path.clone(), c);
+                }
+            }
+        }
+        let behind = self.behind_list(&projects);
+        let sessions = self.all_summaries(&projects, true);
+        let mut notices = Vec::new();
+        {
+            let mut r = lock(&self.remote);
+            for p in &projects {
+                let b = behind.iter().find(|b| b.project == p.id);
+                let working: Vec<String> = sessions.iter().filter(|s| s.project.as_deref() == Some(p.id.as_str()) && s.state == State::Working).map(|s| s.id.clone()).collect();
+                let dirty = gitinfo::cached_totals(p).map(|t| t.dirty_files > 0);
+                if let Some(b) = b
+                    && r.watch.observe(&p.id, true, &working, dirty).is_some()
+                {
+                    notices.push(remote::notice(b));
+                } else if b.is_none() {
+                    r.watch.observe(&p.id, false, &[], None);
+                }
+            }
+        }
+        // Settings can keep the desktop notification quiet; the banner shows either way.
+        if !lock(&self.opts).notify_behind {
+            return;
+        }
+        let send = lock(&self.notifier).clone();
+        for n in notices {
+            send(&n);
+        }
+    }
+
+    fn idea_out(&self, i: &IdeaRec, projects: &[ProjectRec]) -> Idea {
+        Idea {
+            id: i.id.clone(),
+            at: i.at.clone(),
+            text: i.text.clone(),
+            project: i.project.clone(),
+            project_name: i.project.as_deref().and_then(|p| store::project_by_id(p, projects)).map(|p| p.name.clone()),
+            source: i.source.clone(),
+            state: i.state.clone(),
+            sent_at: i.sent_at.clone(),
+        }
+    }
+
+    fn session_view(&self, info: &LiveInfo, projects: &[ProjectRec], now: f64) -> SessionView {
+        let acc = self.indexer.get_lite(&info.session_id);
+        let mut s = match &acc {
+            Some(a) => index::base_summary(a, projects, &self.paths.home),
+            None => live::live_only_summary(info, projects, &self.paths.home, now),
+        };
+        live::apply_live(&mut s, acc.as_deref(), Some(info), now);
+        self.overrides.apply(&mut s, projects);
+        let used_acc = acc.as_ref().is_some_and(|a| a.prompts > 0 || a.ai_title.is_some() || a.custom_title.is_some());
+        let name = live::real_name(Some(info));
+        let title = if used_acc { Some(s.title.clone()) } else { name.clone() };
+        let last = s.last_at.as_deref().and_then(util::parse_iso);
+        let newest = [info.status_updated_at, last].into_iter().flatten().fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.max(b))));
+        SessionView {
+            title,
+            project_name: s.project_name.clone(),
+            state: Some(s.state),
+            idle_since: match s.state {
+                State::Working => None,
+                _ => newest,
+            },
+            used: used_acc || name.is_some(),
+        }
+    }
+
+    fn notes(&self) -> HashMap<u32, WorkingNote> {
+        let mut out = HashMap::new();
+        let Ok(rd) = std::fs::read_dir(self.paths.runtime.join("working")) else { return out };
+        for e in rd.flatten() {
+            if let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok())
+                && let Some((n, _)) = live::read_working_note(&self.paths, pid)
+            {
+                out.insert(pid, n);
+            }
+        }
+        out
+    }
+
+    fn title_for(&self, sid: &str, info: Option<&LiveInfo>, projects: &[ProjectRec]) -> String {
+        let acc = self.indexer.get_lite(sid);
+        let mut title = match &acc {
+            Some(a) => index::title_of(a),
+            None => info.and_then(|i| i.name.clone()).unwrap_or_else(|| "This session".into()),
+        };
+        if title == "Untitled session" {
+            title = live::real_name(info).unwrap_or_else(|| "This session".into());
+        }
+        let pname = match self.overrides.get(sid) {
+            Some(choice) => choice.as_deref().and_then(|id| store::project_by_id(id, projects)).map(|p| p.name.clone()),
+            None => acc.as_ref().and_then(|a| index::attribute(a, projects, &self.paths.home).1),
+        };
+        if let Some(pname) = pname {
+            title = format!("{pname}, {title}");
+        }
+        title
+    }
+}
+
+fn snippet(text: Option<&str>, q: &str) -> Option<String> {
+    let text = text?;
+    let low = text.to_lowercase();
+    let i = low.find(q)?;
+    // map the byte offset in the lowercased text back to a char index (lowercasing can change lengths)
+    let ci = low[..i].chars().count();
+    let start = ci.saturating_sub(40);
+    let s: String = text.chars().skip(start).take(120).collect();
+    let s = util::squash(&s);
+    Some(if start > 0 { format!("...{s}") } else { s })
+}
+
+fn checkpoint_of(r: &PauseRec) -> Checkpoint {
+    Checkpoint {
+        project: r.project.clone(),
+        at: r.at.clone(),
+        note: r.note.clone(),
+        next: r.next.clone(),
+        git: r
+            .git
+            .iter()
+            .map(|(path, m)| {
+                (
+                    path.clone(),
+                    m.get("branch").and_then(Value::as_str).map(String::from),
+                    m.get("head").and_then(Value::as_str).map(String::from),
+                    m.get("ahead").and_then(Value::as_u64).map(|a| a as u32),
+                )
+            })
+            .collect(),
+        sessions: r.sessions.clone(),
+    }
+}
+
+impl Source for Live {
+    fn overview(&self) -> Overview {
+        let i = &self.inner;
+        i.locations_now();
+        let projects = i.store.load_projects();
+        let sessions = i.all_summaries(&projects, true);
+        let ideas = i.store.list_ideas();
+        let pauses = i.store.last_pauses();
+        let now = util::now();
+        let mut counts = LiveCounts::default();
+        for s in &sessions {
+            match s.state {
+                State::Working => counts.working += 1,
+                State::Waiting => counts.waiting += 1,
+                State::Idle => counts.idle += 1,
+                _ => {}
+            }
+        }
+        let (done, total) = i.indexer.progress();
+        let sessions_for_res = sessions.clone();
+        let problems: Vec<String> = [lock(&i.index_error).clone(), i.store.projects_problem(), lock(&i.side_error).clone()].into_iter().flatten().collect();
+        Overview {
+            generated_at: util::now_iso(),
+            indexing: Progress { done, total },
+            counts,
+            ideas: ideas.iter().filter(|x| x.state == "inbox").count() as u32,
+            projects: projects.iter().map(|p| i.project_summary(p, &sessions, &ideas, &pauses, now)).collect(),
+            sessions,
+            index_error: if problems.is_empty() { None } else { Some(problems.join(" ")) },
+            locations_unsure: i.locations_unsure(),
+            behind: Some(i.behind_list(&projects)),
+            resources: Some(i.resources(&sessions_for_res)),
+            disk: i.disk_report(&sessions_for_res),
+            attribution: Some(i.attribution(&sessions_for_res, &projects)),
+        }
+    }
+
+    fn session(&self, id: &str) -> Option<SessionDetail> {
+        let i = &self.inner;
+        let projects = i.store.load_projects();
+        let infos = i.live();
+        let info = infos.get(id);
+        let now = util::now();
+        let Some(acc) = i.indexer.read_acc(id) else {
+            let info = info.filter(|x| x.alive)?;
+            let mut s = live::live_only_summary(info, &projects, &i.paths.home, now);
+            s.location = i.location(info.pid);
+            i.overrides.apply(&mut s, &projects);
+            return Some(SessionDetail { summary: s, prompts: vec![], files: vec![], commands: 0, tests: 0, pr_links: vec![], cost_usd: None, subagents: vec![] });
+        };
+        let mut s = index::base_summary(&acc, &projects, &i.paths.home);
+        live::apply_live(&mut s, Some(&acc), info, now);
+        i.overrides.apply(&mut s, &projects);
+        if let Some(inf) = info.filter(|x| x.alive) {
+            s.location = i.location(inf.pid);
+        }
+        let subs: Vec<SubagentSummary> = i.indexer.subagents(&acc).iter().map(|x| x.to_contract()).collect();
+        s.subagents = SubagentCounts { total: if subs.is_empty() { s.subagents.total } else { subs.len() as u32 }, running: subs.iter().filter(|x| x.state == State::Working).count() as u32 };
+        Some(SessionDetail {
+            summary: s,
+            prompts: index::prompts_out(&acc),
+            files: index::files_out(&acc),
+            commands: acc.commands,
+            tests: acc.tests,
+            pr_links: acc.pr_links.clone(),
+            cost_usd: acc.cost,
+            subagents: subs,
+        })
+    }
+
+    fn subagent(&self, session: &str, agent_id: &str) -> Option<SubagentDetail> {
+        self.inner.indexer.subagent_detail(session, agent_id)
+    }
+
+    fn project(&self, id: &str) -> Option<ProjectDetail> {
+        let i = &self.inner;
+        let projects = i.store.load_projects();
+        let p = store::project_by_id(id, &projects)?;
+        let sessions = i.all_summaries(&projects, false);
+        let ideas = i.store.list_ideas();
+        let pauses = i.store.last_pauses();
+        let mut summ = i.project_summary(p, &sessions, &ideas, &pauses, util::now());
+        let (repos, failed) = gitinfo::project_git(p, false);
+        summ.git = gitinfo::git_totals(&repos);
+        let mine: Vec<SessionSummary> = sessions.into_iter().filter(|s| s.project.as_deref() == Some(id)).take(100).collect();
+        let pause = pauses.get(id);
+        let mut since = Vec::new();
+        if let Some(pause) = pause {
+            for r in &repos {
+                let subj = gitinfo::commits_since(&r.state.path, &pause.at, 20);
+                if !subj.is_empty() {
+                    let name = Path::new(&r.state.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    since.push(format!("{} commit{} in {}: {}", subj.len(), if subj.len() == 1 { "" } else { "s" }, name, subj.iter().take(5).cloned().collect::<Vec<_>>().join("; ")));
+                }
+            }
+            let later: Vec<&SessionSummary> = mine.iter().filter(|s| s.last_at.as_deref().unwrap_or("") > pause.at.as_str()).collect();
+            if !later.is_empty() {
+                since.push(format!(
+                    "{} session{} since you paused: {}",
+                    later.len(),
+                    if later.len() == 1 { "" } else { "s" },
+                    later.iter().take(5).map(|s| s.title.as_str()).collect::<Vec<_>>().join("; ")
+                ));
+            }
+        }
+        Some(ProjectDetail {
+            summary: summ,
+            repos: repos.into_iter().map(|r| r.state).collect(),
+            sessions: mine,
+            ideas: ideas.iter().filter(|x| x.project.as_deref() == Some(id)).map(|x| i.idea_out(x, &projects)).collect(),
+            last_pause: pause.map(checkpoint_of),
+            since_pause: since,
+            could_not_check: failed,
+        })
+    }
+
+    fn search(&self, query: &str) -> Vec<(SessionSummary, String)> {
+        let i = &self.inner;
+        let q = query.trim().to_lowercase();
+        if q.chars().count() < 2 {
+            return Vec::new();
+        }
+        let projects = i.store.load_projects();
+        let infos = i.live();
+        let now = util::now();
+        let hider = i.questions.hider();
+        let mut accs = i.indexer.all_lite();
+        accs.retain(|a| !hider.hides(&a.id, a.launch_cwd.as_deref()));
+        accs.sort_by(|a, b| b.last_at.cmp(&a.last_at));
+        let mut hits = Vec::new();
+        for acc in accs {
+            let title = index::title_of(&acc);
+            let mut m = [Some(title.as_str()), acc.away_summary.as_deref(), acc.first_prompt.as_deref(), acc.last_prompt_meta.as_deref()].into_iter().find_map(|f| snippet(f, &q));
+            if m.is_none()
+                && let Some(full) = i.indexer.read_acc(&acc.id)
+            {
+                m = full.prompts_list.iter().rev().find_map(|p| snippet(Some(&p.text), &q));
+                if m.is_none() {
+                    m = full.files.iter().find(|(p, _)| p.to_lowercase().contains(&q)).map(|(p, _)| index::short_path(p, &i.paths.home));
+                }
+            }
+            if let Some(m) = m {
+                let mut s = i.summary(&acc, &projects, &infos, now, false);
+                i.overrides.apply(&mut s, &projects);
+                hits.push((s, m));
+                if hits.len() >= 50 {
+                    break;
+                }
+            }
+        }
+        hits
+    }
+
+    fn ideas(&self) -> Vec<Idea> {
+        let projects = self.inner.store.load_projects();
+        self.inner.store.list_ideas().iter().map(|x| self.inner.idea_out(x, &projects)).collect()
+    }
+
+    fn add_idea(&self, text: &str, project: Option<&str>) -> Result<Idea, String> {
+        let projects = self.inner.store.load_projects();
+        if let Some(p) = project
+            && store::project_by_id(p, &projects).is_none()
+        {
+            return Err("No project with that id.".into());
+        }
+        let rec = self.inner.store.add_idea(text, project, "typed", None).map_err(|e| e.0)?;
+        Ok(self.inner.idea_out(&rec, &projects))
+    }
+
+    fn set_idea(&self, id: &str, state: Option<&str>, project: Option<Option<&str>>) -> Result<Idea, String> {
+        let projects = self.inner.store.load_projects();
+        if let Some(Some(p)) = project
+            && store::project_by_id(p, &projects).is_none()
+        {
+            return Err("No project with that id.".into());
+        }
+        let rec = self.inner.store.set_idea(id, state, project).map_err(|e| e.0)?;
+        Ok(self.inner.idea_out(&rec, &projects))
+    }
+
+    fn pause(&self, project: &str, note: &str, next: &str) -> Result<Checkpoint, String> {
+        let i = &self.inner;
+        let projects = i.store.load_projects();
+        let p = store::project_by_id(project, &projects).ok_or("No project with that id.")?;
+        let (repos, _) = gitinfo::project_git(p, true);
+        let mut git = Map::new();
+        for r in &repos {
+            git.insert(r.state.path.clone(), serde_json::json!({"branch": r.state.branch, "head": r.state.head, "ahead": r.state.ahead}));
+        }
+        let prev = i.store.last_pauses().remove(&p.id);
+        let sessions: Vec<String> = i
+            .all_summaries(&projects, false)
+            .into_iter()
+            .filter(|s| s.project.as_deref() == Some(p.id.as_str()) && (s.state != State::Ended || prev.as_ref().is_none_or(|pr| s.last_at.as_deref().unwrap_or("") > pr.at.as_str())))
+            .map(|s| s.id)
+            .take(200)
+            .collect();
+        let rec = i.store.add_pause(&p.id, note, next, git, sessions).map_err(|e| e.0)?;
+        Ok(checkpoint_of(&rec))
+    }
+
+    fn add_project(&self, path: &str) -> Result<ProjectSummary, String> {
+        let p = self.inner.store.add_project(path).map_err(|e| e.0)?;
+        Ok(self.project_summary_now(&p))
+    }
+
+    fn remove_project(&self, id: &str, removed: bool) -> Result<ProjectSummary, String> {
+        let p = self.inner.store.set_project_removed(id, removed).map_err(|e| e.0)?;
+        Ok(self.project_summary_now(&p))
+    }
+
+    fn go_to(&self, session: &str, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
+        if session.is_empty() {
+            return fail("Say which session.");
+        }
+        let infos = i.live();
+        let info = infos.get(session);
+        let projects = i.store.load_projects();
+        let acc = i.indexer.get_lite(session);
+        if let Some(info) = info.filter(|x| x.alive) {
+            // The shared map; if it has no tab for this session, read Konsole afresh before deciding
+            // the session is in the background (a second attach is worse than a short wait).
+            let loc = i.location(info.pid).or_else(|| {
+                i.refresh_locations(true);
+                i.location(info.pid)
+            });
+            let title = i.title_for(session, Some(info), &projects);
+            if loc.is_none()
+                && let Some(job) = &info.job_id
+            {
+                // A background session no tab shows: a new Konsole window attached to it.
+                let cmd = format!("claude attach {job}");
+                let cwd = info.cwd.clone().or_else(|| acc.as_ref().and_then(|a| a.launch_cwd.clone()));
+                let (mut r, konsole) = i.desktop.reopen_at(cwd.as_deref(), &cmd, dry_run);
+                if let Some(k) = konsole {
+                    let b = i.look.bring(k, dry_run);
+                    r.steps.extend(b.steps);
+                }
+                if r.ok {
+                    let pre = if dry_run { "Dry run. " } else { "" };
+                    r.message = format!("{pre}{title} runs in the background. Opened it in a new Konsole window ({cmd}).");
+                }
+                return r;
+            }
+            let mut r = i.desktop.jump(loc.as_ref(), &title, dry_run);
+            if r.ok
+                && let Some(l) = &loc
+            {
+                // Then straight to the window, by the desktop's own means; never a notification.
+                let b = i.look.bring(l.konsole_pid, dry_run);
+                r.steps.extend(b.steps);
+                if b.ok && !dry_run {
+                    r.message = format!("Went to {title} ({}).", l.label.clone().unwrap_or_else(|| l.tab_title.clone()));
+                }
+            }
+            return r;
+        }
+        let Some(acc) = acc else {
+            return fail("No session with that id.");
+        };
+        let cmd = info.and_then(|x| x.resume_command.clone()).unwrap_or_else(|| if acc.agent == "codex" { format!("codex resume {session}") } else { format!("claude --resume {session}") });
+        let cwd = acc.launch_cwd.clone().or_else(|| info.and_then(|x| x.cwd.clone()));
+        let (mut r, konsole) = i.desktop.reopen_at(cwd.as_deref(), &cmd, dry_run);
+        if let Some(k) = konsole {
+            r.steps.extend(i.look.bring(k, dry_run).steps);
+        }
+        r
+    }
+
+    fn processes(&self) -> ProcOverview {
+        self.inner.proc_overview()
+    }
+
+    // ---- Disk, resources and attribution (added 2026-11-20) ----
+
+    fn measure_disk(&self, project: Option<&str>) {
+        let mut d = lock(&self.inner.disk);
+        let p = project.unwrap_or("").to_string();
+        if !d.asked.contains(&p) {
+            d.asked.push(p);
+        }
+    }
+
+    fn clear_disk(&self, path: &str, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let Some(report) = lock(&i.disk).report.clone() else {
+            return ActionResult { ok: false, message: "Wake hasn't measured the disk yet.".into(), steps: vec![] };
+        };
+        let owner = report.projects.iter().find(|p| p.items.iter().any(|x| x.path == path)).map(|p| p.project.clone());
+        let projects = i.store.load_projects();
+        let working = owner.as_deref().and_then(|id| {
+            let busy = i.all_summaries(&projects, true).iter().any(|s| s.state == State::Working && s.project.as_deref() == Some(id));
+            busy.then(|| store::project_by_id(id, &projects).map_or(id.to_string(), |p| p.name.clone()))
+        });
+        let r = disk::clear(&report, path, working.as_deref(), &i.disk_places, dry_run);
+        if r.ok && !dry_run {
+            i.forget_disk_item(path, owner.as_deref());
+        }
+        r
+    }
+
+    fn remove_worktree(&self, path: &str, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let Some(report) = lock(&i.disk).report.clone() else {
+            return ActionResult { ok: false, message: "Wake hasn't measured the disk yet.".into(), steps: vec![] };
+        };
+        let owner = report.projects.iter().find(|p| p.items.iter().any(|x| x.path == path)).map(|p| p.project.clone());
+        let r = disk::remove_worktree(&report, path, &i.disk_places, dry_run);
+        if r.ok && !dry_run {
+            i.forget_disk_item(path, owner.as_deref());
+        }
+        r
+    }
+
+    fn set_session_project(&self, session: &str, project: Option<Option<&str>>) -> Result<(), String> {
+        let i = &self.inner;
+        if let Some(Some(p)) = project
+            && store::project_by_id(p, &i.store.load_projects()).is_none()
+        {
+            return Err("No project with that id.".into());
+        }
+        i.overrides.set(&i.store.writer, session, project)?;
+        *lock(&i.procs_cache) = None;
+        Ok(())
+    }
+
+    fn stop(&self, pid: u32, start_ticks: Option<u64>, how: StopHow, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        *lock(&i.live_cache) = None;
+        let infos = i.live();
+        let projects = i.store.load_projects();
+        let title = |info: &LiveInfo| Some(i.title_for(&info.session_id, Some(info), &projects));
+        let r = procs::stop(&i.explorer, i.actor.as_ref(), &infos, &title, pid, start_ticks, how, dry_run);
+        *lock(&i.live_cache) = None;
+        r
+    }
+
+    fn screen(&self, session: &str) -> Option<Screen> {
+        let i = &self.inner;
+        let infos = i.live();
+        let info = infos.get(session).filter(|x| x.alive)?.clone();
+        // The one tab assignment every view uses; without one, a background job's logs.
+        let loc = i.location(info.pid);
+        if loc.is_none() && info.job_id.is_none() {
+            return None;
+        }
+        Some(i.screens.get_or(session, || match (&loc, &info.job_id) {
+            (Some(l), _) => look::read_konsole(&i.runner, l),
+            (None, Some(job)) => look::read_logs(&i.runner, job),
+            (None, None) => unreachable!(),
+        }))
+    }
+
+    fn agent_choices(&self) -> Vec<brief::Agent> {
+        let mut v = vec![brief::Agent::Claude];
+        if desktop::which("codex").is_some() {
+            v.push(brief::Agent::Codex);
+        }
+        v
+    }
+
+    fn brief_command(&self, agent: brief::Agent, id: &str) -> Option<String> {
+        brief::command(agent, &brief::path(&self.inner.paths.data, id))
+    }
+
+    fn start_agent(&self, req: &brief::StartAgent, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
+        let projects = i.store.load_projects();
+        let Some(p) = store::project_by_id(&req.project, &projects).filter(|p| !p.removed) else {
+            return fail("No tracked project with that id.");
+        };
+        let Some(agent) = brief::Agent::from_id(&req.agent).filter(|a| self.agent_choices().contains(a)) else {
+            return fail("That agent isn't installed here.");
+        };
+        if req.ideas.is_empty() {
+            return fail("Pick at least one idea.");
+        }
+        let ideas = i.store.list_ideas();
+        for id in &req.ideas {
+            match ideas.iter().find(|x| &x.id == id) {
+                None => return fail("One of those ideas is gone."),
+                Some(x) if x.project.as_deref() != Some(p.id.as_str()) => {
+                    return fail(&format!("Those ideas aren't all for {}. Start one agent per project.", p.name));
+                }
+                Some(_) => {}
+            }
+        }
+        if req.brief.trim().is_empty() {
+            return fail("The brief is empty.");
+        }
+        let Some(root) = p.roots.iter().find(|r| std::path::Path::new(r).is_dir()) else {
+            return fail(&format!("{}'s folder is no longer there.", p.name));
+        };
+        let briefs = i.paths.data.join("briefs");
+        let path = brief::path(&i.paths.data, &req.id);
+        let Some(cmd) = brief::command(agent, &path) else {
+            return fail("Wake can't type a command for a brief in this folder (its path has a quote in it).");
+        };
+        if !dry_run && let Err(e) = brief::write(&i.store.writer, &i.paths.data, &req.id, &req.brief) {
+            return fail(&format!("Couldn't save the brief: {}", e.0));
+        }
+        let mut steps = vec![format!("write {}", path.display())];
+        let (mut r, konsole) = i.desktop.start_typed(root, &cmd, &briefs, dry_run);
+        steps.append(&mut r.steps);
+        r.steps = steps;
+        if !r.ok {
+            return r;
+        }
+        if let Some(k) = konsole {
+            let b = i.look.bring(k, dry_run);
+            r.steps.extend(b.steps);
+        }
+        if !dry_run && let Err(e) = i.store.mark_sent(&req.ideas, &p.id) {
+            r.message = format!("{} (Wake couldn't mark the ideas as sent: {})", r.message, e.0);
+            return r;
+        }
+        let pre = if dry_run { "Dry run. " } else { "" };
+        r.message = format!(
+            "{pre}{} is starting in a new Konsole window in {}.",
+            agent.label(),
+            match std::path::Path::new(root).strip_prefix(&i.paths.home) {
+                Ok(rest) => format!("~/{}", rest.display()),
+                Err(_) => root.clone(),
+            }
+        );
+        r
+    }
+
+    fn look_kind(&self) -> LookKind {
+        self.inner.look.kind()
+    }
+
+    fn look_start(&self, session: &str, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let infos = i.live();
+        let loc = infos.get(session).filter(|x| x.alive).and_then(|info| i.location(info.pid));
+        i.look.start(loc.as_ref(), dry_run)
+    }
+
+    fn look_end(&self, stay: bool, dry_run: bool) -> ActionResult {
+        self.inner.look.end(stay, dry_run)
+    }
+
+    fn look_ended(&self) -> Option<bool> {
+        self.inner.look.ended()
+    }
+
+    fn questions(&self, since: u64) -> Option<QOverview> {
+        self.inner.questions.snapshot(since)
+    }
+
+    fn ask(&self, thread: Option<&str>, question: &str, project: Option<&str>) -> Result<String, String> {
+        let ctx = match thread {
+            Some(id) => self.question_context(self.inner.questions.thread_project(id).ok_or("That thread is gone.")?.as_deref())?,
+            None => self.question_context(project)?,
+        };
+        self.inner.questions.ask(thread, question, ctx)
+    }
+
+    fn retry_question(&self, thread: &str) -> Result<(), String> {
+        let project = self.inner.questions.thread_project(thread).ok_or("That thread is gone.")?;
+        self.inner.questions.retry(thread, self.question_context(project.as_deref())?)
+    }
+
+    fn cancel_question(&self, thread: &str) -> bool {
+        self.inner.questions.cancel(thread)
+    }
+
+    fn delete_thread(&self, thread: &str) -> Result<(), String> {
+        self.inner.questions.delete(thread)
+    }
+
+    fn set_options(&self, o: &crate::settings::CoreOptions) {
+        *lock(&self.inner.opts) = *o;
+        self.inner.questions.set_ai(o.question_ai);
+    }
+
+    fn question_ais(&self) -> Vec<crate::questions::AiChoice> {
+        self.inner.questions.choices()
+    }
+
+    fn set_project_color(&self, id: &str, color: Option<&str>) -> Result<ProjectSummary, String> {
+        let p = self.inner.store.set_project_color(id, color).map_err(|e| e.0)?;
+        Ok(self.project_summary_now(&p))
+    }
+
+    fn check_remotes(&self, project: Option<&str>) {
+        lock(&self.inner.remote).asked.push(project.unwrap_or("").to_string());
+    }
+
+    fn ack_behind(&self, project: &str) {
+        lock(&self.inner.remote).watch.ack(project);
+    }
+
+    fn pull(&self, project: &str, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let refuse = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
+        let projects = i.store.load_projects();
+        let Some(p) = store::project_by_id(project, &projects).filter(|p| !p.removed) else {
+            return refuse("That project isn't tracked any more.");
+        };
+        // Decide on what the repo says now, not on what was shown a while ago.
+        let (repos, _) = gitinfo::project_git(p, true);
+        for x in &repos {
+            let prev = lock(&i.remote).checks.get(&x.state.path).cloned();
+            if let Some(prev) = prev {
+                let c = remote::recheck(&prev);
+                lock(&i.remote).checks.insert(x.state.path.clone(), c);
+            }
+        }
+        let Some(b) = i.behind_list(std::slice::from_ref(p)).into_iter().next() else {
+            return refuse(&format!("{} isn't behind any more; nothing to pull.", p.name));
+        };
+        if !b.can_pull {
+            return refuse(if b.dirty > 0 {
+                "There are uncommitted changes. Commit or stash first; Wake only pulls a clean tree."
+            } else {
+                "This branch can't fast-forward (it has commits the remote doesn't). Pull in a terminal."
+            });
+        }
+        let r = remote::pull_ff_only(&b.repo, dry_run);
+        if r.ok && !dry_run {
+            gitinfo::project_git(p, true);
+            let c = remote::check_repo(&b.repo);
+            lock(&i.remote).checks.insert(b.repo.clone(), c);
+        }
+        r
+    }
+
+    fn mark_read(&self, thread: &str) {
+        self.inner.questions.mark_read(thread)
+    }
+}
+
+impl Live {
+    /// Where a question runs: Wake's questions folder, or the project's first folder.
+    fn question_context(&self, project: Option<&str>) -> Result<crate::questions::Context, String> {
+        let q = &self.inner.questions;
+        let Some(id) = project else { return Ok(crate::questions::Context { project: None, cwd: q.dir() }) };
+        let projects = self.inner.store.load_projects();
+        let p = store::project_by_id(id, &projects).ok_or("That project isn't tracked any more.")?;
+        let root = p.roots.iter().find(|r| Path::new(r).is_dir()).ok_or_else(|| format!("{}'s folder isn't there any more.", p.name))?;
+        Ok(crate::questions::Context { project: Some(p.id.clone()), cwd: PathBuf::from(root) })
+    }
+
+    fn project_summary_now(&self, p: &ProjectRec) -> ProjectSummary {
+        let i = &self.inner;
+        let projects = i.store.load_projects();
+        i.project_summary(p, &i.all_summaries(&projects, true), &i.store.list_ideas(), &i.store.last_pauses(), util::now())
+    }
+}
+
+impl Inner {
+    /// Agent processes now (Agents view), also kept for the overview's resources.
+    fn proc_overview(&self) -> ProcOverview {
+        let i = self;
+        let infos = i.live();
+        let projects = i.store.load_projects();
+        let now = util::now();
+        let notes = i.notes();
+        i.locations_now();
+        let view = |info: &LiveInfo| i.session_view(info, &projects, now);
+        let locate = |pid: u32, _job: Option<&str>| -> Option<Location> { i.location(pid) };
+        let mut ov = i.explorer.processes(&Inputs { live: &infos, view: &view, locate: &locate, notes: &notes, now });
+        i.questions.hider().label_procs(&mut ov);
+        *lock(&i.procs_cache) = Some((Instant::now(), ov.clone()));
+        ov
+    }
+
+    /// Memory and CPU by session and project, from a process scan at most 3 s old.
+    fn resources(&self, sessions: &[SessionSummary]) -> Resources {
+        let cached = lock(&self.procs_cache).as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(3)).map(|(_, o)| o.clone());
+        let ov = cached.unwrap_or_else(|| self.proc_overview());
+        let project_of = |sid: &str| sessions.iter().find(|s| s.id == sid).and_then(|s| s.project.clone());
+        procs::resources(&ov, &project_of)
+    }
+
+    /// How each session's project was decided, when not simply by where it worked.
+    fn attribution(&self, sessions: &[SessionSummary], projects: &[ProjectRec]) -> Vec<Attribution> {
+        let answers = self.overrides.all();
+        let mut out = Vec::new();
+        for s in sessions {
+            let acc = self.indexer.get_lite(&s.id);
+            let launch = acc.as_ref().and_then(|a| a.launch_cwd.clone()).or_else(|| s.cwd.clone());
+            let how = if answers.contains_key(&s.id) {
+                "set"
+            } else {
+                match acc.as_ref().map(|a| index::attribute_how(a, projects, &self.paths.home).2) {
+                    Some(Some(index::How::Worked)) => continue,
+                    Some(Some(h)) => h.word(),
+                    _ if s.project.is_some() => continue, // a live-only session placed by its folder
+                    _ => "none",
+                }
+            };
+            let proj = s.project.as_deref().zip(s.project_name.as_deref());
+            out.push(attrib::describe(&s.id, proj, how, launch.as_deref(), &self.paths.home));
+        }
+        out
+    }
+
+    /// The last disk report, with refusals brought up to date (who is working now).
+    fn disk_report(&self, sessions: &[SessionSummary]) -> Option<DiskReport> {
+        let mut r = lock(&self.disk).report.clone()?;
+        for p in &mut r.projects {
+            let busy = sessions.iter().any(|s| s.state == State::Working && s.project.as_deref() == Some(p.project.as_str()));
+            for it in p.items.iter_mut().filter(|it| it.action == Some(DiskAction::Clear)) {
+                if busy {
+                    it.refused = Some("An agent in this project is working; it may be building into this. Try when it's idle.".into());
+                } else if it.refused.as_deref().is_some_and(|w| w.starts_with("An agent in")) {
+                    it.refused = None;
+                }
+            }
+        }
+        Some(r)
+    }
+
+    /// What disk measuring needs to know about sessions and live agents.
+    fn disk_inputs(&self, projects: &[ProjectRec]) -> (Vec<disk::SessionDisk>, Vec<disk::LiveDisk>) {
+        let sums = self.all_summaries(projects, false);
+        let by_id: HashMap<&str, &SessionSummary> = sums.iter().map(|s| (s.id.as_str(), s)).collect();
+        let answers = self.overrides.all();
+        let mut sessions = Vec::new();
+        for acc in self.indexer.all_lite() {
+            let project = match answers.get(&acc.id) {
+                Some(choice) => choice.clone(),
+                None => by_id.get(acc.id.as_str()).and_then(|s| s.project.clone()).or_else(|| index::attribute(&acc, projects, &self.paths.home).0),
+            };
+            let mut folders: Vec<String> = acc.cwd_seen.iter().map(|(k, _)| k.clone()).collect();
+            folders.extend(acc.worktrees.iter().map(|(k, _)| k.clone()));
+            sessions.push(disk::SessionDisk {
+                id: acc.id.clone(),
+                project,
+                title: index::title_of(&acc),
+                started_at: acc.started_at.clone(),
+                transcript: (acc.agent != "codex").then(|| acc.source.clone().map(PathBuf::from)).flatten(),
+                folders,
+                working: by_id.get(acc.id.as_str()).is_some_and(|s| s.state == State::Working),
+            });
+        }
+        let live = self
+            .live()
+            .values()
+            .filter(|l| l.alive)
+            .map(|l| disk::LiveDisk { pid: l.pid, session: l.session_id.clone(), title: by_id.get(l.session_id.as_str()).map(|s| s.title.clone()).unwrap_or_default() })
+            .collect();
+        (sessions, live)
+    }
+
+    /// Measure (everything, or one project) and keep the result, in memory and in disk.json.
+    fn measure_disk(&self, only: Option<&str>) {
+        let projects = self.store.load_projects();
+        let (sessions, live) = self.disk_inputs(&projects);
+        let last = lock(&self.disk).report.clone();
+        let run = disk::real_runner();
+        let progress = |r: &DiskReport| lock(&self.disk).report = Some(r.clone());
+        let report = disk::measure(&projects, only, &sessions, &live, &self.disk_places, &*run, last.as_ref(), &progress);
+        let _ = self.store.writer.write_json(&self.paths.data.join("disk.json"), &report);
+        lock(&self.disk).report = Some(report);
+    }
+
+    /// After a Clear or a Remove: drop the item from the report at once (the next measurement
+    /// confirms), and measure that project again soon.
+    fn forget_disk_item(&self, path: &str, project: Option<&str>) {
+        let mut d = lock(&self.disk);
+        if let Some(r) = d.report.as_mut() {
+            let gone = |i: &DiskItem| i.path == path || i.within.as_deref() == Some(path);
+            for p in &mut r.projects {
+                let freed: u64 = p.items.iter().filter(|i| gone(i) && i.within.as_deref() != Some(path)).map(|i| i.bytes).sum();
+                let rebuilt: u64 = p.items.iter().filter(|i| gone(i) && matches!(i.kind, DiskKind::BuildOutput | DiskKind::Cache)).map(|i| i.bytes).sum();
+                p.items.retain(|i| !gone(i));
+                p.bytes = p.bytes.saturating_sub(freed);
+                p.rebuildable = p.rebuildable.saturating_sub(rebuilt);
+            }
+            if let Some(m) = r.machine.as_mut() {
+                let rebuilt: u64 = m.items.iter().filter(|i| i.path == path).map(|i| i.bytes).sum();
+                m.items.retain(|i| i.path != path);
+                m.rebuildable = m.rebuildable.saturating_sub(rebuilt);
+            }
+            r.rebuildable = r.projects.iter().map(|p| p.rebuildable).sum::<u64>() + r.machine.as_ref().map_or(0, |m| m.rebuildable);
+        }
+        if let Some(p) = project {
+            d.asked.push(p.to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::desktop::tests::{FakeBus, konsoles};
+    use crate::procs::tests::FakeActor;
+    use crate::store::testenv::Env;
+    use std::fs;
+
+    fn make(env: &Env, bus: &FakeBus) -> (Live, Arc<FakeActor>) {
+        let actor = Arc::new(FakeActor { calls: Mutex::new(vec![]) });
+        let l = Live::new(LiveConfig { paths: env.paths.clone(), proc_root: PathBuf::from("/proc"), runner: bus.runner(), systemd_run: Some(String::new()), actor: actor.clone() });
+        l.index_now();
+        (l, actor)
+    }
+
+    fn write_session(env: &Env, sid: &str, extra: Value) {
+        let pid = std::process::id();
+        let mut rec = serde_json::json!({"pid": pid, "sessionId": sid, "status": "idle",
+            "procStart": live::proc_start(Path::new("/proc"), pid)});
+        if let (Some(o), Some(e)) = (rec.as_object_mut(), extra.as_object()) {
+            for (k, v) in e {
+                o.insert(k.clone(), v.clone());
+            }
+        }
+        fs::write(env.paths.claude.join("sessions").join(format!("{pid}.json")), rec.to_string()).unwrap();
+    }
+
+    #[test]
+    fn overview_shape() {
+        let env = Env::new();
+        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let o = l.overview();
+        assert_eq!(o.indexing.done, o.indexing.total);
+        // the fixtures are dated 2026-11-19; recent while the tests run near then, so check by id
+        let all = l.inner.all_summaries(&l.inner.store.load_projects(), false);
+        let ids: Vec<&str> = all.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids[0], "0193c2aa-0000-7c93-9c1d-5e2f8a0b4c17");
+        let s = all.iter().find(|s| s.id == "sess-aaaa").unwrap();
+        assert_eq!(s.state, State::Ended);
+        let p = o.projects.iter().find(|p| p.id == "alpha").unwrap();
+        assert_eq!(p.name, "alpha");
+        assert_eq!(p.last_summary.as_deref().filter(|_| p.last_at.is_some()), p.last_summary.as_deref());
+        // the summary serialises with the contract's names
+        let v = serde_json::to_value(s).unwrap();
+        for k in ["id", "agent", "project", "title", "state", "evidence", "subagents", "resume_command", "deleted_by_claude"] {
+            assert!(v.get(k).is_some(), "{k}");
+        }
+    }
+
+    #[test]
+    fn last_summary_comes_from_the_newest_recap() {
+        let env = Env::new();
+        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let projects = l.inner.store.load_projects();
+        let all = l.inner.all_summaries(&projects, false);
+        let alpha = store::project_by_id("alpha", &projects).unwrap();
+        let ps = l.inner.project_summary(alpha, &all, &[], &HashMap::new(), util::parse_iso("2026-11-20T00:00:00Z").unwrap());
+        assert_eq!(ps.last_summary.as_deref(), Some("You tidied the parser; tests pass."));
+        assert_eq!(ps.sessions_14d, 1);
+    }
+
+    #[test]
+    fn session_subagent_search() {
+        let env = Env::new();
+        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let d = l.session("sess-aaaa").unwrap();
+        assert_eq!(d.subagents.len(), 2);
+        assert_eq!(d.summary.subagents.total, 2);
+        assert_eq!(l.subagent("sess-aaaa", "a1").unwrap().steps.len(), 3);
+        assert!(l.session("nope").is_none());
+        let r = l.search("parser.py");
+        assert_eq!(r.iter().map(|(s, _)| s.id.as_str()).collect::<Vec<_>>(), ["sess-aaaa"]);
+        assert!(r[0].1.contains("parser.py"));
+        assert!(l.search("x").is_empty());
+    }
+
+    #[test]
+    fn ideas_pause_projects() {
+        let env = Env::new();
+        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let i = l.add_idea("try a dark theme", Some("alpha")).unwrap();
+        assert_eq!((i.project_name.as_deref(), i.state.as_str()), (Some("alpha"), "inbox"));
+        assert_eq!(l.set_idea(&i.id, Some("done"), None).unwrap().state, "done");
+        assert_eq!(l.ideas()[0].state, "done");
+        assert!(l.add_idea("", None).is_err());
+        assert!(l.add_idea("x", Some("nope")).is_err());
+        let cp = l.pause("alpha", "stopping", "parser").unwrap();
+        assert!(cp.sessions.contains(&"sess-aaaa".to_string()));
+        let pd = l.project("alpha").unwrap();
+        assert_eq!(pd.last_pause.unwrap().note, "stopping");
+        assert_eq!(pd.summary.paused.unwrap().note, "stopping");
+        assert!(l.remove_project("alpha", true).unwrap().removed);
+        assert!(!l.remove_project("alpha", false).unwrap().removed);
+        let nd = env.paths.home.join("elsewhere");
+        fs::create_dir_all(&nd).unwrap();
+        assert_eq!(l.add_project(&nd.to_string_lossy()).unwrap().id, "elsewhere");
+        assert!(l.add_project("/no/such").is_err());
+    }
+
+    #[test]
+    fn starting_an_agent_writes_the_brief_types_the_command_and_marks_the_ideas_sent() {
+        let env = Env::new();
+        let bus = FakeBus::new(konsoles());
+        let (l, _) = make(&env, &bus);
+        let a = l.add_idea("say \"hi\" for $5 `now`", Some("alpha")).unwrap();
+        let b = l.add_idea("second", Some("alpha")).unwrap();
+        let other = l.add_idea("elsewhere", Some("beta")).unwrap();
+        let loose = l.add_idea("unsorted", None).unwrap();
+        let id = brief::new_id();
+        let text = brief::brief_text("alpha", &[&a.text, &b.text]);
+        let req = |ideas: Vec<String>| brief::StartAgent { project: "alpha".into(), ideas, brief: text.clone(), agent: "claude".into(), id: id.clone() };
+        // Mixing projects, or an idea with none, is refused before anything happens.
+        for ideas in [vec![a.id.clone(), other.id.clone()], vec![loose.id.clone()]] {
+            let r = l.start_agent(&req(ideas), false);
+            assert!(!r.ok && r.message.contains("aren't all for alpha"), "{r:?}");
+        }
+        assert!(!l.start_agent(&brief::StartAgent { agent: "gemini".into(), ..req(vec![a.id.clone()]) }, false).ok);
+        assert!(bus.writes().is_empty());
+        let path = brief::path(&env.paths.data, &id);
+        // A dry run says what it would do and writes nothing.
+        let r = l.start_agent(&req(vec![a.id.clone(), b.id.clone()]), true);
+        assert!(r.ok, "{r:?}");
+        assert!(!path.exists() && bus.writes().is_empty());
+        assert_eq!(l.ideas().iter().filter(|i| i.state == "sent").count(), 0);
+        // For real: the brief file, a new window running the command, the ideas sent.
+        let r = l.start_agent(&req(vec![a.id.clone(), b.id.clone()]), false);
+        assert!(r.ok, "{r:?}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), format!("{text}\n"));
+        let cmd = l.brief_command(brief::Agent::Claude, &id).unwrap();
+        let started: Vec<Vec<String>> = bus.writes().into_iter().filter(|c| c[0] == "setsid").collect();
+        assert_eq!(started.len(), 1);
+        let alpha = env.paths.projects.join("alpha").to_string_lossy().to_string();
+        assert_eq!(started[0][4], alpha, "the window opens in the project's folder");
+        assert!(started[0][8].starts_with(&format!("{cmd}; exec ")), "{:?}", started[0]);
+        assert!(!bus.writes().iter().flatten().any(|x| x == "sendText"), "nothing typed into a terminal");
+        let ideas = l.ideas();
+        for x in [&a, &b] {
+            let i = ideas.iter().find(|i| i.id == x.id).unwrap();
+            assert_eq!((i.state.as_str(), i.project.as_deref()), ("sent", Some("alpha")));
+            assert!(i.sent_at.is_some());
+        }
+        assert_eq!(ideas.iter().find(|i| i.id == other.id).unwrap().state, "inbox");
+        assert_eq!(l.overview().projects.iter().find(|p| p.id == "alpha").unwrap().ideas, 0, "sent ideas leave the count to sort");
+    }
+
+    #[test]
+    fn go_to_jumps_or_reopens() {
+        let env = Env::new();
+        let bus = FakeBus::new(konsoles());
+        let (l, _) = make(&env, &bus);
+        // ended -> reopen in the launch folder with the resume command, dry run
+        let r = l.go_to("sess-aaaa", true);
+        assert!(r.ok, "{r:?}");
+        assert!(r.steps[0].starts_with("setsid -f konsole --workdir") && r.steps[0].contains("claude --resume sess-aaaa; exec "), "{:?}", r.steps);
+        assert!(r.steps[0].contains(&env.paths.home.to_string_lossy().to_string()));
+        assert!(!l.go_to("nope", true).ok);
+        // live, background, no tab -> a new window running `claude attach <job>`
+        write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01", "cwd": env.paths.home.to_string_lossy()}));
+        *lock(&l.inner.live_cache) = None;
+        let r = l.go_to("sess-aaaa", true);
+        assert!(r.ok, "{r:?}");
+        assert!(r.message.contains("runs in the background"), "{r:?}");
+        assert!(r.steps[0].contains("claude attach jobtest01; exec "), "{:?}", r.steps);
+        // live in a known tab -> jump with "project, title"
+        l.inner
+            .locations
+            .write()
+            .unwrap()
+            .map
+            .insert(std::process::id(), Location { konsole_pid: 3264, service: "org.kde.konsole-3264".into(), window: 1, session: 4, tab_index: 1, tab_title: "invites".into(), label: None });
+        let r = l.go_to("sess-aaaa", true);
+        assert!(r.ok, "{r:?}");
+        assert_eq!(r.steps.len(), 1, "select the tab; no notification (this desktop has no link)");
+        assert!(r.message.contains("It's in"), "{}", r.message);
+        assert!(bus.writes().is_empty());
+    }
+
+    #[test]
+    fn screen_reads_the_tab_or_the_background_logs_and_never_an_ended_session() {
+        let env = Env::new();
+        let bus = FakeBus::new(konsoles());
+        let inner = bus.runner();
+        let seen: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(vec![]));
+        let seen2 = seen.clone();
+        // Konsole's text and `claude logs` are faked here; everything else is the fake bus.
+        let runner: Runner = Arc::new(move |argv: &[String], t: Duration| {
+            seen2.lock().unwrap().push(argv.to_vec());
+            if argv[0] == "claude" {
+                return (0, "\u{1b}[32mworking on it\u{1b}[0m\n".into());
+            }
+            if argv.iter().any(|a| a == "getAllDisplayedText") {
+                return (0, "$ cargo test\nok\n".into());
+            }
+            inner(argv, t)
+        });
+        let actor = Arc::new(FakeActor { calls: Mutex::new(vec![]) });
+        let l = Live::new(LiveConfig { paths: env.paths.clone(), proc_root: PathBuf::from("/proc"), runner, systemd_run: Some(String::new()), actor });
+        l.index_now();
+        assert_eq!(l.screen("sess-aaaa"), None, "an ended session has no screen");
+        write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01"}));
+        *lock(&l.inner.live_cache) = None;
+        l.inner.locations.write().unwrap().ok_at = Some(Instant::now());
+        let s = l.screen("sess-aaaa").unwrap();
+        assert_eq!(s.lines, vec!["working on it"]);
+        assert_eq!(s.source, "claude logs");
+        assert_eq!(l.screen("sess-aaaa").unwrap(), s, "a second poll within 250 ms shares the read");
+        assert_eq!(seen.lock().unwrap().iter().filter(|c| c[0] == "claude").count(), 1);
+        l.inner.locations.write().unwrap().map.insert(
+            std::process::id(),
+            Location { konsole_pid: 3264, service: "org.kde.konsole-3264".into(), window: 1, session: 4, tab_index: 1, tab_title: "invites".into(), label: Some("Konsole 2 · tab 2".into()) },
+        );
+        std::thread::sleep(look::SCREEN_CACHE);
+        let s = l.screen("sess-aaaa").unwrap();
+        assert_eq!((s.lines.len(), s.source.as_str()), (2, "Konsole 2 · tab 2"));
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().all(|c| c[0] != "claude" || c[1] == "logs"), "no other claude command, ever");
+        assert!(bus.writes().is_empty());
+    }
+
+    #[test]
+    fn hides_unused_sessions_and_shows_named_live_ones() {
+        let env = Env::new();
+        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        write_session(&env, "brand-new-1234", serde_json::json!({"name": "brand-new", "cwd": "/"}));
+        *lock(&l.inner.live_cache) = None;
+        let all = l.inner.all_summaries(&l.inner.store.load_projects(), true);
+        assert!(all.iter().all(|s| s.id != "brand-new-1234")); // name is its own id prefix: unused
+        write_session(&env, "brand-new-1234", serde_json::json!({"name": "fix-the-parser", "cwd": "/"}));
+        *lock(&l.inner.live_cache) = None;
+        let all = l.inner.all_summaries(&l.inner.store.load_projects(), true);
+        let s = all.iter().find(|s| s.id == "brand-new-1234").unwrap();
+        assert_eq!(s.title, "fix-the-parser");
+        assert_eq!(s.state, State::Idle);
+    }
+
+    #[test]
+    fn card_and_plugin_request() {
+        let env = Env::new();
+        let bus = FakeBus::new(konsoles());
+        let (l, _) = make(&env, &bus);
+        assert!(l.plugin_tick(true).is_none());
+        let card: Value = store::read_json(&env.paths.data.join("card/card.json")).unwrap();
+        for k in ["working", "waiting", "idle", "ideas", "top", "sessions", "updatedAt"] {
+            assert!(card.get(k).is_some(), "{k}");
+        }
+        fs::create_dir_all(&env.paths.plugin_state).unwrap();
+        let req = env.paths.plugin_state.join("request.json");
+        fs::write(&req, serde_json::json!({"id": "r1", "action": "jump", "session": "sess-aaaa", "at": util::now_iso()}).to_string()).unwrap();
+        let r = l.plugin_tick(true).expect("acted on the request");
+        assert!(r.ok && r.message.starts_with("Dry run."), "{r:?}");
+        assert_eq!(fs::read_to_string(env.paths.data.join("card/last-request")).unwrap(), "r1");
+        // the same request again (touched) is ignored; an old one is recorded but not acted on
+        fs::write(&req, serde_json::json!({"id": "r1", "action": "jump", "session": "sess-aaaa", "at": util::now_iso()}).to_string() + " ").unwrap();
+        assert!(l.plugin_tick(true).is_none());
+        fs::write(&req, serde_json::json!({"id": "r2", "action": "jump", "session": "sess-aaaa", "at": "2020-01-01T00:00:00Z"}).to_string()).unwrap();
+        assert!(l.plugin_tick(true).is_none());
+        assert!(bus.writes().is_empty());
+    }
+
+    #[test]
+    fn processes_and_stop_never_act_in_dry_run() {
+        let env = Env::new();
+        let (l, actor) = make(&env, &FakeBus::new(konsoles()));
+        let o = l.processes();
+        assert!(o.procs.iter().all(|p| p.pid != std::process::id()));
+        let r = l.stop(std::process::id(), None, StopHow::Kill, true);
+        assert!(!r.ok);
+        let r = l.stop(1, None, StopHow::Terminate, false);
+        assert!(!r.ok);
+        assert!(actor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn locations_are_kept_briefly_and_flagged_when_konsole_fails() {
+        let env = Env::new();
+        let bus = FakeBus::new(konsoles());
+        let (l, _) = make(&env, &bus);
+        assert!(l.inner.locations_unsure().unwrap().contains("still finding"));
+        l.inner.refresh_locations(true);
+        assert_eq!(l.inner.locations_unsure(), None);
+        let here = Location { konsole_pid: 3264, service: "org.kde.konsole-3264".into(), window: 1, session: 4, tab_index: 1, tab_title: "invites".into(), label: None };
+        l.inner.locations.write().unwrap().map.insert(4242, here.clone());
+        // Konsole stops answering: the tab last seen stays, and the overview says it may be out of date
+        bus.fail.lock().unwrap().push("timeout");
+        l.inner.refresh_locations(true);
+        assert_eq!(l.inner.location(4242), Some(here));
+        let why = l.overview().locations_unsure.unwrap();
+        assert!(why.contains("did not answer") && why.contains("Showing the tabs seen"), "{why}");
+        // ...but not for long
+        l.inner.locations.write().unwrap().ok_at = Some(Instant::now() - Duration::from_secs(20));
+        l.inner.refresh_locations(true);
+        assert_eq!(l.inner.location(4242), None);
+        assert!(!l.overview().locations_unsure.unwrap().contains("Showing"));
+        assert!(bus.writes().is_empty());
+    }
+
+    #[test]
+    fn a_broken_project_list_is_reported_in_the_overview() {
+        let env = Env::new();
+        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        fs::write(env.paths.data.join("projects.json"), "{\"projects\": [").unwrap();
+        let o = l.overview();
+        assert!(o.index_error.as_deref().is_some_and(|e| e.contains("project list could not be understood")), "{:?}", o.index_error);
+        assert!(!o.projects.is_empty());
+    }
+
+    #[test]
+    fn building_while_behind_alarms_and_notifies_once_through_the_fake() {
+        use crate::remote::tests::{commit, g, trio};
+        let env = Env::new();
+        let bus = FakeBus::new(konsoles());
+        let (l, _) = make(&env, &bus);
+        let sent: Arc<Mutex<Vec<remote::Notice>>> = Arc::default();
+        let s2 = sent.clone();
+        l.set_notifier(Arc::new(move |n: &remote::Notice| s2.lock().unwrap().push(n.clone())));
+        let t = trio();
+        let here = t.here.to_string_lossy().into_owned();
+        let p = l.add_project(&here).unwrap();
+        // Someone pushes; Wake asks the remote (ls-remote against the scratch bare repo).
+        commit(&t.other, "b.txt", "b\n");
+        g(&t.other, &["push", "-q"]);
+        l.check_remotes(Some(&p.id));
+        l.inner.check_remotes_pass();
+        let b = l.overview().behind.unwrap().into_iter().find(|b| b.project == p.id).unwrap();
+        assert_eq!(b.count, None);
+        assert!(b.can_pull && b.alarm.is_none());
+        assert!(b.line.starts_with("Behind origin/main (new commits on the remote"), "{}", b.line);
+        // Calm while idle: the first look is the baseline.
+        l.inner.watch_behind();
+        l.inner.watch_behind();
+        assert!(sent.lock().unwrap().is_empty());
+        // A session starts working in it: one alarm, one notification.
+        write_session(&env, "build-1", serde_json::json!({"name": "fix-the-build", "cwd": here, "status": "busy", "statusUpdatedAt": (util::now() * 1000.0) as i64}));
+        *lock(&l.inner.live_cache) = None;
+        l.inner.watch_behind();
+        let b = l.overview().behind.unwrap().into_iter().find(|b| b.project == p.id).unwrap();
+        assert_eq!(b.alarm.as_deref(), Some("a session started working"));
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        assert!(sent.lock().unwrap()[0].body.contains("git pull --ff-only"));
+        // Files change too: still the one notification.
+        std::fs::write(t.here.join("new.txt"), "n").unwrap();
+        l.inner.watch_behind();
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        // Acknowledged: the alarm goes, and the marker stays.
+        l.ack_behind(&p.id);
+        let b = l.overview().behind.unwrap().into_iter().find(|b| b.project == p.id).unwrap();
+        assert!(b.alarm.is_none());
+        assert!(!b.can_pull, "an untracked file makes the tree not clean");
+        assert!(!l.pull(&p.id, true).ok);
+        std::fs::remove_file(t.here.join("new.txt")).unwrap();
+        assert!(l.pull(&p.id, true).ok);
+        assert!(!t.here.join("b.txt").exists());
+        // Pulled: caught up, the episode ends.
+        let r = l.pull(&p.id, false);
+        assert!(r.ok, "{r:?}");
+        l.inner.watch_behind();
+        assert!(l.overview().behind.unwrap().iter().all(|b| b.project != p.id));
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        assert!(bus.writes().is_empty(), "no real D-Bus call went out");
+    }
+}

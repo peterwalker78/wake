@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Wake needs GTK 4.14 and Pango 1.56, newer than Ubuntu's, so it builds on the Fedora it is
+  # developed on.
+  test:
+    runs-on: ubuntu-latest
+    container: registry.fedoraproject.org/fedora:44
+    steps:
+      - name: Toolchain and libraries
+        run: |
+          dnf install -y --setopt=install_weak_deps=False git gcc rustup pkgconf-pkg-config \
+            gtk4-devel pango-devel glib2-devel ShellCheck
+          rustup-init -y --profile minimal --default-toolchain none
+      - uses: actions/checkout@v4
+      - name: The toolchain rust-toolchain.toml names
+        run: . ~/.cargo/env && rustup toolchain install
+      - name: Format
+        run: . ~/.cargo/env && cargo fmt --check
+      - name: Clippy
+        run: . ~/.cargo/env && cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: . ~/.cargo/env && cargo test --locked
+      - name: Scripts
+        run: shellcheck tests/*.sh

@@ -1081,8 +1081,20 @@ fn apply_show(ui: &Ui, show: &str) {
         "behind" | "behind-pull" | "behind-wait" => crate::behind::show(ui, what, arg),
         "disk" | "disk-machine" | "disk-clear" | "disk-remove" | "set-project" => crate::disk::show(ui, what, arg), // disk.rs hook
         "readouts" => agents::toggle_readouts(ui),
+        // Projects with "Track a folder" open.
+        "track" => {
+            set_view(ui, View::Projects);
+            ui.st.borrow_mut().adding = true;
+            ui.st.borrow_mut().drawn.remove(&View::Projects);
+            views::render_view(ui);
+        }
         // An error toast (a long one unless given): how it wraps.
-        "toast" => toast(ui, arg.as_deref().unwrap_or("Couldn't stop 3 of 5: claude (PID 48211) belongs to another user, so Wake can't stop it; codex (PID 50122) had already ended; claude (PID 50310) didn't stop when asked."), true),
+        "toast" => toast(
+            ui,
+            arg.as_deref()
+                .unwrap_or("Couldn't stop 3 of 5: claude (PID 48211) belongs to another user, so Wake can't stop it; codex (PID 50122) had already ended; claude (PID 50310) didn't stop when asked."),
+            true,
+        ),
         // As if Konsole had not answered for a while: "tab unknown" and the status bar's warning.
         "tabs-unknown" => {
             let since = ui.st.borrow().unsure_since;
@@ -1222,7 +1234,9 @@ fn apply_show(ui: &Ui, show: &str) {
                 agents::stop_one(ui, pid);
             }
         }
-        _ => eprintln!("wake: --show takes scroll[:px], panel-scroll[:px], agents-open, readouts, switcher, switcher-subs, session[:id], project[:id], pause, stale, stop[:pid], toast[:text] or tabs-unknown"),
+        _ => eprintln!(
+            "wake: --show takes scroll[:px], panel-scroll[:px], agents-open, readouts, switcher, switcher-subs, session[:id], project[:id], pause, stale, stop[:pid], toast[:text], tabs-unknown or track"
+        ),
     }
 }
 
@@ -2107,11 +2121,7 @@ pub fn go_to(ui: &Ui, id: &str) {
         } else {
             "Wake can't find a terminal tab for this session.".to_string()
         };
-        toast(
-            ui,
-            &msg,
-            true,
-        );
+        toast(ui, &msg, true);
         return;
     }
     let id = id.to_string();

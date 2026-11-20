@@ -1649,7 +1649,8 @@ mod tests {
     fn stop_toasts_name_what_stopped_and_list_each_refusal() {
         let res = |ok: bool, m: &str| ActionResult { ok, message: m.into(), steps: vec![] };
         let names = vec![(1, "fix the login page".to_string()), (2, "spare".to_string()), (3, "old".to_string())];
-        let results = vec![(1, res(true, "Wake sent the polite stop signal (SIGTERM) to PID 1.")), (2, res(false, "Could not stop PID 2: not permitted.")), (3, res(false, "PID 3 had already ended."))];
+        let results =
+            vec![(1, res(true, "Wake sent the polite stop signal (SIGTERM) to PID 1.")), (2, res(false, "Could not stop PID 2: not permitted.")), (3, res(false, "PID 3 had already ended."))];
         let msg = stopped_all_words(&names, &results);
         assert_eq!(msg, "Asked 1 agent to stop: “fix the login page” (PID 1).\nCould not stop PID 2: not permitted.\nPID 3 had already ended.");
         for how in [StopHow::AgentStop, StopHow::Terminate, StopHow::Kill] {

@@ -397,7 +397,8 @@ pub fn render_rail(ui: &Ui) {
             .into_iter()
             .map(|v| {
                 let n = match v {
-                    View::Monitor => Some((c.working + c.waiting + c.idle, c.waiting > 0)),
+                    // The rows "Open now" shows, lost track included.
+                    View::Monitor => Some((ov.sessions.iter().filter(|s| matches(s, Filter::Live)).count() as u32, c.waiting > 0)),
                     View::Ideas if ov.ideas > 0 => Some((ov.ideas, false)),
                     View::Agents => st.procs.as_ref().map(agents::stale_summary).filter(|(n, _)| *n > 0).map(|(n, _)| (n, true)),
                     // Questions: (unread answers, answering now), drawn as a dot.
@@ -487,6 +488,9 @@ fn fill_rail(ui: &Ui, nav: &gtk::Box, plist: &gtk::Box, slim: bool, view: View, 
             if v == View::Agents {
                 b.set_tooltip_text(Some(&format!("Agents (key 2): {n} look stale")));
             }
+            if v == View::Monitor {
+                b.set_tooltip_text(Some(&format!("Monitor (key 1): {}", fmt::pl(n, "open session", "open sessions"))));
+            }
             inner.append(&l);
         }
         if slim {
@@ -566,7 +570,7 @@ fn rail_project(ui: &Ui, id: &str) {
 /// The status bar: whether the data is fresh, and at most four keys for where the keyboard is;
 /// the rest are behind `?`.
 pub fn render_status(ui: &Ui) {
-    let (view, err, last_ok, any_stale, panel) = {
+    let (view, err, last_ok, any_stale, panel, procs_at) = {
         let st = ui.st.borrow();
         if st.ov.is_none() {
             return;
@@ -577,7 +581,8 @@ pub fn render_status(ui: &Ui) {
             Some(app::Drawer::Project(_)) if in_panel => Some(false),
             _ => None,
         };
-        (st.view, st.ov_error.clone(), st.last_ok, st.procs.as_ref().is_some_and(|p| agents::stale_summary(p).0 > 0), panel)
+        let procs_at = st.procs.as_ref().map(|p| p.generated_at.clone());
+        (st.view, st.ov_error.clone(), st.last_ok, st.procs.as_ref().is_some_and(|p| agents::stale_summary(p).0 > 0), panel, procs_at)
     };
     let s = &ui.w.status;
     w::clear(s);
@@ -607,10 +612,19 @@ pub fn render_status(ui: &Ui) {
     let tip = if ui.demo {
         "Made-up sessions and agents: nothing here is real.".to_string()
     } else if let Some(why) = tabs_unknown.filter(|_| err.is_none() && secs <= 15) {
-        format!("{why} Run `wake doctor` in a terminal to see why.")
+        format!("{why} Run wake doctor in a terminal to see why.")
     } else {
         "Wake reads your sessions and git (read only) and never writes to your projects.".to_string()
     };
+    // How fresh each part is, from the times Wake has.
+    let mut fresh = Vec::new();
+    if last_ok.is_some() {
+        fresh.push(format!("Sessions read {}", fmt::ago_secs(secs.max(0) as u64)));
+    }
+    if let Some(at) = procs_at.as_deref().map(|t| fmt::ago(Some(t))).filter(|a| !a.is_empty()) {
+        fresh.push(format!("agent processes read {at}"));
+    }
+    let tip = if ui.demo || fresh.is_empty() { tip } else { format!("{tip}\n{}.", fresh.join(" · ")) };
     conn.set_tooltip_text(Some(&tip));
     s.append(&conn);
     // Each key with its word is one piece; in a narrow window the later ones drop out (all of them
@@ -1361,8 +1375,25 @@ fn monitor(ui: &Ui) {
     let sig = format!("{filter:?}{pf:?}{compact}{stable:?}{}{:?}{colours:?}{}", crate::behind::sig(ui), prefs::sort_of(View::Monitor), loc_sig(ui));
     let Some(had_focus) = begin(ui, View::Monitor, sig) else { return };
     let vw = &ui.w.views[&View::Monitor];
+    // An empty board also says what it is for, for someone who hasn't seen it full.
+    let empty = |big: &str, small: &str, about: bool| {
+        if !about {
+            return w::empty(big, small);
+        }
+        let b = w::empty(big, "");
+        let l = w::wrap(
+            &format!(
+                "{small}\n\nWake lists every Claude Code and Codex session on this computer: which is working, which is waiting for you, and where it runs. Run wake --demo in a terminal to see a full board."
+            ),
+            &[],
+        );
+        l.set_xalign(0.0);
+        // A block about as wide as a paragraph, centred like the other empty states.
+        b.append(&w::Fit::new(&l, 0, Some(520)).upcast());
+        b
+    };
     if total == 0 {
-        vw.empty.append(&w::empty("No sessions in the last 14 days.", "Start Claude in any project. It shows up here within a few seconds."));
+        vw.empty.append(&empty("No sessions in the last 14 days.", "Start Claude in any project. It shows up here within a few seconds.", true));
         return;
     }
     if rows.is_empty() {
@@ -1371,7 +1402,7 @@ fn monitor(ui: &Ui) {
             Filter::All => "No sessions".into(),
             f => format!("No {} sessions", CHIPS.iter().find(|c| c.0 == f).map_or("", |c| c.1).to_lowercase()),
         };
-        let b = w::empty(&format!("{what}{}.", pname.map(|n| format!(" in {n}")).unwrap_or_default()), "Everything is quiet here.");
+        let b = empty(&format!("{what}{}.", pname.map(|n| format!(" in {n}")).unwrap_or_default()), "Everything is quiet here.", filter == Filter::Live);
         let ui2 = ui.clone();
         let btn = w::button("Show all sessions", None, &[], move || {
             ui2.st.borrow_mut().filter = Filter::All;
@@ -1393,7 +1424,7 @@ fn monitor(ui: &Ui) {
 pub fn git_words(g: &GitTotals) -> String {
     let mut out = Vec::new();
     if g.ahead_total > 0 {
-        out.push(amber(&format!("{} not on GitHub", fmt::pl(g.ahead_total, "commit", "commits"))));
+        out.push(amber(&format!("{} not pushed", fmt::pl(g.ahead_total, "commit", "commits"))));
     }
     if g.dirty_files > 0 {
         out.push(amber(&format!("{} edited, not committed", fmt::pl(g.dirty_files, "file", "files"))));
@@ -1401,7 +1432,7 @@ pub fn git_words(g: &GitTotals) -> String {
     if g.no_upstream > 0 {
         out.push(format!("{} only on this computer", fmt::pl(g.no_upstream, "branch", "branches")));
     }
-    if out.is_empty() { dim("all on GitHub") } else { out.join("\n") }
+    if out.is_empty() { dim("all pushed") } else { out.join("\n") }
 }
 
 /// The projects table's columns and which of them sort; "Open" only while some project has a
@@ -1447,6 +1478,18 @@ fn projects(ui: &Ui) {
         row.append(&w::label("Folder", &["meta"]));
         let entry = gtk::Entry::builder().placeholder_text("~/Projects/something").hexpand(true).build();
         row.append(&entry);
+        // Or pick it in the desktop's folder chooser: it fills the box, and Track it adds it.
+        let (ui2, entry2) = (ui.clone(), entry.clone());
+        row.append(&w::button("Choose…", None, &["ghost"], move || {
+            let d = gtk::FileDialog::builder().title("Choose a folder to track").modal(true).build();
+            let entry = entry2.clone();
+            d.select_folder(Some(&ui2.window), gtk::gio::Cancellable::NONE, move |r| {
+                if let Some(path) = r.ok().and_then(|f| f.path()) {
+                    entry.set_text(&path.to_string_lossy());
+                    entry.grab_focus();
+                }
+            });
+        }));
         let err = w::label("", &["err"]);
         let add = {
             let ui = ui.clone();
@@ -1488,7 +1531,7 @@ fn projects(ui: &Ui) {
         entry.grab_focus();
     }
     if list.is_empty() {
-        vw.empty.append(&w::empty("No projects yet.", "Wake finds git folders under ~/Projects on its first run. Track any other folder with the button above."));
+        vw.empty.append(&w::empty("No projects yet.", "Wake finds git folders under ~/Projects and the folders your sessions ran in. Track any other folder with the button above."));
         return;
     }
     let any_open = list.iter().any(|p| p.live.waiting + p.live.working + p.live.idle > 0);

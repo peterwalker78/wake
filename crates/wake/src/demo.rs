@@ -306,7 +306,7 @@ impl DemoSource {
             project: "tideline-desktop",
             title: "unfinished-work-check",
             state: State::Unknown,
-            evidence: "process gone 6 h ago, no end recorded",
+            evidence: "says busy, but nothing has changed for 6 h",
             started: 8 * HOUR,
             last: 6 * HOUR,
             minutes: 22,

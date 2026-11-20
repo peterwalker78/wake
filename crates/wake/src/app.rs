@@ -1089,6 +1089,13 @@ fn apply_show(ui: &Ui, show: &str) {
             ui.st.borrow_mut().drawn.remove(&View::Projects);
             views::render_view(ui);
         }
+        // Ideas on one of its lists: ideas:sent, ideas:done.
+        "ideas" => {
+            set_view(ui, View::Ideas);
+            ui.st.borrow_mut().idea_tab = IdeaTab::of(arg.as_deref().unwrap_or("inbox"));
+            ui.st.borrow_mut().drawn.remove(&View::Ideas);
+            views::render_view(ui);
+        }
         // An error toast (a long one unless given): how it wraps.
         "toast" => toast(
             ui,

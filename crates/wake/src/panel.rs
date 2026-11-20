@@ -1126,7 +1126,8 @@ fn project_ask(ui: &Ui, p: &ProjectSummary) -> Option<(SessionSummary, String)> 
     (last.state != State::Working).then_some((last, ask))
 }
 
-fn repo(r: &RepoState) -> gtk::Box {
+/// One repo in plain words; `unasked` when Wake couldn't ask the remote, so "in step" isn't claimed.
+fn repo(r: &RepoState, unasked: bool) -> gtk::Box {
     let b = w::vbox(3, &["repo"]);
     b.append(&w::wrap(&format!("{} · {}", fmt::base(&r.path), r.branch.as_deref().unwrap_or("no branch")), &["rn"]));
     let mut lines: Vec<(&str, String)> = Vec::new();
@@ -1149,14 +1150,17 @@ fn repo(r: &RepoState) -> gtk::Box {
     if r.untracked > 0 {
         lines.push(("", format!("{} git isn't tracking.", fmt::pl(r.untracked, "new file", "new files"))));
     }
-    if r.branches_no_upstream > 0 && !local_only {
+    // Not when the one such branch is this one, already said above.
+    if r.branches_no_upstream > 0 && !local_only && !(r.upstream.is_none() && r.branches_no_upstream == 1) {
         let n = r.branches_no_upstream;
         lines.push(("", format!("{n} of {} {} not {unpushed}.", fmt::pl(r.branches, "branch", "branches"), if n == 1 { "is" } else { "are" })));
     }
     if r.worktrees > 1 {
         lines.push(("", format!("{} (worktrees) open.", fmt::pl(r.worktrees - 1, "side copy", "side copies"))));
     }
-    if lines.is_empty() {
+    if lines.is_empty() && unasked {
+        lines.push(("", "Nothing unsaved. Wake couldn't check the remote just now.".into()));
+    } else if lines.is_empty() {
         lines.push(("ok", "In step with the remote. Nothing unsaved.".into()));
     }
     for (c, t) in lines {
@@ -1434,11 +1438,8 @@ fn project(ui: &Ui, id: &str) {
             ("in step", false)
         };
         folds.append(&fold(ui, "git", "Git", note, if warn { "amber" } else { "" }, |x| {
-            if let Some(why) = &p.remote_problem {
-                x.append(&w::wrap(why, &["ex", "plain"]));
-            }
             for r in &d.repos {
-                x.append(&repo(r));
+                x.append(&repo(r, p.remote_problem.is_some()));
             }
             x.append(&w::wrap("Read only: Wake changes a repo only when you press Pull or Remove worktree.", &["meta"]));
         }));

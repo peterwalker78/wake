@@ -1440,7 +1440,8 @@ pub fn git_words(p: &ProjectSummary) -> String {
         out.push(dim("only on this computer (no remote)"));
     }
     match (out.is_empty(), &p.remote_problem) {
-        (true, Some(why)) => dim(&glib::markup_escape_text(why)),
+        // On two lines, like the other loose ends, so the narrow column shows all of it.
+        (true, Some(why)) => dim(&glib::markup_escape_text(&why.replacen(" (", "\n(", 1))),
         (true, None) => dim("all pushed"),
         _ => out.join("\n"),
     }

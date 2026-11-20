@@ -61,7 +61,8 @@ fn project(id: &str, desc: &str, next: &str, why: &str, last: i64, ahead: u32, d
         last_summary: None,
         git_checked: true,
         color: Some(wake_core::store::default_colour(id).to_string()),
-        remote_problem: None,
+        // waypoint's remote couldn't be asked, so it isn't called in step.
+        remote_problem: (id == "waypoint").then(|| "Wake couldn't ask GitLab (offline).".into()),
     }
 }
 
@@ -194,7 +195,7 @@ impl DemoSource {
             project("tideline-desktop", "A Wayland compositor and its settings app", "Land the scope readout helpers row fix, then tag 0.9", "", 6 * HOUR, 0, 1, 0),
             project("Skyhook", "Puzzle game, itch.io build", "", "", 2 * DAY, 0, 0, 0),
             project("fernlight", "Short story site, static", "Proofread chapter 4 before it goes up", "", 3 * DAY, 0, 0, 0),
-            project("waypoint", "Trip planner, Python", "", "", 5 * DAY, 1, 0, 0),
+            project("waypoint", "Trip planner, Python", "", "", 5 * DAY, 0, 0, 0),
         ];
         projects[2].paused = Some(PauseNote { at: ago(2 * DAY), note: "Level editor half done; saving works, loading doesn't".into() });
         projects[3].last_summary = Some("Chapters 1–3 are live. Chapter 4 is drafted and needs a proofread.".into());

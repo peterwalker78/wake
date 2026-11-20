@@ -124,17 +124,9 @@ pub fn folder_hint(root: &str, name: &str) -> String {
     if base(root).eq_ignore_ascii_case(name) { String::new() } else { tildify(root) }
 }
 
-/// Bytes as "640 MB", "4.1 GB" or "86 GB": memory and disk alike.
+/// Bytes as "640 MB", "4.1 GB", "86 GB" or "under 1 MB": memory and disk alike (the core's words).
 pub fn bytes(b: u64) -> String {
-    let mb = b as f64 / 1_048_576.0;
-    let gb = mb / 1024.0;
-    if mb < 1000.0 {
-        format!("{} MB", mb.round() as u64)
-    } else if gb < 10.0 {
-        format!("{gb:.1} GB")
-    } else {
-        format!("{gb:.0} GB")
-    }
+    wake_core::disk::human(b)
 }
 
 /// `/home/sam/x` or `/home/sam/x` as `~/x`.
@@ -180,6 +172,7 @@ mod tests {
         assert_eq!(bytes(640 * 1_048_576), "640 MB");
         assert_eq!(bytes(4_402_341_888), "4.1 GB");
         assert_eq!(bytes(86 << 30), "86 GB");
+        assert_eq!(bytes(200 << 10), "under 1 MB");
         assert_eq!(tildify("/home/sam/Projects/wake"), "~/Projects/wake");
         assert_eq!(rel("/a/b/c.rs", Some("/a")), "b/c.rs");
         assert_eq!(minutes(76), "1 h");

@@ -15,7 +15,7 @@ macro_rules! out {
 use std::time::Instant;
 
 use wake_core::procs;
-use wake_core::store::{self, Store};
+use wake_core::store::{self, FileCheck, Store};
 use wake_core::util;
 use wake_core::{Live, LiveConfig, ProcKind, Source, State};
 
@@ -139,8 +139,13 @@ fn cmd_index() -> u8 {
         }
     }
     counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let (_, total) = live.indexer().progress();
-    out!("Indexed {} sessions ({changed} of {total} files read) in {dt:.1} s; peak memory {peak} MB.", counts.iter().map(|c| c.1).sum::<u32>());
+    let read = if changed == 1 { "1 new or changed transcript read".to_string() } else { format!("{changed} new or changed transcripts read") };
+    out!("Indexed {} sessions in {dt:.1} s ({read}); peak memory {peak} MB.", counts.iter().map(|c| c.1).sum::<u32>());
+    // What it couldn't read, understand or save, in words.
+    match live.indexer().stats().sentence() {
+        Some(s) => out!("{}", s.trim_end_matches(" Run `wake doctor`.")),
+        None => out!("Every transcript was read and understood."),
+    }
     for (name, n) in counts.iter().take(12) {
         out!("  {:<22} {n}", util::take_chars(name, 22));
     }
@@ -285,14 +290,7 @@ fn doctor_index(d: &mut Doctor, paths: &store::Paths, found: &[(String, &str)]) 
         text.push_str(&format!("; {} not read yet (Wake reads them when it opens)", plural(new, "new transcript")));
     }
     d.ok(&text);
-    index_problem(d, paths);
 }
-
-/// Transcripts the index couldn't read or understand, and summaries it couldn't save.
-// wiring: the core's read-only index health (the counts behind `Overview::index_error`). Today
-// index_error is only set by the window's indexing thread, so there is nothing to read here yet.
-// Print it as `!!` with the core's sentence, Fix: "include ~/.local/share/wake/wake.log in a report".
-fn index_problem(_d: &mut Doctor, _paths: &store::Paths) {}
 
 fn doctor_programs(d: &mut Doctor, paths: &store::Paths) {
     use wake_core::questions::{Ai, find_tool};
@@ -331,13 +329,9 @@ fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
     } else {
         d.line(Mark::Optional, "Konsole isn't installed. Go there and Start an agent open sessions in a new Konsole window, so they can't here.", &install("konsole", "konsole"));
     }
-    if !on_path(desktop::QDBUS) {
-        let fix = if on_path("qdbus6") {
-            "this system calls it qdbus6. Link it under the name Wake looks for: ln -s \"$(command -v qdbus6)\" ~/.local/bin/qdbus-qt6".to_string()
-        } else {
-            install("qt6-qttools", "qdbus-qt6, then ln -s /usr/bin/qdbus6 ~/.local/bin/qdbus-qt6")
-        };
-        d.line(Mark::Optional, "Konsole tabs: Wake can't see them (qdbus-qt6 isn't installed). Go there opens a new window instead of switching tab.", &fix);
+    // Wake runs qdbus-qt6, or qdbus6 where the system names it that.
+    if !on_path(desktop::qdbus_program()) {
+        d.line(Mark::Optional, "Konsole tabs: Wake can't see them (qdbus-qt6 isn't installed). Go there opens a new window instead of switching tab.", &install("qt6-qttools", "qdbus-qt6"));
     } else if konsole {
         match desktop::Desktop::real().tabs(true) {
             Ok(t) if !t.is_empty() => d.ok(&format!("Konsole tabs: Wake can see {}", plural(t.len(), "tab"))),
@@ -381,33 +375,34 @@ fn doctor_files(d: &mut Doctor, paths: &store::Paths) {
 }
 
 /// The tracked projects, read straight from projects.json. `Store::load_projects` is not used:
-/// it moves a broken file aside and writes a fresh one.
-// wiring: the core's read-only projects.json check goes at the top of this function; when it reports
-// a problem, print that as `!!` and return before counting.
+/// it moves a broken file aside and writes a fresh one; `store::check_projects` only reads.
 fn doctor_projects(d: &mut Doctor, paths: &store::Paths) {
     let path = paths.data.join("projects.json");
     let file = tilde_path(&path);
-    let projects: Vec<store::ProjectRec> = match std::fs::read(&path) {
-        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes).ok().and_then(|v| serde_json::from_value(v.get("projects")?.clone()).ok()) {
-            Some(ps) => ps,
-            None => {
-                d.line(
-                    Mark::Needed,
-                    &format!("Wake can't understand its project list ({file}). When it next opens, it keeps that file as projects.json.broken-<time> and starts a fresh list."),
-                    "open Wake, then copy any descriptions or next steps you need from the kept file.",
-                );
-                return;
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    match store::check_projects(paths) {
+        FileCheck::Missing => {
             d.ok(&format!("Project list: not made yet. Wake makes it from {} the first time it opens.", tilde_path(&paths.projects)));
             return;
         }
-        Err(e) => {
-            d.line(Mark::Needed, &format!("Wake can't read its project list ({file}: {e})."), &format!("check who owns it: ls -l {file}"));
+        FileCheck::Unreadable(why) => {
+            d.line(Mark::Needed, &format!("Wake can't read its project list ({file}: {why})."), &format!("check who owns it: ls -l {file}"));
             return;
         }
-    };
+        FileCheck::Damaged(why) => {
+            d.line(
+                Mark::Needed,
+                &format!("Wake can't understand its project list ({file}: {why}). When it next opens, it keeps that file as projects.json.broken-<time> and starts a fresh list."),
+                "open Wake, then copy any descriptions or next steps you need from the kept file.",
+            );
+            return;
+        }
+        FileCheck::Fine(_) => {}
+    }
+    let projects: Vec<store::ProjectRec> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| serde_json::from_value(v.get("projects")?.clone()).ok())
+        .unwrap_or_default();
     let names: Vec<&str> = projects.iter().filter(|p| !p.removed).map(|p| p.name.as_str()).collect();
     if names.is_empty() {
         d.line(Mark::Optional, &format!("No projects yet: Wake looks in {} and the folders your sessions ran in.", tilde_path(&paths.projects)), "open Projects → Track a folder for others.");
@@ -420,29 +415,42 @@ fn doctor_projects(d: &mut Doctor, paths: &store::Paths) {
     d.ok(&text);
 }
 
-/// settings.toml, if Wake can't understand it.
-// wiring: the core's read-only settings.toml check (`settings::load` can't be used: it moves a
-// broken file aside). A problem prints as `--` "Wake can't understand settings.toml and uses its
-// defaults", with the core's reason and Fix: "correct or delete <path>".
-fn doctor_settings(_d: &mut Doctor, _paths: &store::Paths) {}
+/// settings.toml, if Wake can't read or understand it (`settings::check` only reads;
+/// `settings::load` would move a broken file aside).
+fn doctor_settings(d: &mut Doctor, paths: &store::Paths) {
+    let file = tilde_path(&paths.config.join("settings.toml"));
+    let why = match wake_core::settings::check(&paths.config) {
+        FileCheck::Unreadable(why) => format!("can't read {file} ({why})"),
+        FileCheck::Damaged(why) => format!("can't understand {file} ({why})"),
+        FileCheck::Missing | FileCheck::Fine(_) => return,
+    };
+    d.line(Mark::Optional, &format!("Wake {why}, so it uses its default settings."), &format!("correct or delete {file}."));
+}
 
-/// Lines of ideas.jsonl that Ideas can't show.
-// wiring: the core's read-only count of unreadable ideas.jsonl lines (`list_ideas` skips them
-// silently). Non-zero prints as `--` "N saved ideas can't be read, so Ideas doesn't show them",
-// Fix: "they are still in ~/.local/share/wake/ideas.jsonl".
-fn doctor_ideas(_d: &mut Doctor, _paths: &store::Paths) {}
+/// Lines of ideas.jsonl that Ideas can't show (`list_ideas` skips them quietly).
+fn doctor_ideas(d: &mut Doctor, paths: &store::Paths) {
+    let n = store::unreadable_idea_lines(paths);
+    if n > 0 {
+        let (what, verb) = if n == 1 { ("1 saved idea".to_string(), "it") } else { (format!("{n} saved ideas"), "them") };
+        d.line(
+            Mark::Optional,
+            &format!("{what} can't be read, so Ideas doesn't show {verb}."),
+            &format!("{} still in {}.", if n == 1 { "it is" } else { "they are" }, tilde_path(&paths.data.join("ideas.jsonl"))),
+        );
+    }
+}
 
 /// Files Wake kept aside because it couldn't understand them (`*.broken-*`).
-// wiring: the core's read-only list of `*.broken-*` files in the data and config folders. Each
-// prints as `--` "Wake kept a file it couldn't understand: <path>", Fix: "copy what you need from
-// it, then delete it".
-fn doctor_broken(_d: &mut Doctor, _paths: &store::Paths) {}
+fn doctor_broken(d: &mut Doctor, paths: &store::Paths) {
+    for f in store::broken_files(paths) {
+        d.line(Mark::Optional, &format!("Wake kept a file it couldn't understand: {}", tilde_path(&f)), "copy what you need from it, then delete it.");
+    }
+}
 
 /// Wake's own memory (the window, when it is open) and its index on disk.
 fn doctor_self(d: &mut Doctor, paths: &store::Paths) {
     let index = match dir_size(&paths.index_dir()) {
         0 => "no index yet".to_string(),
-        n if n < 1 << 20 => "index under 1 MB on disk".to_string(),
         n => format!("index {} on disk", crate::fmt::bytes(n)),
     };
     let me = std::process::id();
@@ -466,9 +474,16 @@ fn dir_size(dir: &std::path::Path) -> u64 {
 }
 
 /// The last few things Wake did, and what went wrong, from its log.
-// wiring: `wake_core::log::recent(paths, 5)`. When it returns lines, print a "Recently" heading
-// and each line indented by two spaces, with no mark.
-fn doctor_log(_d: &mut Doctor, _paths: &store::Paths) {}
+fn doctor_log(d: &mut Doctor, paths: &store::Paths) {
+    let lines = wake_core::log::recent(paths, 5);
+    if lines.is_empty() {
+        return;
+    }
+    d.heading("What Wake did lately");
+    for l in lines {
+        out!("  {l}");
+    }
+}
 
 fn mem(b: u64) -> String {
     crate::fmt::bytes(b)

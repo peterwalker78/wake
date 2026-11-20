@@ -713,15 +713,19 @@ fn clear_refusal(path: &Path, working: bool, project_name: &str, places: &Places
     None
 }
 
-/// "15 G", "640 M", the way `du -h` and the review write it.
+/// Bytes as "640 MB", "4.1 GB" or "15 GB" (whole numbers from 10 GB up), and "under 1 MB" for
+/// anything smaller than that but not nothing: memory and disk alike, here and in the app.
 pub fn human(b: u64) -> String {
-    let g = b as f64 / (1u64 << 30) as f64;
-    if g >= 10.0 {
-        format!("{g:.0} G")
-    } else if g >= 1.0 {
-        format!("{g:.1} G")
+    let mb = b as f64 / MB as f64;
+    let gb = mb / 1024.0;
+    if b > 0 && b < MB {
+        "under 1 MB".into()
+    } else if mb < 1000.0 {
+        format!("{} MB", mb.round() as u64)
+    } else if gb < 10.0 {
+        format!("{gb:.1} GB")
     } else {
-        format!("{} M", (b as f64 / MB as f64).round() as u64)
+        format!("{gb:.0} GB")
     }
 }
 
@@ -1603,8 +1607,10 @@ mod tests {
 
     #[test]
     fn human_sizes() {
-        assert_eq!(human(15 << 30), "15 G");
-        assert_eq!(human(3 * (1 << 30) + (1 << 29)), "3.5 G");
-        assert_eq!(human(181 << 20), "181 M");
+        assert_eq!(human(15 << 30), "15 GB");
+        assert_eq!(human(3 * (1 << 30) + (1 << 29)), "3.5 GB");
+        assert_eq!(human(181 << 20), "181 MB");
+        assert_eq!(human(300 << 10), "under 1 MB");
+        assert_eq!(human(0), "0 MB");
     }
 }

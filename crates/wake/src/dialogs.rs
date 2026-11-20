@@ -47,7 +47,11 @@ pub fn show(ui: &Ui, card: &gtk::Box, submit: Option<Rc<dyn Fn()>>) {
     fit.set_margin_end(m);
     fit.set_margin_top(16);
     fit.set_margin_bottom(if sheet { 0 } else { 16 });
-    modal.append(&fit);
+    // In a scroller: the window's overlay gives the scrim at least its minimum height, which for
+    // a tall card (Keys) is the card's height at its narrowest, far taller than the window, and
+    // the card was centred out of sight. Scrolled, a card taller than the window scrolls instead.
+    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&fit).build();
+    modal.append(&scroll);
     modal.set_visible(true);
     crate::motion::pop(modal);
     crate::motion::pop(card);

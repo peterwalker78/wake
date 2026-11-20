@@ -1,6 +1,6 @@
 #!/bin/bash
 # Asserts nothing in Wake's window is cut off at any width: runs `wake --show clips` (every view,
-# side panel closed and open, the switcher, a dialog) on an offscreen Broadway display at each
+# side panel closed and open, the switcher, a dialog, the `?` Keys sheet) on an offscreen Broadway display at each
 # width and fails if any line says CLIPPED. Needs gtk4-broadwayd; run after `cargo build`:
 #   tests/wake-clips.sh [WIDTH ...]      (default 480 to 1600)
 # Uses a scratch config with reduced motion (Broadway's frame clock doesn't run animations).

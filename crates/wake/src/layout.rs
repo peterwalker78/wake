@@ -979,7 +979,7 @@ pub fn clips(root: &gtk::Widget) -> Vec<(String, f32)> {
 }
 
 /// Test hook `--show clips`: every view at this width with the side panel closed and open, the
-/// switcher and a dialog, printing what is cut off (`ok` when nothing is), the window's content
+/// switcher, a dialog and the Keys sheet, printing what is cut off (or out of sight) (`ok` when nothing is), the window's content
 /// minimum and the layout; then quits. `wake-clips.sh` runs it across widths and asserts.
 pub fn hook(ui: &crate::app::Ui) {
     use crate::app::{self, View};
@@ -993,6 +993,7 @@ pub fn hook(ui: &crate::app::Ui) {
     }
     steps.push((View::Monitor, "switcher"));
     steps.push((View::Monitor, "dialog"));
+    steps.push((View::Monitor, "keys"));
     let ui = ui.clone();
     let step = Rc::new(Cell::new(0usize));
     let failed = Rc::new(Cell::new(0usize));
@@ -1002,7 +1003,15 @@ pub fn hook(ui: &crate::app::Ui) {
         let report = |ui: &crate::app::Ui, (v, what): (View, &str)| {
             let root = ui.window.child().expect("window content");
             let (min, ..) = root.measure(gtk::Orientation::Horizontal, -1);
-            let found = clips(&root);
+            let mut found = clips(&root);
+            // A dialog must be in sight: a card laid out below the window draws nothing at all.
+            if matches!(what, "dialog" | "keys") {
+                let card = find_class(ui.w.modal.upcast_ref(), "modal");
+                let b = card.as_ref().and_then(|c| c.compute_bounds(&root));
+                if b.is_none_or(|b| b.y() < 0.0 || b.y() > root.height() as f32 - 40.0) {
+                    found.push((format!("the {what} card is out of sight ({b:?})"), 0.0));
+                }
+            }
             let lay = ui.w.body.lay().unwrap_or_default();
             let form = format!("{:?}{}{}", lay.rail, if lay.narrow { ",narrow" } else { "" }, if lay.push { ",push" } else { "" }).to_lowercase();
             let fits = min <= root.width();
@@ -1025,7 +1034,7 @@ pub fn hook(ui: &crate::app::Ui) {
             match prev.1 {
                 "panel" => crate::panel::close(&ui),
                 "switcher" => crate::switcher::close(&ui),
-                "dialog" => crate::dialogs::close(&ui),
+                "dialog" | "keys" => crate::dialogs::close(&ui),
                 _ => {}
             }
         }
@@ -1044,6 +1053,7 @@ pub fn hook(ui: &crate::app::Ui) {
                 app::open_sel(&ui);
             }
             "switcher" => crate::switcher::open(&ui),
+            "keys" => crate::dialogs::keys(&ui),
             "dialog" => {
                 let id = ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.first().map(|p| p.id.clone()));
                 if let Some(id) = id {
@@ -1054,6 +1064,21 @@ pub fn hook(ui: &crate::app::Ui) {
         }
         glib::ControlFlow::Continue
     });
+}
+
+/// The first widget under `w` (or `w`) with CSS class `class`.
+fn find_class(w: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+    if w.has_css_class(class) {
+        return Some(w.clone());
+    }
+    let mut c = w.first_child();
+    while let Some(x) = c {
+        if let Some(f) = find_class(&x, class) {
+            return Some(f);
+        }
+        c = x.next_sibling();
+    }
+    None
 }
 
 #[cfg(test)]

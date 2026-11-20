@@ -1040,13 +1040,23 @@ pub fn finish(ui: &Ui, view: View, had_focus: bool) {
 pub const ROW_HINT: &str = "Double-click for details · Enter";
 
 /// A heading row in a table (a day in History, a group in Agents): never selected or focused.
-pub fn group_row(title: &str) -> gtk::ListBoxRow {
+/// A heading in a list, with an optional dim line under it saying what the group is.
+pub fn group_row(title: &str, sub: Option<&str>) -> gtk::ListBoxRow {
     let r = gtk::ListBoxRow::new();
     r.set_selectable(false);
     r.set_activatable(false);
     r.set_focusable(false);
     r.add_css_class("grouprow");
-    r.set_child(Some(&w::label(&title.to_uppercase(), &["pgrp"])));
+    let head = w::label(&title.to_uppercase(), &["pgrp"]);
+    match sub {
+        Some(sub) => {
+            let b = w::vbox(0, &[]);
+            b.append(&head);
+            b.append(&w::wrap(sub, &["pgrpsub"]));
+            r.set_child(Some(&b));
+        }
+        None => r.set_child(Some(&head)),
+    }
     r
 }
 
@@ -1933,7 +1943,7 @@ fn history(ui: &Ui) {
             if by_day {
                 let d = fmt::day(s.last_at.as_deref());
                 if d != day {
-                    vw.list.append(&group_row(&d));
+                    vw.list.append(&group_row(&d, None));
                     day = d;
                 }
             }

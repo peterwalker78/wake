@@ -997,6 +997,7 @@ pub fn hook(ui: &crate::app::Ui) {
     let ui = ui.clone();
     let step = Rc::new(Cell::new(0usize));
     let failed = Rc::new(Cell::new(0usize));
+    let waited = Rc::new(Cell::new(0u32));
     // Each step: set it up, give it a moment to lay out (and the rail and tables to redraw), check.
     glib::timeout_add_local(Duration::from_millis(900), move || {
         let i = step.get();
@@ -1030,6 +1031,13 @@ pub fn hook(ui: &crate::app::Ui) {
         // Check the step before, then undo it.
         if i > 0 {
             let prev = steps[i - 1];
+            // A dialog just put up may not be laid out yet (Broadway's frame clock is lazy): give it
+            // a few more ticks before judging where it is.
+            if matches!(prev.1, "dialog" | "keys") && find_class(ui.w.modal.upcast_ref(), "modal").is_some_and(|c| c.width() < 100) && waited.get() < 5 {
+                waited.set(waited.get() + 1);
+                return glib::ControlFlow::Continue;
+            }
+            waited.set(0);
             report(&ui, prev);
             match prev.1 {
                 "panel" => crate::panel::close(&ui),

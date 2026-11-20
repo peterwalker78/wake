@@ -686,7 +686,7 @@ fn session_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
     let line = w::hbox(7, &["dline"]);
     line.append(&w::dot(class));
     line.append(&w::label(word, &["state", class]));
-    let (mut loc, ..) = app::loc_of(s, app::unsure(ui));
+    let (mut loc, ..) = app::loc_for(ui, s);
     // The tab's own title, as Konsole shows it, after Wake's "Konsole · tab 2".
     if let Some(l) = s.location.as_ref().filter(|l| !l.tab_title.is_empty()) {
         loc = format!("{loc} “{}”", l.tab_title);
@@ -1000,7 +1000,7 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
     if !(s.location.is_some() || app::can_reopen(s) || app::is_live(s.state)) {
         return None;
     }
-    let (loc, _, can_go, tip) = app::loc_of(s, app::unsure(ui));
+    let (loc, _, can_go, tip) = app::loc_for(ui, s);
     let word = go_words(s, &loc, can_go);
     let ui2 = ui.clone();
     let id = s.id.clone();
@@ -1014,7 +1014,7 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
     Some(b)
 }
 
-/// What the way-there button says, from `loc_of`'s place: "Go to tab 3" (with one Konsole),
+/// What the way-there button says, from `loc_for`'s place: "Go to tab 3" (with one Konsole),
 /// "Go to Konsole 2 · tab 1" (with several), "Open in a new window", "Resume in a new window".
 fn go_words(s: &SessionSummary, loc: &str, can_go: bool) -> String {
     if s.location.is_some() {
@@ -1109,15 +1109,15 @@ fn repo(r: &RepoState) -> gtk::Box {
     let b = w::vbox(3, &["repo"]);
     b.append(&w::wrap(&format!("{} · {}", fmt::base(&r.path), r.branch.as_deref().unwrap_or("no branch")), &["rn"]));
     let mut lines: Vec<(&str, String)> = Vec::new();
-    // No branch is pushed anywhere: most likely there is no remote at all, which is a fine way to
-    // work. Said once, quietly, rather than as a loose end.
+    // No remote at all is a fine way to work: said once, quietly, rather than as a loose end.
     let local_only = local_only(r);
+    let unpushed = if r.remote_host.as_deref() == Some("GitHub") { "on GitHub" } else { "pushed" };
     if local_only {
-        lines.push(("", "Only on this computer: nothing is pushed to a remote.".into()));
+        lines.push(("", "Only on this computer (no remote).".into()));
     } else if r.upstream.is_none() {
-        lines.push(("w", "This branch isn't pushed anywhere yet.".into()));
+        lines.push(("w", format!("This branch isn't {unpushed} yet.")));
     } else if let Some(a) = r.ahead.filter(|a| *a > 0) {
-        lines.push(("w", format!("{} not pushed yet (ahead of {}).", fmt::pl(a, "commit", "commits"), r.upstream.as_deref().unwrap_or("its upstream"))));
+        lines.push(("w", format!("{} not {unpushed} yet.", fmt::pl(a, "commit", "commits"))));
     }
     if let Some(b) = r.behind.filter(|b| *b > 0) {
         lines.push(("", format!("{} on the remote you don't have here.", fmt::pl(b, "change", "changes"))));
@@ -1130,7 +1130,7 @@ fn repo(r: &RepoState) -> gtk::Box {
     }
     if r.branches_no_upstream > 0 && !local_only {
         let n = r.branches_no_upstream;
-        lines.push(("", format!("{n} of {} {} only on this computer.", fmt::pl(r.branches, "branch", "branches"), if n == 1 { "is" } else { "are" })));
+        lines.push(("", format!("{n} of {} {} not {unpushed}.", fmt::pl(r.branches, "branch", "branches"), if n == 1 { "is" } else { "are" })));
     }
     if r.worktrees > 1 {
         lines.push(("", format!("{} (worktrees) open.", fmt::pl(r.worktrees - 1, "side copy", "side copies"))));
@@ -1187,9 +1187,9 @@ fn saved_with(cp: &Checkpoint) -> Option<String> {
     (!parts.is_empty()).then(|| format!("Saved with {}", parts.join(" · ")))
 }
 
-/// No branch of `r` is pushed anywhere (most often: it has no remote).
+/// `r` has no remote at all: it lives only on this computer.
 fn local_only(r: &RepoState) -> bool {
-    r.upstream.is_none() && r.branches_no_upstream >= r.branches
+    r.remote_host.is_none()
 }
 
 fn project(ui: &Ui, id: &str) {
@@ -1287,18 +1287,17 @@ fn project(ui: &Ui, id: &str) {
         entry.set_widget_name("next-edit");
         let ui2 = ui.clone();
         let id2 = p.id.clone();
-        let note = detail.as_ref().and_then(|d| d.last_pause.as_ref().map(|c| c.note.clone())).unwrap_or_default();
         entry.connect_activate(move |e| {
             let next = e.text().trim().to_string();
-            let (id3, note) = (id2.clone(), note.clone());
+            let id3 = id2.clone();
             app::bg(
                 &ui2,
-                move |src| src.pause(&id3, &note, &next),
+                move |src| src.set_next(&id3, &next),
                 |ui, r| match r {
-                    Ok(c) => {
+                    Ok(p) => {
                         ui.st.borrow_mut().edit_next = false;
                         app::toast(ui, "Next step saved.", false);
-                        load_project(ui, &c.project);
+                        load_project(ui, &p.id);
                         app::refresh(ui);
                     }
                     Err(e) => app::toast(ui, &e, true),
@@ -1346,7 +1345,6 @@ fn project(ui: &Ui, id: &str) {
     if !ss.is_empty() {
         let waiting = ss.iter().filter(|s| s.state == State::Waiting).count();
         let note = if waiting > 0 { format!("{waiting} waiting") } else { ss.len().to_string() };
-        let unsure = app::unsure(ui);
         folds.append(&fold(ui, "sessions", "Sessions", &note, if waiting > 0 { "amber" } else { "" }, |x| {
             for s in ss.iter().take(20) {
                 let btn = gtk::Button::new();
@@ -1357,7 +1355,7 @@ fn project(ui: &Ui, id: &str) {
                 top.append(&w::dot(class));
                 top.append(&w::clip(&s.title, &[]));
                 g.append(&top);
-                let (loc, ..) = app::loc_of(s, unsure);
+                let (loc, ..) = app::loc_for(ui, s);
                 let sub = w::clip(&format!("{word} · {loc}"), &["sub-l"]);
                 sub.set_tooltip_text(Some(&s.evidence));
                 g.append(&sub);
@@ -1402,16 +1400,22 @@ fn project(ui: &Ui, id: &str) {
         let all_local = d.repos.iter().all(local_only);
         let (note, warn) = if crate::behind::of(ui, &p.id).is_some() {
             ("behind its remote", true)
-        } else if g.ahead_total > 0 || (g.no_upstream > 0 && !all_local) {
-            ("not pushed", true)
+        } else if g.ahead_total > 0 || g.no_upstream > 0 {
+            (if g.github { "not on GitHub" } else { "not pushed" }, true)
         } else if g.dirty_files > 0 {
             ("uncommitted edits", true)
         } else if all_local {
-            ("only on this computer", false)
+            ("only on this computer (no remote)", false)
+        } else if let Some(why) = &p.remote_problem {
+            // Wake couldn't ask the remote, so it doesn't claim "in step".
+            (why.as_str(), false)
         } else {
             ("in step", false)
         };
         folds.append(&fold(ui, "git", "Git", note, if warn { "amber" } else { "" }, |x| {
+            if let Some(why) = &p.remote_problem {
+                x.append(&w::wrap(why, &["ex", "plain"]));
+            }
             for r in &d.repos {
                 x.append(&repo(r));
             }
@@ -1533,7 +1537,7 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_never_pushed_anywhere_is_local_only() {
+    fn a_repo_with_no_remote_is_local_only() {
         let r = RepoState {
             path: "/x".into(),
             branch: Some("main".into()),
@@ -1548,9 +1552,10 @@ mod tests {
             worktrees: 1,
             last_commit_at: None,
             last_commit_subject: None,
+            remote_host: None,
         };
         assert!(local_only(&r));
-        assert!(!local_only(&RepoState { branches_no_upstream: 1, ..r.clone() }));
-        assert!(!local_only(&RepoState { upstream: Some("origin/main".into()), ..r }));
+        // A remote with nothing pushed to it yet is a loose end, not "only on this computer".
+        assert!(!local_only(&RepoState { remote_host: Some("GitHub".into()), ..r }));
     }
 }

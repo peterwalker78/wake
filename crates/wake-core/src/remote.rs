@@ -134,7 +134,12 @@ fn is_ancestor(p: &Path, a: &str, b: &str) -> Option<bool> {
 
 /// "GitHub" for a github.com remote, and so on; the URL is read locally (`ls-remote --get-url`).
 fn host(p: &Path, remote: &str) -> String {
-    let url = gitinfo::git(p, &["ls-remote", "--get-url", remote]).unwrap_or_default().to_lowercase();
+    host_of_url(&gitinfo::git(p, &["ls-remote", "--get-url", remote]).unwrap_or_default())
+}
+
+/// "GitHub" for a github.com URL, "GitLab", "Codeberg", else "the remote".
+pub fn host_of_url(url: &str) -> String {
+    let url = url.to_lowercase();
     if url.contains("github.com") {
         "GitHub".into()
     } else if url.contains("gitlab") {

@@ -55,7 +55,8 @@ fn project(id: &str, desc: &str, next: &str, why: &str, last: i64, ahead: u32, d
         last_at: Some(ago(last)),
         sessions_14d: 0,
         ideas: 0,
-        git: GitTotals { ahead_total: ahead, no_upstream: noup, dirty_files: dirty },
+        // Skyhook lives only on this computer; waypoint's remote is on GitLab; the rest are on GitHub.
+        git: GitTotals { ahead_total: ahead, no_upstream: noup, dirty_files: dirty, no_remote: u32::from(id == "Skyhook"), github: !matches!(id, "Skyhook" | "waypoint") },
         paused: None,
         last_summary: None,
         git_checked: true,
@@ -191,7 +192,7 @@ impl DemoSource {
         let mut projects = vec![
             project("Gradebook", "Rails app: AI tutor for schools", "Pick the font for the printed term reports", "Priya wants a sample before parents' evening", 11 * HOUR, 2, 3, 1),
             project("tideline-desktop", "A Wayland compositor and its settings app", "Land the scope readout helpers row fix, then tag 0.9", "", 6 * HOUR, 0, 1, 0),
-            project("Skyhook", "Puzzle game, itch.io build", "", "", 2 * DAY, 0, 0, 2),
+            project("Skyhook", "Puzzle game, itch.io build", "", "", 2 * DAY, 0, 0, 0),
             project("fernlight", "Short story site, static", "Proofread chapter 4 before it goes up", "", 3 * DAY, 0, 0, 0),
             project("waypoint", "Trip planner, Python", "", "", 5 * DAY, 1, 0, 0),
         ];
@@ -630,21 +631,32 @@ impl Source for DemoSource {
             path: root.clone(),
             branch: Some(if id == "Gradebook" { "develop".into() } else { "main".into() }),
             head: Some("5c12763".into()),
-            upstream: (summary.git.no_upstream == 0).then(|| "origin/main".into()),
+            upstream: (summary.git.no_upstream == 0 && summary.git.no_remote == 0).then(|| "origin/main".into()),
             ahead: Some(summary.git.ahead_total),
             behind: Some(0),
             dirty_files: summary.git.dirty_files,
             untracked: if id == "Gradebook" { 2 } else { 0 },
-            branches_no_upstream: summary.git.no_upstream,
+            branches_no_upstream: if summary.git.no_remote > 0 { 4 } else { summary.git.no_upstream },
             branches: 4,
             worktrees: if id == "tideline-desktop" { 2 } else { 1 },
             last_commit_at: summary.last_at.clone(),
             last_commit_subject: Some("Tests: one scratch folder helper, removed when each test ends".into()),
+            remote_host: match id {
+                "Skyhook" => None,
+                "waypoint" => Some("GitLab".into()),
+                _ => Some("GitHub".into()),
+            },
         }];
-        let last_pause =
-            st.pauses.iter().rev().find(|c| c.project == id).cloned().or_else(|| {
-                summary.paused.as_ref().map(|p| Checkpoint { project: id.into(), at: p.at.clone(), note: p.note.clone(), next: summary.next.clone(), git: Vec::new(), sessions: Vec::new() })
-            });
+        // What the pause kept: where git stood and which sessions were open.
+        let git = repos.iter().map(|r| (r.path.clone(), r.branch.clone(), Some("7d05b9e1c4a2".to_string()), r.ahead)).collect();
+        let sessions = st.sessions.iter().filter(|s| s.project.as_deref() == Some(id)).take(2).map(|s| s.id.clone()).collect();
+        let last_pause = st
+            .pauses
+            .iter()
+            .rev()
+            .find(|c| c.project == id)
+            .cloned()
+            .or_else(|| summary.paused.as_ref().map(|p| Checkpoint { project: id.into(), at: p.at.clone(), note: p.note.clone(), next: summary.next.clone(), git, sessions }));
         Some(ProjectDetail {
             since_pause: if last_pause.is_some() { vec!["2 commits on main".into(), "1 session: itch-page-assets".into()] } else { Vec::new() },
             could_not_check: Vec::new(),
@@ -701,7 +713,9 @@ impl Source for DemoSource {
         let p = st.projects.iter_mut().find(|p| p.id == project).ok_or("No such project.")?;
         p.paused = Some(PauseNote { at: at.clone(), note: note.into() });
         p.next = next.into();
-        let c = Checkpoint { project: project.into(), at, note: note.into(), next: next.into(), git: Vec::new(), sessions: Vec::new() };
+        let git = vec![(p.roots[0].clone(), Some("main".to_string()), Some("7d05b9e1c4a2".to_string()), Some(p.git.ahead_total))];
+        let sessions = st.sessions.iter().filter(|s| s.project.as_deref() == Some(project) && crate::app::is_live(s.state)).map(|s| s.id.clone()).collect();
+        let c = Checkpoint { project: project.into(), at, note: note.into(), next: next.into(), git, sessions };
         st.pauses.push(c.clone());
         Ok(c)
     }
@@ -881,6 +895,13 @@ impl Source for DemoSource {
         let mut st = self.state.lock().unwrap();
         let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
         p.color = Some(color.map_or_else(|| wake_core::store::default_colour(&p.name).to_string(), String::from));
+        Ok(p.clone())
+    }
+
+    fn set_next(&self, id: &str, next: &str) -> Result<ProjectSummary, String> {
+        let mut st = self.state.lock().unwrap();
+        let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
+        p.next = next.into();
         Ok(p.clone())
     }
 

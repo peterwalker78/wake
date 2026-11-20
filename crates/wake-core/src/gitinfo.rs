@@ -222,6 +222,7 @@ pub fn repo_state(path: &str) -> Result<Repo, GitError> {
             subject = Some(util::take_chars(s, 200)).filter(|s| !s.is_empty());
         }
     }
+    let remote_host = remote_url(p, upstream.as_deref()).map(|u| crate::remote::host_of_url(&u));
     Ok(Repo {
         state: RepoState {
             path: path.into(),
@@ -237,8 +238,25 @@ pub fn repo_state(path: &str) -> Result<Repo, GitError> {
             worktrees,
             last_commit_at: last_at,
             last_commit_subject: subject,
+            remote_host,
         },
         ahead_all_branches: ahead_all,
+    })
+}
+
+/// The URL of the repo's remote, read locally (`ls-remote --get-url` answers with the name itself
+/// when there is no such remote): the upstream's remote first, then `origin`, then any remote it
+/// has branches from. None when it has none.
+fn remote_url(p: &Path, upstream: Option<&str>) -> Option<String> {
+    let mut names: Vec<String> = upstream.and_then(|u| u.split_once('/')).map(|(r, _)| r.to_string()).into_iter().collect();
+    names.push("origin".into());
+    if let Ok(refs) = git(p, &["for-each-ref", "--format=%(refname)", "refs/remotes"]) {
+        names.extend(refs.lines().filter_map(|l| l.strip_prefix("refs/remotes/")?.split_once('/')).map(|(r, _)| r.to_string()));
+    }
+    let mut seen = std::collections::HashSet::new();
+    names.into_iter().filter(|n| !n.is_empty() && !n.starts_with('-') && seen.insert(n.clone())).find_map(|n| {
+        let url = git(p, &["ls-remote", "--get-url", &n]).ok()?.trim().to_string();
+        (!url.is_empty() && url != n).then_some(url)
     })
 }
 
@@ -252,8 +270,11 @@ pub fn commits_since(path: &str, since_iso: &str, limit: u32) -> Vec<String> {
 pub fn git_totals(repos: &[Repo]) -> GitTotals {
     GitTotals {
         ahead_total: repos.iter().map(|r| r.ahead_all_branches).sum(),
-        no_upstream: repos.iter().map(|r| r.state.branches_no_upstream).sum(),
+        // Branches of a repo with no remote have nowhere to go: not a loose end.
+        no_upstream: repos.iter().filter(|r| r.state.remote_host.is_some()).map(|r| r.state.branches_no_upstream).sum(),
         dirty_files: repos.iter().map(|r| r.state.dirty_files + r.state.untracked).sum(),
+        no_remote: repos.iter().filter(|r| r.state.remote_host.is_none()).count() as u32,
+        github: repos.iter().any(|r| r.state.remote_host.is_some()) && repos.iter().filter_map(|r| r.state.remote_host.as_deref()).all(|h| h == "GitHub"),
     }
 }
 
@@ -392,6 +413,16 @@ mod tests {
         assert_eq!(st.worktrees, 1);
         assert_eq!(st.last_commit_subject.as_deref(), Some("First commit"));
         assert!(st.last_commit_at.unwrap().ends_with('Z'));
+        assert_eq!(st.remote_host, None);
+        let t = git_totals(&[repo_state(&r.dir.to_string_lossy()).unwrap()]);
+        assert_eq!((t.no_remote, t.github, t.no_upstream), (1, false, 0));
+        // Test setup only: give it a remote (nothing is fetched).
+        let ok = Command::new("git").arg("-C").arg(&r.dir).args(["remote", "add", "origin", "https://github.com/someone/thing.git"]).env("GIT_CONFIG_GLOBAL", "/dev/null").status().unwrap().success();
+        assert!(ok);
+        let rs = repo_state(&r.dir.to_string_lossy()).unwrap();
+        assert_eq!(rs.state.remote_host.as_deref(), Some("GitHub"));
+        let t = git_totals(&[rs]);
+        assert_eq!((t.no_remote, t.github, t.no_upstream), (0, true, 2));
     }
 
     #[test]

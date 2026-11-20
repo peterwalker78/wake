@@ -1420,19 +1420,30 @@ fn monitor(ui: &Ui) {
     finish(ui, View::Monitor, had_focus);
 }
 
-/// A project's git loose ends in plain words (Pango markup).
-pub fn git_words(g: &GitTotals) -> String {
+/// A project's git loose ends in plain words (Pango markup). "not on GitHub" only when its remote
+/// is GitHub; a repo with no remote at all is a way of working, said once and quietly; and "all
+/// pushed" isn't claimed when Wake couldn't ask the remote.
+pub fn git_words(p: &ProjectSummary) -> String {
+    let g = &p.git;
+    let unpushed = if g.github { "not on GitHub" } else { "not pushed" };
     let mut out = Vec::new();
     if g.ahead_total > 0 {
-        out.push(amber(&format!("{} not pushed", fmt::pl(g.ahead_total, "commit", "commits"))));
+        out.push(amber(&format!("{} {unpushed}", fmt::pl(g.ahead_total, "commit", "commits"))));
     }
     if g.dirty_files > 0 {
         out.push(amber(&format!("{} edited, not committed", fmt::pl(g.dirty_files, "file", "files"))));
     }
     if g.no_upstream > 0 {
-        out.push(format!("{} only on this computer", fmt::pl(g.no_upstream, "branch", "branches")));
+        out.push(format!("{} {unpushed}", fmt::pl(g.no_upstream, "branch", "branches")));
     }
-    if out.is_empty() { dim("all pushed") } else { out.join("\n") }
+    if g.no_remote > 0 {
+        out.push(dim("only on this computer (no remote)"));
+    }
+    match (out.is_empty(), &p.remote_problem) {
+        (true, Some(why)) => dim(&glib::markup_escape_text(why)),
+        (true, None) => dim("all pushed"),
+        _ => out.join("\n"),
+    }
 }
 
 /// The projects table's columns and which of them sort; "Open" only while some project has a
@@ -1606,7 +1617,7 @@ fn projects(ui: &Ui) {
             if p.live.idle > 0 {
                 open.push(format!("{} idle", p.live.idle));
             }
-            let words = if p.git_checked { git_words(&p.git) } else { dim("checking git…") };
+            let words = if p.git_checked { git_words(p) } else { dim("checking git…") };
             if any_open {
                 cells.push((w::markup(&open.join(" · "), &["gitc"]).upcast(), cols[2].1, false));
             }
@@ -2125,7 +2136,7 @@ mod tests {
             last_at: last.map(String::from),
             sessions_14d: 0,
             ideas: 0,
-            git: GitTotals { ahead_total: ahead, no_upstream: 0, dirty_files: 0 },
+            git: GitTotals { ahead_total: ahead, ..Default::default() },
             paused: None,
             last_summary: None,
             git_checked: true,

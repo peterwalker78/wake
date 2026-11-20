@@ -146,6 +146,14 @@ pub struct GitTotals {
     pub ahead_total: u32,
     pub no_upstream: u32,
     pub dirty_files: u32,
+    /// How many of the project's repos have no remote at all (only on this computer). Added
+    /// 2026-11-20.
+    #[serde(default)]
+    pub no_remote: u32,
+    /// True when it has a remote and every remote is on github.com, so "not on GitHub" is true.
+    /// Added 2026-11-20.
+    #[serde(default)]
+    pub github: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +207,10 @@ pub struct RepoState {
     pub worktrees: u32,
     pub last_commit_at: Option<String>,
     pub last_commit_subject: Option<String>,
+    /// Where its remote lives, as `remote::host_of_url` names it ("GitHub", "GitLab", "Codeberg",
+    /// else "the remote"); None when the repo has no remote. Added 2026-11-20.
+    #[serde(default)]
+    pub remote_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

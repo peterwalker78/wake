@@ -203,7 +203,7 @@ mod tests {
             last_at: Some(last.into()),
             sessions_14d: 0,
             ideas: 0,
-            git: GitTotals { ahead_total: ahead, no_upstream: 0, dirty_files: 0 },
+            git: GitTotals { ahead_total: ahead, ..Default::default() },
             paused: None,
             last_summary: None,
             git_checked: true,

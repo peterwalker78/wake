@@ -79,9 +79,9 @@ impl Item {
 }
 
 fn items(ui: &Ui) -> Vec<Item> {
+    let unsure = app::unsure(ui);
     let st = ui.st.borrow();
     let Some(ov) = &st.ov else { return Vec::new() };
-    let unsure = st.ov.as_ref().is_some_and(|o| o.locations_unsure.is_some());
     let terms: Vec<String> = st.sw.q.to_lowercase().split_whitespace().map(String::from).collect();
     let mut out = Vec::new();
     if terms.is_empty()

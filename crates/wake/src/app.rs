@@ -205,6 +205,9 @@ pub struct AppState {
     /// Where each live session was last seen for sure, by session id: shown (quietly) while Wake
     /// re-checks Konsole, instead of "checking…".
     pub known_loc: HashMap<String, String>,
+    /// When the overview first said it can't be sure where sessions are (monotonic µs), until it
+    /// is sure again: unsure for `GIVE_UP_SECS` is a failure, not a slow first look.
+    pub unsure_since: Option<i64>,
     /// What the side panel, top bar, rail and chips last drew, so a refresh that changes nothing
     /// redraws nothing (and focus, hover and scroll stay put).
     pub panel_drawn: Option<String>,
@@ -266,6 +269,7 @@ impl Default for AppState {
             agent_done_open: HashSet::new(),
             subs_done_open: false,
             known_loc: HashMap::new(),
+            unsure_since: None,
             panel_drawn: None,
             top_drawn: String::new(),
             rail_drawn: String::new(),
@@ -337,6 +341,8 @@ pub struct Widgets {
     pub sw_scroll: gtk::ScrolledWindow,
     pub modal: gtk::Box,
     pub toast: gtk::Label,
+    /// The pointer on the toast: it stays up while it is there.
+    pub toast_hover: gtk::EventControllerMotion,
 }
 
 pub struct App {
@@ -632,8 +638,16 @@ fn build(app: &gtk::Application, opts: Opts) {
     toast.set_halign(gtk::Align::Center);
     toast.set_valign(gtk::Align::End);
     toast.set_margin_bottom(92);
+    // A long message wraps, centred, rather than running wider than the window.
+    toast.set_wrap(true);
+    toast.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    toast.set_max_width_chars(72);
+    toast.set_justify(gtk::Justification::Center);
+    toast.set_margin_start(16);
+    toast.set_margin_end(16);
     toast.set_visible(false);
-    toast.set_can_target(false);
+    let toast_hover = gtk::EventControllerMotion::new();
+    toast.add_controller(toast_hover.clone());
     overlay.add_overlay(&toast);
     window.set_child(Some(&overlay));
 
@@ -674,6 +688,7 @@ fn build(app: &gtk::Application, opts: Opts) {
             sw_scroll,
             modal,
             toast,
+            toast_hover,
         },
         st: RefCell::new(AppState::default()),
         scope: scope::Model::new(scope::Look::from_settings()),
@@ -682,6 +697,13 @@ fn build(app: &gtk::Application, opts: Opts) {
         live: RefCell::new(HashMap::new()),
         peek: RefCell::new(peek::Peek::default()),
     });
+    {
+        let ui2 = ui.clone();
+        ui.w.toast_hover.connect_leave(move |_| {
+            let ticket = ui2.st.borrow().toast_gen;
+            hide_toast_after(&ui2, ticket, 1500);
+        });
+    }
     if !crate::motion::on() {
         ui.scope.borrow_mut().look.reduced_motion = true;
     }
@@ -696,7 +718,16 @@ fn build(app: &gtk::Application, opts: Opts) {
         st.detailed = detailed;
         st.full_readouts = detailed;
     }
-    ui.src.set_options(&prefs::get().core());
+    let mut core = prefs::get().core();
+    // A screenshot never sends a desktop notification, and asks the remotes only for the
+    // behind-the-remote shots, which show what they said.
+    if opts.screenshot.is_some() {
+        core.notify_behind = false;
+        if !opts.show.as_deref().is_some_and(|s| s.starts_with("behind")) {
+            core.remote_every = None;
+        }
+    }
+    ui.src.set_options(&core);
     {
         // "Follow the system": the desktop went light or dark.
         let ui = ui.clone();
@@ -1050,6 +1081,28 @@ fn apply_show(ui: &Ui, show: &str) {
         "behind" | "behind-pull" | "behind-wait" => crate::behind::show(ui, what, arg),
         "disk" | "disk-machine" | "disk-clear" | "disk-remove" | "set-project" => crate::disk::show(ui, what, arg), // disk.rs hook
         "readouts" => agents::toggle_readouts(ui),
+        // Projects with "Track a folder" open.
+        "track" => {
+            set_view(ui, View::Projects);
+            ui.st.borrow_mut().adding = true;
+            ui.st.borrow_mut().drawn.remove(&View::Projects);
+            views::render_view(ui);
+        }
+        // An error toast (a long one unless given): how it wraps.
+        "toast" => toast(
+            ui,
+            arg.as_deref()
+                .unwrap_or("Couldn't stop 3 of 5: claude (PID 48211) belongs to another user, so Wake can't stop it; codex (PID 50122) had already ended; claude (PID 50310) didn't stop when asked."),
+            true,
+        ),
+        // As if Konsole had not answered for a while: "tab unknown" and the status bar's warning.
+        "tabs-unknown" => {
+            let since = ui.st.borrow().unsure_since;
+            if since.is_some() {
+                ui.st.borrow_mut().unsure_since = Some(glib::monotonic_time() - (GIVE_UP_SECS + 1) * 1_000_000);
+            }
+            render_all(ui);
+        }
         "switcher" => switcher::open(ui),
         "switcher-subs" => {
             switcher::open(ui);
@@ -1181,7 +1234,9 @@ fn apply_show(ui: &Ui, show: &str) {
                 agents::stop_one(ui, pid);
             }
         }
-        _ => eprintln!("wake: --show takes scroll[:px], panel-scroll[:px], agents-open, readouts, switcher, switcher-subs, session[:id], project[:id], pause, stale or stop[:pid]"),
+        _ => eprintln!(
+            "wake: --show takes scroll[:px], panel-scroll[:px], agents-open, readouts, switcher, switcher-subs, session[:id], project[:id], pause, stale, stop[:pid], toast[:text], tabs-unknown or track"
+        ),
     }
 }
 
@@ -1495,6 +1550,9 @@ pub fn refresh(ui: &Ui) {
                 let mut st = ui.st.borrow_mut();
                 if ov.locations_unsure.is_none() {
                     st.known_loc = ov.sessions.iter().filter_map(|s| s.location.as_ref().map(|l| (s.id.clone(), tab_label(l)))).collect();
+                    st.unsure_since = None;
+                } else if st.unsure_since.is_none() {
+                    st.unsure_since = Some(glib::monotonic_time());
                 }
                 st.busy_ov = false;
                 st.ov = Some(ov);
@@ -1906,9 +1964,27 @@ pub fn tab_label(l: &Location) -> String {
     l.label.clone().unwrap_or_else(|| format!("Konsole {} · tab {}", l.window, l.tab_index + 1))
 }
 
-/// True while Wake can't be sure where live sessions are (Konsole hasn't answered yet).
+/// How long Wake waits for Konsole to answer before it treats the tabs as unknown.
+const GIVE_UP_SECS: i64 = 15;
+
+/// Why Wake can't be sure where live sessions are, while it is so (Konsole hasn't answered).
+pub fn unsure_why(ui: &Ui) -> Option<String> {
+    ui.st.borrow().ov.as_ref().and_then(|o| o.locations_unsure.clone())
+}
+
+/// True while Wake is still finding where live sessions are: not yet `tabs_unknown`.
 pub fn unsure(ui: &Ui) -> bool {
-    ui.st.borrow().ov.as_ref().is_some_and(|o| o.locations_unsure.is_some())
+    unsure_why(ui).is_some() && tabs_unknown(ui).is_none()
+}
+
+/// Why Wake can't see Konsole's tabs, once it has failed to for `GIVE_UP_SECS`. Then a session
+/// shows "tab unknown" and Go to attaches or resumes, as it does with no Konsole at all.
+pub fn tabs_unknown(ui: &Ui) -> Option<String> {
+    let since = ui.st.borrow().unsure_since?;
+    if (glib::monotonic_time() - since) / 1_000_000 < GIVE_UP_SECS {
+        return None;
+    }
+    unsure_why(ui)
 }
 
 /// Where a session can be seen, as the web's `locOf`: text, class, can go, tooltip. While Wake is
@@ -1935,15 +2011,26 @@ pub fn loc_of(s: &SessionSummary, unsure: bool) -> (String, &'static str, bool, 
 
 /// `loc_of`, except that while Wake re-checks Konsole a live session shows where it was last seen
 /// for sure (quietly, and it can't be gone to until Wake is sure again) instead of "checking…".
+/// Once the tabs are `tabs_unknown`, a live session without a tab says "tab unknown" (it may be
+/// in one Wake can't see) and Go to attaches to it.
 pub fn loc_for(ui: &Ui, s: &SessionSummary) -> (String, &'static str, bool, String) {
     let unsure = unsure(ui);
     let out = loc_of(s, unsure);
-    if unsure && s.location.is_none() && is_live(s.state) {
+    if let Some(why) = tabs_unknown(ui)
+        && out.0 == "background"
+    {
+        return ("tab unknown".into(), out.1, out.2, format!("{why} Go to opens a Konsole tab with claude attach typed, waiting for your Enter."));
+    }
+    if unsure
+        && s.location.is_none()
+        && is_live(s.state)
+        && let Some(why) = unsure_why(ui)
+    {
         if let Some(seen) = ui.st.borrow().known_loc.get(&s.id) {
-            return (seen.clone(), "none", false, "Last seen here; Wake is checking Konsole again.".into());
+            return (seen.clone(), "none", false, format!("Last seen here. {why}"));
         }
         if out.0 == "checking…" {
-            return ("…".into(), "none", false, out.3);
+            return ("…".into(), "none", false, why);
         }
     }
     out
@@ -2027,17 +2114,14 @@ pub fn go_to(ui: &Ui, id: &str) {
     let Some(s) = find_session(ui, id) else { return };
     let (_, _, can, _) = loc_of(&s, unsure(ui));
     if !can {
-        toast(
-            ui,
-            if s.deleted_by_claude {
-                "Claude deleted this conversation, so it can't be reopened. Wake kept what it did."
-            } else if unsure(ui) {
-                "Wake is still finding which tab this is in. Try again in a moment."
-            } else {
-                "Wake can't find a terminal tab for this session."
-            },
-            true,
-        );
+        let msg = if s.deleted_by_claude {
+            "Claude deleted this conversation, so it can't be reopened. Wake kept what it did.".to_string()
+        } else if let Some(why) = unsure_why(ui).filter(|_| unsure(ui)) {
+            format!("{why} Try again in a moment.")
+        } else {
+            "Wake can't find a terminal tab for this session.".to_string()
+        };
+        toast(ui, &msg, true);
         return;
     }
     let id = id.to_string();
@@ -2190,9 +2274,17 @@ pub fn toast(ui: &Ui, msg: &str, bad: bool) {
         st.toast_gen += 1;
         st.toast_gen
     };
+    // Long enough to read: an error stays 5 s and 50 ms more for each character.
+    let ms = if bad { 5000 + 50 * msg.chars().count() as u64 } else { 3200 };
+    hide_toast_after(ui, ticket, ms);
+}
+
+/// Hides toast `ticket` after `ms`, unless another took its place or the pointer is on it (then
+/// leaving it hides it a moment later).
+fn hide_toast_after(ui: &Ui, ticket: u64, ms: u64) {
     let ui = ui.clone();
-    glib::timeout_add_local_once(Duration::from_millis(if bad { 5000 } else { 3200 }), move || {
-        if ui.st.borrow().toast_gen == ticket {
+    glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+        if ui.st.borrow().toast_gen == ticket && !ui.w.toast_hover.contains_pointer() {
             ui.w.toast.set_visible(false);
         }
     });

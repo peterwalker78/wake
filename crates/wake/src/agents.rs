@@ -230,6 +230,7 @@ pub fn render(ui: &Ui) {
     } else {
         stale.set_ellipsize(gtk::pango::EllipsizeMode::End);
     }
+    stale.set_tooltip_text(Some("Stale: idle for hours with no window, or a spare nobody used. Stopping frees the memory; the conversation is kept."));
     live_text(ui, View::Agents, &stale, move |st| st.procs.as_ref().map(stale_words));
     line.append(&stale);
     if !stack {
@@ -266,7 +267,7 @@ pub fn render(ui: &Ui) {
     let mut last_group = "";
     for (group, a) in rows {
         if group != last_group {
-            vw.list.append(&group_row(group));
+            vw.list.append(&views::group_row(group, group_words(group)));
             last_group = group;
         }
         vw.list.append(&proc_row(ui, a, daemon, &p, &cols, full, hide));
@@ -276,7 +277,7 @@ pub fn render(ui: &Ui) {
         }
     }
     if !stale_only && !p.dead_notes.is_empty() {
-        vw.list.append(&group_row("Notes whose process has gone"));
+        vw.list.append(&views::group_row("Notes whose process has gone", None));
         for &pid in &p.dead_notes {
             vw.list.append(&dead_row(ui, pid, &cols, full, hide));
         }
@@ -299,8 +300,15 @@ pub fn render(ui: &Ui) {
     ensure_ticking(ui);
 }
 
-fn group_row(title: &str) -> gtk::ListBoxRow {
-    views::group_row(title)
+/// What a group of agent processes is, under its heading, for someone who hasn't met it before.
+fn group_words(group: &str) -> Option<&'static str> {
+    match group {
+        "Claude's daemon" => Some("Runs your background sessions. Wake never stops it."),
+        "Terminal hosts" => Some("Each keeps a background session's terminal alive."),
+        "Spares" => Some("Claude starts one early so the next session opens fast. Unused ones are safe to stop."),
+        "Strays" => Some("Agent processes Wake can't match to a session or window. Check before stopping."),
+        _ => None,
+    }
 }
 
 fn wave_cell(ui: &Ui, a: &AgentProc, full: bool) -> gtk::Widget {
@@ -1445,7 +1453,11 @@ pub fn stop_line_at(a: &AgentProc, last_at: Option<&str>) -> (String, String) {
 pub fn stop_words(a: &AgentProc) -> Vec<String> {
     let later = "If it is still running after 5 seconds, Wake offers to force it.".to_string();
     match (a.kind, &a.job_id, where_words(a)) {
-        (ProcKind::Stray, ..) => vec!["Wake can't tie this process to a session. Check its command below before you stop it.".into(), later],
+        (ProcKind::Stray, ..) => vec![
+            "Wake can't tie this process to a session. Check its command below before you stop it.".into(),
+            "If it's a Claude you started yourself in a terminal you still use, choose Cancel. Its conversation is kept either way.".into(),
+            later,
+        ],
         (ProcKind::Spare, ..) => vec!["It is a spare Claude nobody has used yet; stopping it loses nothing.".into()],
         (ProcKind::Subagent, ..) => vec!["It is a helper its session started. Stopping it ends that piece of work; the session carries on.".into(), later],
         (_, Some(_), _) => vec!["Claude stops this background session cleanly. Its conversation is kept, and you can resume it later.".into()],
@@ -1465,6 +1477,7 @@ pub fn stop_one(ui: &Ui, pid: u32) {
     }
     let how = how_for(&a);
     let ticks = a.start_ticks;
+    let task = task_of(&a);
     let (last, said, dirty) = {
         let st = ui.st.borrow();
         let s = session_of(&st, &a);
@@ -1487,13 +1500,16 @@ pub fn stop_one(ui: &Ui, pid: u32) {
         words.push(format!("{name} has {} not committed. Stopping doesn't touch them.", fmt::pl(n, "file", "files")));
     }
     dialogs::confirm(ui, &format!("Stop “{}”?", task_of(&a)), &words, &list, "Stop", move |ui| {
+        let task = task.clone();
         app::bg(
             ui,
             move |src| src.stop(pid, ticks, how, false),
             move |ui, r| {
-                say(ui, &r);
                 if r.ok {
+                    app::toast(ui, &stopped_words(&task, pid, how), false);
                     after_five(ui, vec![pid]);
+                } else {
+                    say(ui, &r);
                 }
                 app::refresh_procs(ui);
                 app::refresh(ui);
@@ -1524,26 +1540,50 @@ pub fn stop_all_stale(ui: &Ui) {
         "Anything still running after 5 seconds can then be forced.".into(),
     ];
     let plan: Vec<(u32, Option<u64>, StopHow)> = stale.iter().map(|a| (a.pid, a.start_ticks, how_for(a))).collect();
+    let names: Vec<(u32, String)> = stale.iter().map(|a| (a.pid, task_of(a))).collect();
     dialogs::confirm(ui, &title, &body, &list, &format!("Stop {}", stale.len()), move |ui| {
-        let plan = plan.clone();
+        let (plan, names) = (plan.clone(), names.clone());
         app::bg(
             ui,
             move |src| plan.iter().map(|(pid, ticks, how)| (*pid, src.stop(*pid, *ticks, *how, false))).collect::<Vec<_>>(),
-            |ui, results| {
+            move |ui, results| {
                 let ok: Vec<u32> = results.iter().filter(|(_, r)| r.ok).map(|(p, _)| *p).collect();
-                let refused: Vec<String> = results.iter().filter(|(_, r)| !r.ok).map(|(p, r)| format!("PID {p}: {}", r.message)).collect();
-                let msg = if refused.is_empty() {
-                    format!("Asked {} to stop.", fmt::pl(ok.len() as u64, "agent", "agents"))
-                } else {
-                    format!("Asked {} to stop. {}", fmt::pl(ok.len() as u64, "agent", "agents"), refused.join(" "))
-                };
-                app::toast(ui, &msg, results.iter().any(|(_, r)| !r.ok && !r.message.contains("already ended")));
+                app::toast(ui, &stopped_all_words(&names, &results), results.iter().any(|(_, r)| !r.ok && !r.message.contains("already ended")));
                 after_five(ui, ok);
                 app::refresh_procs(ui);
                 app::refresh(ui);
             },
         );
     });
+}
+
+/// What a stop that went through did, in plain words (core's own message names the signal).
+fn stopped_words(task: &str, pid: u32, how: StopHow) -> String {
+    let task = fmt::clip(task, 40);
+    match how {
+        StopHow::AgentStop => format!("Asked Claude to stop “{task}” (PID {pid}). Its conversation is kept."),
+        StopHow::Terminate => format!("Asked “{task}” (PID {pid}) to stop. If it is still running in 5 seconds, Wake offers to force it."),
+        StopHow::Kill => format!("Forced “{task}” (PID {pid}) to end."),
+    }
+}
+
+/// Stop all stale: which ones were asked to stop (the first few by name), then each that wasn't,
+/// on a line of its own.
+fn stopped_all_words(names: &[(u32, String)], results: &[(u32, ActionResult)]) -> String {
+    let name = |pid: u32| names.iter().find(|(p, _)| *p == pid).map_or_else(|| format!("PID {pid}"), |(_, t)| format!("“{}” (PID {pid})", fmt::clip(t, 28)));
+    let ok: Vec<u32> = results.iter().filter(|(_, r)| r.ok).map(|(p, _)| *p).collect();
+    let mut lines = Vec::new();
+    if !ok.is_empty() {
+        let mut shown: Vec<String> = ok.iter().take(3).map(|&p| name(p)).collect();
+        if ok.len() > 3 {
+            shown.push(format!("{} more", ok.len() - 3));
+        }
+        lines.push(format!("Asked {} to stop: {}.", fmt::pl(ok.len() as u64, "agent", "agents"), shown.join(", ")));
+    }
+    for (pid, r) in results.iter().filter(|(_, r)| !r.ok) {
+        lines.push(if r.message.is_empty() { format!("{} didn't stop.", name(*pid)) } else { r.message.clone() });
+    }
+    lines.join("\n")
 }
 
 fn say(ui: &Ui, r: &ActionResult) {
@@ -1604,6 +1644,21 @@ fn after_five(ui: &Ui, pids: Vec<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_toasts_name_what_stopped_and_list_each_refusal() {
+        let res = |ok: bool, m: &str| ActionResult { ok, message: m.into(), steps: vec![] };
+        let names = vec![(1, "fix the login page".to_string()), (2, "spare".to_string()), (3, "old".to_string())];
+        let results =
+            vec![(1, res(true, "Wake sent the polite stop signal (SIGTERM) to PID 1.")), (2, res(false, "Could not stop PID 2: not permitted.")), (3, res(false, "PID 3 had already ended."))];
+        let msg = stopped_all_words(&names, &results);
+        assert_eq!(msg, "Asked 1 agent to stop: “fix the login page” (PID 1).\nCould not stop PID 2: not permitted.\nPID 3 had already ended.");
+        for how in [StopHow::AgentStop, StopHow::Terminate, StopHow::Kill] {
+            assert!(!stopped_words("x", 9, how).contains("SIG"));
+        }
+        let many: Vec<(u32, ActionResult)> = (1..=5).map(|p| (p, res(true, ""))).collect();
+        assert!(stopped_all_words(&[], &many).ends_with("PID 3, 2 more."));
+    }
 
     fn a(pid: u32, kind: ProcKind, rss_mb: u64, start: u64, stale: Option<&str>) -> AgentProc {
         AgentProc {

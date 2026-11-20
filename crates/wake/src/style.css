@@ -200,6 +200,7 @@ window.wake entry.search { font-size: 14px; min-height: 38px; border-radius: 8px
 .noreadout { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; border: 1px dashed @line; border-radius: 7px; padding: 8px 9px; }
 .agentrow .cell { padding: 7px 12px; }
 .pgrp { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9px; letter-spacing: 2px; color: @dim; padding: 10px 14px 4px; }
+.pgrpsub { font-size: 12px; color: @dim; padding: 0 14px 6px; }
 .confirm-list { background-color: @bg; border: 1px solid @line; border-radius: 8px; padding: 8px 10px; }
 .mono { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
 

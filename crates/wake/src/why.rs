@@ -38,11 +38,16 @@ pub fn asks_question(s: &SessionSummary) -> bool {
     s.evidence.starts_with("asked a question") || s.question.as_deref().is_some_and(|q| wake_core::index::ends_with_question(Some(q)))
 }
 
-/// Why `s` stopped, or None while it works (or Wake has lost track of it).
+/// Why `s` stopped (or why Wake lost track of it), or None while it works.
 pub fn stop_reason(s: &SessionSummary) -> Option<Reason> {
     let mid = || format!("stopped mid-task (last ran {})", ran(s.last_at.as_deref()));
     match s.state {
-        State::Working | State::Unknown => None,
+        State::Working => None,
+        // The core's own evidence: "says busy, but nothing has changed for 6 h".
+        State::Unknown => {
+            let words = if s.evidence.is_empty() { "lost track".to_string() } else { format!("lost track: {}", s.evidence) };
+            Some(Reason { words, class: "dim", decision: None })
+        }
         State::Waiting => {
             let q = s.question.clone();
             let words = if asks_question(s) { "asks you" } else { "wants a decision" };
@@ -179,7 +184,7 @@ mod tests {
         let mut gone = session(State::Ended, "ended; Claude deleted the transcript, Wake kept this summary");
         gone.deleted_by_claude = true;
         assert_eq!(stop_reason(&gone).unwrap().words, "ended: Claude deleted the transcript");
-        assert_eq!(stop_reason(&session(State::Unknown, "status files disagree")), None);
+        assert_eq!(stop_reason(&session(State::Unknown, "status files disagree (busy vs idle)")).unwrap().words, "lost track: status files disagree (busy vs idle)");
     }
 
     #[test]

@@ -306,7 +306,7 @@ impl DemoSource {
             project: "tideline-desktop",
             title: "unfinished-work-check",
             state: State::Unknown,
-            evidence: "process gone 6 h ago, no end recorded",
+            evidence: "says busy, but nothing has changed for 6 h",
             started: 8 * HOUR,
             last: 6 * HOUR,
             minutes: 22,
@@ -823,7 +823,7 @@ impl Source for DemoSource {
         };
         // The stray pretends to ignore a polite signal, so the Force step can be seen.
         if pid == 27740 && how == StopHow::Terminate {
-            return ActionResult { ok: true, message: format!("Demo: sent SIGTERM to PID {pid}."), steps: vec![step] };
+            return ActionResult { ok: true, message: format!("Demo: asked PID {pid} to stop."), steps: vec![step] };
         }
         let gone: Vec<u32> = std::iter::once(pid).chain(p.children.iter().copied()).collect();
         st.procs.retain(|q| !gone.contains(&q.pid));

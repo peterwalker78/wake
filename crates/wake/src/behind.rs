@@ -3,7 +3,8 @@
 //! it matters: the person started building in a project that is behind (wake-core's `Watch`
 //! decides that), and then a full-width banner sits at the top of Wake until they acknowledge it
 //! (`Esc` or its button) for this behind-episode. "Pull now" (`P`) runs `git pull --ff-only` after
-//! a confirmation: the one git write in Wake.
+//! a confirmation: with Remove worktree, one of the two changes Wake ever makes to a repo. On
+//! screen it all reads as plain sentences; the git command is in the tooltips and the dialog.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -19,7 +20,7 @@ use crate::{
 const CSS: &str = "
 .behind-banner { background-color: #5C0F1A; border-bottom: 3px solid #FF7A8A; padding: 12px 18px; }
 .behind-banner .bb-title { color: #FFFFFF; font-weight: 700; font-size: 17px; }
-.behind-banner .bb-fix { color: #FFB547; font-family: \"JetBrains Mono\", monospace; font-weight: 700; font-size: 13.5px; }
+.behind-banner .bb-fix { color: #FFB547; font-weight: 700; font-size: 13.5px; }
 .behind-banner .bb-note { color: #FFD9DE; font-size: 12.5px; }
 .behind-banner .bb-tag { font-family: \"JetBrains Mono\", monospace; font-weight: 700; font-size: 11px; letter-spacing: 1.5px; color: #2a0409; background-color: #FF7A8A; border-radius: 4px; padding: 3px 8px; }
 window.wake .behind-banner button.btn { background-color: rgba(255,255,255,.08); border-color: rgba(255,255,255,.35); color: #FFFFFF; }
@@ -167,15 +168,10 @@ pub fn render(ui: &Ui) {
                 ui.window.announce(&format!("Warning: {} is behind. Pull before you build.", b.project_name), gtk::AccessibleAnnouncementPriority::High);
             }
         }
-        bn.title.set_text(&format!("You're building in {}, but it's {}.", b.project_name, remote::how_far(b)));
-        bn.fix.set_text(&format!("Pull first:  {}", b.fix));
+        bn.title.set_text(&format!("You're building in {}. {}", b.project_name, news(b)));
+        bn.fix.set_text(&next_step(b, true));
+        bn.fix.set_tooltip_text(Some(&command_tip(b)));
         let mut note = Vec::new();
-        if b.dirty > 0 {
-            note.push(format!("{} not committed: pulling may need a stash first.", fmt::pl(b.dirty, "file", "files")));
-        }
-        if b.ahead > 0 {
-            note.push(format!("{} here {} on {}, so it can't fast-forward.", fmt::pl(b.ahead, "commit", "commits"), if b.ahead == 1 { "isn't" } else { "aren't" }, b.host));
-        }
         if list.len() > 1 {
             let others: Vec<&str> = list[1..].iter().map(|x| x.project_name.as_str()).collect();
             note.push(format!("Also behind while building: {}.", others.join(", ")));
@@ -250,13 +246,44 @@ fn context_project(ui: &Ui) -> Option<String> {
 }
 
 fn cant_pull(b: &Behind) -> String {
-    if b.dirty > 0 {
-        format!("{} has uncommitted changes. Commit or stash first; Wake only pulls a clean tree.", b.project_name)
-    } else if b.ahead > 0 {
-        format!("{} can't fast-forward: it has commits {} doesn't. Pull in a terminal.", b.project_name, b.host)
-    } else {
-        format!("Wake can't pull {} from here.", b.project_name)
+    format!("{}: {}", b.project_name, next_step(b, false))
+}
+
+/// What happened, in plain words: "Someone pushed 3 commits you don't have yet."
+fn news(b: &Behind) -> String {
+    match b.count {
+        Some(n) => format!("Someone pushed {} you don't have yet.", fmt::pl(n, "commit", "commits")),
+        None => "Someone pushed new commits you don't have yet.".to_string(),
     }
+}
+
+/// What to do about it, in plain words; `key` adds the key for Pull.
+fn next_step(b: &Behind, key: bool) -> String {
+    if b.dirty > 0 {
+        let (has, it) = if b.dirty == 1 { ("1 file has".to_string(), "it") } else { (format!("{} files have", b.dirty), "them") };
+        format!("{has} changes that aren't committed. Commit {it} (or ask your agent to), then pull.")
+    } else if b.ahead > 0 {
+        format!(
+            "You also have {} that {} on {}, so Wake can't pull for you. Ask your agent to pull and combine them.",
+            fmt::pl(b.ahead, "commit", "commits"),
+            if b.ahead == 1 { "isn't" } else { "aren't" },
+            b.host
+        )
+    } else if b.can_pull {
+        if key { "Pull them before you start (Shift+P).".to_string() } else { "Pull them before you start.".to_string() }
+    } else {
+        "Wake can't pull this one for you. Ask your agent to pull them in.".to_string()
+    }
+}
+
+/// The plain sentences together: what happened, then what to do.
+fn plain(b: &Behind) -> String {
+    format!("{} {}", news(b), next_step(b, true))
+}
+
+/// The git underneath, for a tooltip: the command Pull runs and where.
+fn command_tip(b: &Behind) -> String {
+    format!("{}\nPull runs {} in {}.", remote::how_far(b), b.fix, fmt::tildify(&b.repo))
 }
 
 /// "Pull <project>?" Then `git pull --ff-only`, and its last line of output.
@@ -271,18 +298,31 @@ pub fn confirm_pull(ui: &Ui, project: &str) {
         None => format!("the new commits on {}", b.upstream),
     };
     let body = [
-        format!("Runs git pull --ff-only in {}. It only fast-forwards: if anything would need merging, it stops and changes nothing.", fmt::tildify(&b.repo)),
-        "This is the only change Wake ever makes to a repo, and only when you say so.".to_string(),
+        format!("Brings in the new commits, in {}. If they clash with yours, nothing changes and Wake tells you.", fmt::tildify(&b.repo)),
+        "Wake changes a repo only when you press Pull or Remove worktree.".to_string(),
     ];
     let id = project.to_string();
+    let (name, folder) = (b.project_name.clone(), fmt::tildify(&b.repo));
+    let commits = match b.count {
+        Some(n) => fmt::pl(n, "new commit", "new commits"),
+        None => "the new commits".to_string(),
+    };
     dialogs::confirm(ui, &format!("Pull {}?", b.project_name), &body, &[(remote::PULL.to_string(), what)], "Pull", move |ui| {
-        app::toast(ui, "Pulling…", false);
+        app::toast(ui, &format!("Pulling into {}…", name), false);
         let (id2, id) = (id.clone(), id.clone());
+        let (name, folder, commits) = (name.clone(), folder.clone(), commits.clone());
         app::bg(
             ui,
             move |src| src.pull(&id2, false),
             move |ui, r| {
-                app::toast(ui, &r.message, !r.ok);
+                // Which project and folder, then git's own last line ("Fast-forward").
+                let said = if r.ok {
+                    let rest = r.message.strip_prefix("Pulled.").unwrap_or(&r.message).trim();
+                    format!("Pulled {commits} into {name}, in {folder}. {rest}").trim_end().to_string()
+                } else {
+                    format!("{name}: {}", r.message)
+                };
+                app::toast(ui, &said, !r.ok);
                 app::refresh(ui);
                 if ui.st.borrow().drawer == Some(Drawer::Project(id.clone())) {
                     crate::panel::load_project(ui, &id);
@@ -305,7 +345,7 @@ pub fn pill(ui: &Ui, project: Option<&str>) -> Option<gtk::Label> {
     }
     l.set_valign(gtk::Align::Center);
     l.set_hexpand(false);
-    l.set_tooltip_text(Some(&b.line));
+    l.set_tooltip_text(Some(&format!("{}\n{}", plain(&b), command_tip(&b))));
     Some(l)
 }
 
@@ -313,8 +353,8 @@ pub fn pill(ui: &Ui, project: Option<&str>) -> Option<gtk::Label> {
 /// its tooltip.
 pub fn row_line(ui: &Ui, project: &str) -> Option<gtk::Label> {
     let b = of(ui, project)?;
-    let l = w::clip(&format!("Pull first: {}", b.fix), &["behind-line"]);
-    l.set_tooltip_text(Some(&b.line));
+    let l = w::clip(&plain(&b), &["behind-line"]);
+    l.set_tooltip_text(Some(&format!("{}\n{}", plain(&b), command_tip(&b))));
     Some(l)
 }
 
@@ -325,7 +365,9 @@ pub fn panel_block(ui: &Ui, project: &str) -> Option<gtk::Box> {
     if b.alarm.is_some() {
         bx.add_css_class("alarm");
     }
-    bx.append(&w::wrap(&b.line, &["bk-line"]));
+    let line = w::wrap(&format!("{} {}", news(&b), next_step(&b, false)), &["bk-line"]);
+    line.set_tooltip_text(Some(&command_tip(&b)));
+    bx.append(&line);
     let mut meta = match &b.checked_at {
         Some(at) => format!("Asked {} {}", b.host, fmt::ago(Some(at))),
         None => format!("From the last fetch; {} couldn't be asked just now", b.host),
@@ -344,8 +386,6 @@ pub fn panel_block(ui: &Ui, project: &str) -> Option<gtk::Box> {
         btn.set_widget_name("pull-now");
         btn.set_halign(gtk::Align::Start);
         bx.append(&btn);
-    } else {
-        bx.append(&w::wrap(&cant_pull(&b), &["meta"]));
     }
     Some(bx)
 }
@@ -384,5 +424,27 @@ fn show_try(ui: &Ui, what: String, arg: Option<String>, left: u32) {
         FORCED.with(|f| *f.borrow_mut() = Some(id));
         // Shown as if it had just appeared, past the Esc grace.
         app::render_all(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(count: Option<u32>, dirty: u32, ahead: u32) -> Behind {
+        Behind { project_name: "Gradebook".into(), host: "GitHub".into(), count, dirty, ahead, can_pull: dirty == 0 && ahead == 0, fix: remote::PULL.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn behind_reads_as_plain_sentences_with_git_only_in_the_tooltip() {
+        assert_eq!(plain(&b(Some(3), 0, 0)), "Someone pushed 3 commits you don't have yet. Pull them before you start (Shift+P).");
+        assert_eq!(next_step(&b(Some(1), 1, 0), false), "1 file has changes that aren't committed. Commit it (or ask your agent to), then pull.");
+        assert_eq!(next_step(&b(None, 2, 0), false), "2 files have changes that aren't committed. Commit them (or ask your agent to), then pull.");
+        assert_eq!(news(&b(None, 0, 0)), "Someone pushed new commits you don't have yet.");
+        assert!(next_step(&b(Some(2), 0, 1), false).starts_with("You also have 1 commit that isn't on GitHub"));
+        for words in [plain(&b(Some(3), 0, 0)), plain(&b(Some(3), 1, 0)), plain(&b(Some(3), 0, 2)), cant_pull(&b(Some(3), 1, 0))] {
+            assert!(!words.contains("git") && !words.contains("stash") && !words.contains("fast-forward"), "{words}");
+        }
+        assert!(command_tip(&b(Some(3), 0, 0)).contains("git pull --ff-only"));
     }
 }

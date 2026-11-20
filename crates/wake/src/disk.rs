@@ -1,13 +1,14 @@
 //! Disk, memory by project, and which project a session belongs to (added 2026-11-20).
 //!
-//! - Projects: a DISK column ("19 G · 18 G rebuildable") and a MEMORY column (its live sessions
+//! - Projects: a DISK column ("19 GB · 18 GB rebuildable") and a MEMORY column (its live sessions
 //!   with their terminals and helpers), both sortable; above the table, one line for the machine
-//!   ("86 G free of 244 G · 25 G could be rebuilt") whose "Disk details" opens the machine's list.
+//!   ("86 GB free of 244 GB · 25 GB could be rebuilt") whose "Disk details" opens the machine's list.
 //!   The machine's list is a dialog rather than a view of its own: it is looked at rarely, and a
 //!   line above Projects plus a dialog adds no key, no rail entry and no new place to learn.
 //! - The project panel: a "Disk" section, each item in plain words with its size, when it was last
 //!   used, how safe it is to delete and what deleting costs, and the one thing Wake offers for it.
-//! - Sessions: "probably night-shift" where Wake guessed the project, and "Set project" (`m`).
+//! - Sessions: "probably night-shift" where Wake guessed the project (the panel says why), and Set
+//!   project (`m`, or the panel's "change" link).
 //!
 //! The numbers come from the core's `Overview::{disk, resources, attribution}`; the cells that
 //! move (memory, CPU, disk while measuring) update in place, so no table is rebuilt for them.
@@ -53,9 +54,9 @@ fn ensure_css() {
     gtk::style_context_add_provider_for_display(&display, &p, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
 }
 
-/// "19 G", the way `du -h` says it.
+/// "19 GB", "601 MB": the same units as memory everywhere else.
 pub fn size(b: u64) -> String {
-    wake_core::disk::human(b)
+    fmt::bytes(b)
 }
 
 fn report(st: &AppState) -> Option<&DiskReport> {
@@ -400,14 +401,20 @@ fn confirm_clear(ui: &Ui, it: &DiskItem, project: Option<&str>, project_name: &s
     ];
     let path = it.path.clone();
     let project = project.map(String::from);
+    // Said with whose folder it was: the Trash may hold several called `target`.
+    let done = match &project {
+        Some(_) => format!("Moved {project_name}'s {} folder ({}) to the Trash. The space comes back when the Trash is emptied.", fmt::base(&it.path), size(it.bytes)),
+        None => format!("Moved {} ({}) to the Trash. The space comes back when the Trash is emptied.", fmt::tildify(&it.path), size(it.bytes)),
+    };
     dialogs::confirm(ui, &format!("Move {} to the Trash?", it.name), &body, &[(fmt::tildify(&it.path), size(it.bytes))], "Move to Trash", move |ui| {
         let p = path.clone();
         let project = project.clone();
+        let done = done.clone();
         app::bg(
             ui,
             move |src| src.clear_disk(&p, false),
             move |ui, r| {
-                app::toast(ui, &r.message, !r.ok);
+                app::toast(ui, if r.ok { &done } else { &r.message }, !r.ok);
                 after_action(ui, project.as_deref());
             },
         );
@@ -436,14 +443,17 @@ fn confirm_remove(ui: &Ui, it: &DiskItem) {
     let cmd = it.command.clone().unwrap_or_default();
     let path = it.path.clone();
     let project = report(&ui.st.borrow()).and_then(|r| r.projects.iter().find(|p| p.items.iter().any(|i| i.path == it.path)).map(|p| p.project.clone()));
+    let whose = project.as_deref().and_then(|id| app::find_project(ui, id)).map(|p| format!("{}'s", p.name)).unwrap_or_else(|| "the".into());
+    let done = format!("Removed {whose} worktree for {branch}, at {}. The branch is still there.", fmt::tildify(&it.path));
     dialogs::confirm(ui, &format!("Remove the worktree for {branch}?"), &body, &[(cmd, size(it.bytes))], "Remove worktree", move |ui| {
         let p = path.clone();
         let project = project.clone();
+        let done = done.clone();
         app::bg(
             ui,
             move |src| src.remove_worktree(&p, false),
             move |ui, r| {
-                app::toast(ui, &r.message, !r.ok);
+                app::toast(ui, if r.ok { &done } else { &r.message }, !r.ok);
                 after_action(ui, project.as_deref());
             },
         );
@@ -585,22 +595,13 @@ pub fn project_words(ui: &Ui, s: &SessionSummary) -> String {
     }
 }
 
-/// "Set project" in the session panel's buttons, and how Wake decided. disk.rs hook target.
-pub fn session_extras(ui: &Ui, s: &SessionSummary, act: &gtk::Box) {
-    // Only offered where it helps: no project, or a guess. Otherwise `m` still does it, and the
-    // action row stays short enough for a narrow panel.
-    let unsure = s.project.is_none() || attribution(&ui.st.borrow(), &s.id).is_some_and(|a| a.how == "files" || a.how == "title");
-    if !unsure {
-        return;
+/// The project as the session panel says it, with how Wake knows when it isn't plain: "probably
+/// Skyhook (it changed files there)", "Skyhook (you set it)". disk.rs hook target.
+pub fn project_reason(ui: &Ui, s: &SessionSummary) -> String {
+    match attribution(&ui.st.borrow(), &s.id) {
+        Some(a) => a.words.clone(),
+        None => crate::views::project_label(s.project_name.as_deref()),
     }
-    let (ui2, id) = (ui.clone(), s.id.clone());
-    let b = w::button("Set project", Some("m"), &["ghost"], move || set_project(&ui2, &id));
-    let words = attribution(&ui.st.borrow(), &s.id).map(|a| a.words.clone());
-    b.set_tooltip_text(Some(&match &words {
-        Some(wd) => format!("Wake has it as {wd}. Say which project it belongs to."),
-        None => "Say which project this session belongs to.".to_string(),
-    }));
-    act.append(&b);
 }
 
 /// The session `m` sets the project of: the open panel's, else the selected row's (an agent's
@@ -836,7 +837,7 @@ pub fn demo_report() -> DiskReport {
                 3 * GB + 600 * MB,
                 3.0 * H,
                 Check,
-                "Its branch worktree-agent-ace0489 has commits main doesn't: removing it could lose work. 3.6 G of it is build output, listed below.",
+                "Its branch worktree-agent-ace0489 has commits main doesn't: removing it could lose work. 3.6 GB of it is build output, listed below.",
                 Some(OpenFolder),
             );
             i.worktree = Some(WorktreeInfo {
@@ -874,7 +875,7 @@ pub fn demo_report() -> DiskReport {
                 412 * MB,
                 26.0 * H,
                 Safe,
-                "Its branch focus-card-tidy is in main; removing it deletes only this copy (the branch stays). 380 M of it is build output, listed below.",
+                "Its branch focus-card-tidy is in main; removing it deletes only this copy (the branch stays). 380 MB of it is build output, listed below.",
                 Some(RemoveWorktree),
             );
             i.command = Some("git -C ~/Projects/tideline-desktop worktree remove .claude/worktrees/focus-card-tidy".into());
@@ -1038,19 +1039,19 @@ pub fn demo_report() -> DiskReport {
                 6 * GB + 800 * MB,
                 0.0,
                 Keep,
-                "3.7 G is in stopped containers. Wake never removes a container.",
+                "3.7 GB is in stopped containers. Wake never removes a container.",
                 None,
             ),
             "podman ps -a",
             "lists them; a stopped distrobox still holds what you installed in it, so remove one only if you're sure (distrobox rm <name>)",
         ),
         cmd(
-            item(&format!("{home}/.local/share/containers"), System, "Container images", 6 * GB + 600 * MB, 0.0, Keep, "1.5 G of it nothing uses.", None),
+            item(&format!("{home}/.local/share/containers"), System, "Container images", 6 * GB + 600 * MB, 0.0, Keep, "1.5 GB of it nothing uses.", None),
             "podman image prune",
             "removes images nothing uses and nothing names (dangling); asks first",
         ),
         cmd(
-            item(&format!("{home}/.local/share/containers"), System, "Container volumes", 2 * GB + 300 * MB, 0.0, Keep, "10 M nothing uses.", None),
+            item(&format!("{home}/.local/share/containers"), System, "Container volumes", 2 * GB + 300 * MB, 0.0, Keep, "10 MB nothing uses.", None),
             "podman volume ls",
             "lists them; volumes hold data such as databases",
         ),
@@ -1167,7 +1168,7 @@ mod tests {
             assert!(p.bytes >= p.rebuildable, "{}", p.project);
         }
         let slip = r.project("tideline-desktop").unwrap();
-        assert_eq!(size(slip.bytes), "21 G");
+        assert_eq!(size(slip.bytes), "21 GB");
         assert!(r.machine.as_ref().unwrap().items.iter().all(|i| i.kind != DiskKind::System || i.command.is_some()));
     }
 }

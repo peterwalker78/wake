@@ -1809,8 +1809,15 @@ mod tests {
         let locked = dir.join("sess-locked.jsonl");
         fs::write(&locked, "{\"type\":\"summary\",\"summary\":\"Old work\"}\n").unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        // Root (as in CI's container) reads it anyway, so the permission cases only hold for a
+        // normal user; the format case holds for everyone.
+        let enforced = fs::File::open(&locked).is_err();
         f.ix.run();
         let st = f.ix.stats();
+        if !enforced {
+            assert_eq!((st.unreadable, st.not_understood, st.not_saved), (0, 1, 0), "{st:?}");
+            return;
+        }
         assert_eq!((st.unreadable, st.not_understood, st.not_saved), (1, 1, 0), "{st:?}");
         assert_eq!(st.sentence().as_deref(), Some("Wake couldn't read 1 transcript (permission denied) and couldn't understand 1. Claude Code may have changed its format. Run `wake doctor`."));
         // the odd one stays counted on later passes (it isn't read again), until it is gone

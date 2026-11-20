@@ -24,6 +24,10 @@ jobs:
             gtk4-devel pango-devel glib2-devel ShellCheck
           rustup-init -y --profile minimal --default-toolchain none
       - uses: actions/checkout@v4
+      # The checkout belongs to the runner's user, not the container's, so git (which one test
+      # reads Wake's own repository with) needs telling that it is safe to read.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: The toolchain rust-toolchain.toml names
         run: . ~/.cargo/env && rustup toolchain install
       - name: Format

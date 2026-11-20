@@ -525,11 +525,7 @@ fn iso(t: f64) -> Option<String> {
 }
 
 fn tilde(p: &Path, home: &Path) -> String {
-    match p.strip_prefix(home) {
-        Ok(r) if r.as_os_str().is_empty() => "~".into(),
-        Ok(r) => format!("~/{}", r.display()),
-        Err(_) => p.display().to_string(),
-    }
+    util::tilde(p, home)
 }
 
 // ---------------------------------------------------------------- one project

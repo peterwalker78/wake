@@ -1291,6 +1291,60 @@ struct IxState {
     files: HashMap<String, FileRec>,
     done: u32,
     total: u32,
+    /// Transcripts changed lately that gave Wake nothing it understood (kept until they do).
+    odd: std::collections::HashSet<String>,
+    stats: IndexStats,
+}
+
+/// What the last indexing pass couldn't use. Files that couldn't be read or saved are tried again
+/// on every pass, so these say how things stand now, not a running total.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexStats {
+    /// Transcripts that couldn't be opened or read.
+    pub unreadable: u32,
+    /// Why the first of them couldn't be read, in words ("permission denied").
+    pub unreadable_why: Option<String>,
+    /// Transcripts changed in the last week that gave Wake nothing at all (no prompt, no time, no
+    /// title): a sign that the agent changed how it writes them.
+    pub not_understood: u32,
+    /// Session summaries Wake couldn't save in its data folder.
+    pub not_saved: u32,
+}
+
+/// How recent a transcript must be for "nothing understood" to count.
+const ODD_WITHIN: f64 = 7.0 * 86400.0;
+
+impl IndexStats {
+    /// One plain sentence when anything couldn't be used, else None.
+    pub fn sentence(&self) -> Option<String> {
+        let s = |n: u32| if n == 1 { "" } else { "s" };
+        let mut parts = Vec::new();
+        if self.unreadable > 0 {
+            let why = self.unreadable_why.as_ref().map(|w| format!(" ({w})")).unwrap_or_default();
+            parts.push(format!("couldn't read {} transcript{}{why}", self.unreadable, s(self.unreadable)));
+        }
+        if self.not_understood > 0 {
+            let noun = if parts.is_empty() { format!(" transcript{}", s(self.not_understood)) } else { String::new() };
+            parts.push(format!("couldn't understand {}{noun}", self.not_understood));
+        }
+        if self.not_saved > 0 {
+            parts.push(format!("couldn't save {} session summar{} in its data folder", self.not_saved, if self.not_saved == 1 { "y" } else { "ies" }));
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        let last = parts.pop().unwrap_or_default();
+        let list = if parts.is_empty() { last } else { format!("{} and {last}", parts.join(", ")) };
+        let format = if self.not_understood > 0 { " Claude Code may have changed its format." } else { "" };
+        Some(format!("Wake {list}.{format} Run `wake doctor`."))
+    }
+}
+
+/// What indexing one transcript came to.
+enum Indexed {
+    Done { understood: bool },
+    Unreadable(std::io::Error),
+    NotSaved,
 }
 
 /// Owns index-v2/files.json and index-v2/sessions/*.json. One writer (`run`), many readers.
@@ -1413,7 +1467,7 @@ impl Indexer {
         store::read_json(&self.session_path(sid))
     }
 
-    fn index_one(&self, path: &str, agent: &str, size: u64, mtime: f64) {
+    fn index_one(&self, path: &str, agent: &str, size: u64, mtime: f64) -> Indexed {
         let sid = if agent == "codex" { codex_id(path) } else { Path::new(path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
         let prev = self.read().files.get(path).cloned();
         let mut acc = None;
@@ -1434,7 +1488,10 @@ impl Indexer {
         acc.source = Some(path.into());
         acc.deleted_by_claude = false;
         let f: LineFn = if agent == "codex" { codex_line } else { claude_line };
-        let Ok(offset) = scan_file(Path::new(path), &mut acc, offset, f) else { return };
+        let offset = match scan_file(Path::new(path), &mut acc, offset, f) {
+            Ok(o) => o,
+            Err(e) => return Indexed::Unreadable(e),
+        };
         if agent == "claude"
             && let Some(d) = subagent_dir(&acc)
             && let Ok(rd) = fs::read_dir(&d)
@@ -1444,11 +1501,18 @@ impl Indexer {
         acc.scan_offset = Some(offset);
         if self.writer.write_json(&self.session_path(&sid), &acc).is_err() {
             // Not saved: leave the bookkeeping alone so the next run reads these lines again.
-            return;
+            return Indexed::NotSaved;
         }
+        // Understood: something at all came out of it (a prompt, a time, a title, a summary line...).
+        let understood = size == 0 || {
+            let mut blank = new_acc(&sid, Some(path), agent);
+            (blank.scan_offset, blank.subagents_total) = (acc.scan_offset, acc.subagents_total);
+            serde_json::to_value(&blank).ok() != serde_json::to_value(&acc).ok()
+        };
         let mut st = self.write();
         st.files.insert(path.into(), FileRec { size, mtime, offset, session: sid.clone(), agent: agent.into() });
         st.sessions.insert(sid, Arc::new(lite(&acc)));
+        Indexed::Done { understood }
     }
 
     /// One incremental pass; only changed files are read. Returns how many files changed.
@@ -1465,13 +1529,31 @@ impl Indexer {
         }
         let mut seen = std::collections::HashSet::new();
         let mut dirty = 0u32;
+        let mut stats = IndexStats::default();
+        let now = util::now();
         for (path, agent) in &found {
             seen.insert(path.clone());
             if let Ok(m) = fs::metadata(path) {
                 let (size, mtime) = (m.len(), mtime_of(&m));
                 let unchanged = self.read().files.get(path).is_some_and(|p| p.size == size && same_time(p.mtime, mtime));
                 if !unchanged {
-                    self.index_one(path, agent, size, mtime);
+                    match self.index_one(path, agent, size, mtime) {
+                        Indexed::Done { understood } => {
+                            let mut st = self.write();
+                            if understood || now - mtime > ODD_WITHIN {
+                                st.odd.remove(path);
+                            } else {
+                                st.odd.insert(path.clone());
+                            }
+                        }
+                        // Gone between listing and opening: not a problem.
+                        Indexed::Unreadable(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Indexed::Unreadable(e) => {
+                            stats.unreadable += 1;
+                            stats.unreadable_why.get_or_insert_with(|| e.kind().to_string());
+                        }
+                        Indexed::NotSaved => stats.not_saved += 1,
+                    }
                     dirty += 1;
                     if dirty.is_multiple_of(25) {
                         self.save_files();
@@ -1506,7 +1588,16 @@ impl Indexer {
         if dirty > 0 || !self.files_path().exists() {
             self.save_files();
         }
+        let mut st = self.write();
+        st.odd.retain(|p| seen.contains(p));
+        stats.not_understood = st.odd.len() as u32;
+        st.stats = stats;
         dirty
+    }
+
+    /// What the last pass couldn't use (all zeros before the first pass ends).
+    pub fn stats(&self) -> IndexStats {
+        self.read().stats.clone()
     }
 
     fn save_files(&self) {
@@ -1703,6 +1794,40 @@ mod tests {
         fs::write(&path, &data).unwrap();
         f.ix.run();
         assert_eq!(f.summary("sess-bbbb").prompts, 3);
+    }
+
+    #[test]
+    fn counts_what_it_could_not_read_understand_or_save() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = setup();
+        assert_eq!(f.ix.stats(), IndexStats::default());
+        assert_eq!(f.ix.stats().sentence(), None);
+        let dir = f.env.transcript("x").parent().unwrap().to_path_buf();
+        // a transcript in a shape Wake doesn't know: no prompt, no time
+        fs::write(dir.join("sess-odd1.jsonl"), "{\"kind\":\"turn\",\"body\":\"hello\"}\n").unwrap();
+        // one that can't be opened
+        let locked = dir.join("sess-locked.jsonl");
+        fs::write(&locked, "{\"type\":\"summary\",\"summary\":\"Old work\"}\n").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        f.ix.run();
+        let st = f.ix.stats();
+        assert_eq!((st.unreadable, st.not_understood, st.not_saved), (1, 1, 0), "{st:?}");
+        assert_eq!(st.sentence().as_deref(), Some("Wake couldn't read 1 transcript (permission denied) and couldn't understand 1. Claude Code may have changed its format. Run `wake doctor`."));
+        // the odd one stays counted on later passes (it isn't read again), until it is gone
+        f.ix.run();
+        assert_eq!(f.ix.stats().not_understood, 1);
+        fs::remove_file(dir.join("sess-odd1.jsonl")).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
+        f.ix.run();
+        assert_eq!(f.ix.stats(), IndexStats::default());
+        // summaries that can't be saved
+        let sessions = f.env.paths.index_dir().join("sessions");
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o500)).unwrap();
+        fs::write(dir.join("sess-new1.jsonl"), "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"},\"timestamp\":\"2026-11-19T12:00:00.000Z\"}\n").unwrap();
+        f.ix.run();
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(f.ix.stats().not_saved, 1);
+        assert_eq!(f.ix.stats().sentence().as_deref(), Some("Wake couldn't save 1 session summary in its data folder. Run `wake doctor`."));
     }
 
     /// A crash after a session file was written but before files.json caught up must not count the

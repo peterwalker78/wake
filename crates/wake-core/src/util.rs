@@ -42,6 +42,15 @@ pub fn iso_from_epoch(t: f64) -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, mo, d, rem / 3600, (rem / 60) % 60, rem % 60, ms)
 }
 
+/// `~/…` for a path under `home`, else the path as it is.
+pub fn tilde(p: &std::path::Path, home: &std::path::Path) -> String {
+    match p.strip_prefix(home) {
+        Ok(r) if r.as_os_str().is_empty() => "~".into(),
+        Ok(r) => format!("~/{}", r.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
 pub fn now_iso() -> String {
     iso_from_epoch(now())
 }

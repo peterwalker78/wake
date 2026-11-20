@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use crate::types::{ActionResult, Location};
 use crate::util::{shell_join, shell_quote};
 
+/// Qt 6's qdbus as Wake writes it in steps; the real runner runs [`qdbus_program`] for it.
 pub const QDBUS: &str = "qdbus-qt6";
 pub const GDBUS: &str = "gdbus";
 pub const TIMEOUT: Duration = Duration::from_secs(2);
@@ -76,9 +77,20 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<
     Ok((status.code().unwrap_or(1), o, e))
 }
 
+/// Qt 6's qdbus here: `qdbus-qt6` (Fedora, Arch), else `qdbus6` (Debian and Ubuntu name it so).
+/// Never Qt 5's `qdbus`. Looked up on PATH once; `QDBUS` when neither is there.
+pub fn qdbus_program() -> &'static str {
+    static FOUND: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    FOUND.get_or_init(|| {
+        let dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+        [QDBUS, "qdbus6"].into_iter().find(|n| dirs.iter().any(|d| d.join(n).is_file())).unwrap_or(QDBUS)
+    })
+}
+
 pub fn default_runner() -> Runner {
     Arc::new(|argv: &[String], timeout: Duration| {
         let Some((prog, args)) = argv.split_first() else { return (126, String::new()) };
+        let prog = if prog == QDBUS { qdbus_program() } else { prog.as_str() };
         let mut cmd = Command::new(prog);
         cmd.args(args);
         match run_with_timeout(cmd, timeout) {

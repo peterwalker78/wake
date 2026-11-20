@@ -244,27 +244,58 @@ pub fn dirty_files(path: &str) -> Option<u32> {
     Some(st.lines().filter(|l| !l.starts_with("## ") && !l.trim().is_empty()).count() as u32)
 }
 
-/// The one-line message and whether "Pull now" may be offered.
+/// The one-line message, in plain words, and whether "Pull now" may be offered.
 pub fn words(c: &RepoCheck, dirty: u32, repo_label: Option<&str>) -> Option<(String, bool)> {
     let Outcome::Behind { count, ahead } = c.outcome else { return None };
-    let what = match repo_label {
-        Some(name) => format!("{name} is behind {}", c.upstream),
-        None => format!("Behind {}", c.upstream),
+    let commits = match count {
+        Some(n) => util_pl(n, "commit", "commits"),
+        None => "new commits".into(),
     };
-    let how = match count {
-        Some(n) => format!("{what} by {n}"),
-        None => format!("{what} (new commits on {}, not fetched yet)", c.host),
+    let pushed = format!("Someone pushed {commits} to {} that you don't have yet", c.host);
+    let pushed = match repo_label {
+        Some(name) => format!("In {name}: {}{}", pushed[..1].to_lowercase(), &pushed[1..]),
+        None => pushed,
     };
     let can_pull = ahead == 0 && dirty == 0;
     let mut line = if ahead > 0 {
-        format!("{how}, and {} here {} pushed. Pull before you build: git pull (it can't fast-forward)", util_pl(ahead, "commit", "commits"), if ahead == 1 { "isn't" } else { "aren't" })
+        format!(
+            "{pushed}, and {} here {} pushed. Wake can't pull this safely: ask your agent to merge them, or run `git pull` in a terminal.",
+            util_pl(ahead, "commit", "commits"),
+            if ahead == 1 { "isn't" } else { "aren't" }
+        )
     } else {
-        format!("{how}. Pull before you build: {PULL}")
+        format!("{pushed}. Pull them before you start.")
     };
-    if dirty > 0 {
-        line.push_str(&format!(". {} not committed: pulling may need a stash first", util_pl(dirty, "file", "files")));
+    if dirty > 0 && ahead == 0 {
+        line.push_str(&format!(" {} changes that aren't committed yet: commit them first, then pull.", if dirty == 1 { "1 file has".to_string() } else { format!("{dirty} files have") }));
     }
     Some((line, can_pull))
+}
+
+/// A failed `git pull --ff-only` in plain words, with what to do next. `host` is "GitHub", "the
+/// remote" and so on.
+pub fn pull_failure_words(git_said: &str, host: &str) -> String {
+    let e = git_said.to_lowercase();
+    if e.contains("not possible to fast-forward") || e.contains("diverg") || e.contains("non-fast-forward") {
+        return format!("Your copy and {host} both have new commits, so Wake won't pull. Ask your agent to merge them, or run `git pull` in a terminal.");
+    }
+    if e.contains("would be overwritten") || e.contains("commit your changes or stash them") {
+        return "The pull would change files you have changed and not committed, so git stopped. Commit them first, then pull.".into();
+    }
+    if e.contains("timed out") && !e.contains("connect") {
+        return format!("{} took too long to answer, so the pull stopped. Try again later.", capital(host));
+    }
+    match problem_words(git_said).as_str() {
+        "offline" => format!("Wake couldn't reach {host}. Check you're online, then try again."),
+        "not signed in" => format!("{} didn't let Wake in. Run `git pull` in a terminal once, to sign in.", capital(host)),
+        "the remote isn't there" => format!("{} says this repository isn't there any more. Check its address with `git remote -v` in a terminal.", capital(host)),
+        _ => "The pull didn't work.".into(),
+    }
+}
+
+fn capital(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
 fn util_pl(n: u32, one: &str, many: &str) -> String {
@@ -321,12 +352,17 @@ pub fn pull_ff_only(path: &str, dry_run: bool) -> ActionResult {
     let p = Path::new(path);
     let step = format!("git -C {} pull --ff-only", util::shell_quote(path));
     let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![step.clone()] };
-    if tracking(p).is_none() {
+    let Some(t) = tracking(p) else {
         return fail("This branch doesn't track a remote branch, so there is nothing to pull.");
-    }
+    };
     match dirty_files(path) {
         Some(0) => {}
-        Some(n) => return fail(&format!("{} not committed. Commit or stash first; Wake only pulls a clean tree.", util_pl(n, "file", "files"))),
+        Some(n) => {
+            return fail(&format!(
+                "{} changes that aren't committed yet. Commit them first; Wake only pulls when everything is committed.",
+                if n == 1 { "1 file has".to_string() } else { format!("{n} files have") }
+            ));
+        }
         None => return fail("Couldn't read this repo."),
     }
     if dry_run {
@@ -341,7 +377,14 @@ pub fn pull_ff_only(path: &str, dry_run: bool) -> ActionResult {
     };
     let last = out.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("").to_string();
     let last = util::take_chars(&last, 200);
-    ActionResult { ok, message: if ok { format!("Pulled. {last}") } else { format!("The pull didn't work: {}", if last.is_empty() { "git gave no reason" } else { &last }) }, steps: vec![step] }
+    let message = if ok {
+        format!("Pulled. {last}")
+    } else {
+        // Plain words first, then git's own line for anyone who wants it.
+        let said = if last.is_empty() { "Git gave no reason.".to_string() } else { format!("Git said: {last}") };
+        format!("{} {said}", pull_failure_words(&out, &host(p, &t.remote)))
+    };
+    ActionResult { ok, message, steps: vec![step] }
 }
 
 // ---------- noticing when building starts while behind ----------
@@ -576,7 +619,7 @@ pub(crate) mod tests {
         // ls-remote, not fetch: not one file in .git changed (no refs, no FETCH_HEAD, no objects).
         assert_eq!(before, snapshot(&t.here.join(".git")));
         let (line, can_pull) = words(&c, 0, None).unwrap();
-        assert_eq!(line, "Behind origin/main (new commits on the remote, not fetched yet). Pull before you build: git pull --ff-only");
+        assert_eq!(line, "Someone pushed new commits to the remote that you don't have yet. Pull them before you start.");
         assert!(can_pull);
     }
 
@@ -590,7 +633,7 @@ pub(crate) mod tests {
         g(&t.here, &["fetch", "-q"]); // setup: the person fetched earlier
         let c = check_repo(&s(&t.here));
         assert_eq!(c.outcome, Outcome::Behind { count: Some(3), ahead: 0 });
-        assert_eq!(words(&c, 0, None).unwrap().0, "Behind origin/main by 3. Pull before you build: git pull --ff-only");
+        assert_eq!(words(&c, 0, None).unwrap().0, "Someone pushed 3 commits to the remote that you don't have yet. Pull them before you start.");
     }
 
     #[test]
@@ -628,7 +671,12 @@ pub(crate) mod tests {
         let (line, can_pull) = words(&c, 0, None).unwrap();
         assert!(!can_pull);
         assert!(line.contains("1 commit here isn't pushed"), "{line}");
-        assert!(line.ends_with("git pull (it can't fast-forward)"), "{line}");
+        assert!(line.ends_with("ask your agent to merge them, or run `git pull` in a terminal."), "{line}");
+        // pulling anyway is refused by git, and said plainly with git's line after it
+        let r = pull_ff_only(&s(&t.here), false);
+        assert!(!r.ok);
+        assert!(r.message.starts_with("Your copy and the remote both have new commits, so Wake won't pull."), "{}", r.message);
+        assert!(r.message.contains("Git said: "), "{}", r.message);
     }
 
     #[test]
@@ -662,10 +710,13 @@ pub(crate) mod tests {
         assert_eq!(d, 1);
         let (line, can_pull) = words(&c, d, None).unwrap();
         assert!(!can_pull);
-        assert!(line.ends_with("1 file not committed: pulling may need a stash first"), "{line}");
+        assert!(line.ends_with("1 file has changes that aren't committed yet: commit them first, then pull."), "{line}");
         let r = pull_ff_only(&s(&t.here), false);
         assert!(!r.ok);
-        assert!(r.message.contains("Commit or stash first"), "{}", r.message);
+        assert!(r.message.contains("Commit them first"), "{}", r.message);
+        for line in [line, r.message] {
+            assert!(!line.contains("stash") && !line.contains("--ff-only") && !line.contains("origin/"), "{line}");
+        }
     }
 
     #[test]
@@ -723,9 +774,9 @@ pub(crate) mod tests {
         let b2 = behind_for("pb", "Skyhook", &["/p".into()], &[&a, &b], &|_| 0).unwrap();
         assert_eq!(b2.repo, "/p/site");
         assert_eq!(b2.others, 1);
-        assert_eq!(b2.line, "site is behind origin/main (new commits on GitHub, not fetched yet). Pull before you build: git pull --ff-only");
+        assert_eq!(b2.line, "In site: someone pushed new commits to GitHub that you don't have yet. Pull them before you start.");
         let one = behind_for("g", "Game", &["/p/game".into()], &[&a], &|_| 0).unwrap();
-        assert_eq!(one.line, "Behind origin/main by 2. Pull before you build: git pull --ff-only");
+        assert_eq!(one.line, "Someone pushed 2 commits to GitHub that you don't have yet. Pull them before you start.");
         assert_eq!(notice(&one).body, "Game is 2 commits behind origin/main. Pull first: git pull --ff-only");
     }
 
@@ -735,6 +786,11 @@ pub(crate) mod tests {
         assert_eq!(problem_words("timed out"), "offline");
         assert_eq!(problem_words("git@github.com: Permission denied (publickey)."), "not signed in");
         assert_eq!(problem_words("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), "not signed in");
+        let diverged = "hint: Diverging branches can't be fast-forwarded, you need to either:\nfatal: Not possible to fast-forward, aborting.";
+        assert_eq!(pull_failure_words(diverged, "GitHub"), "Your copy and GitHub both have new commits, so Wake won't pull. Ask your agent to merge them, or run `git pull` in a terminal.");
+        assert_eq!(pull_failure_words("ssh: Could not resolve hostname github.com", "GitHub"), "Wake couldn't reach GitHub. Check you're online, then try again.");
+        assert_eq!(pull_failure_words("git@github.com: Permission denied (publickey).", "GitHub"), "GitHub didn't let Wake in. Run `git pull` in a terminal once, to sign in.");
+        assert_eq!(pull_failure_words("odd", "the remote"), "The pull didn't work.");
     }
 
     #[test]

@@ -52,7 +52,7 @@ pub struct SessionSummary {
     pub project_name: Option<String>,
     pub title: String,
     pub state: State,
-    /// How Wake knows the state, in plain words: "live, updated 4 s ago", "ended 3 h ago".
+    /// How Wake knows the state, in plain words: "working, last moved 4 s ago", "ended 3 h ago".
     pub evidence: String,
     pub started_at: Option<String>,
     pub last_at: Option<String>,
@@ -128,6 +128,10 @@ pub struct SessionDetail {
     pub pr_links: Vec<String>,
     pub cost_usd: Option<f64>,
     pub subagents: Vec<SubagentSummary>,
+    /// Where the agent's own transcript is, as `~/…` (a background session's job id, for `claude
+    /// attach`, is `summary.job_id`). Added 2026-11-20.
+    #[serde(default)]
+    pub transcript: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -174,6 +178,10 @@ pub struct ProjectSummary {
     /// a stable one from the name. Added 2026-11-20.
     #[serde(default)]
     pub color: Option<String>,
+    /// Set when the last check of one of its repos got no answer from the remote, as a sentence:
+    /// "Wake couldn't ask GitHub (offline)." (so "in step" isn't claimed). Added 2026-11-20.
+    #[serde(default)]
+    pub remote_problem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +227,10 @@ pub struct Idea {
     /// Added 2026-11-20.
     #[serde(default)]
     pub sent_at: Option<String>,
+    /// The id of the brief it was sent in (`<data>/briefs/<id>.md`), when Wake kept it. Added
+    /// 2026-11-20.
+    #[serde(default)]
+    pub brief: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

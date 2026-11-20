@@ -162,19 +162,36 @@ impl Settings {
 /// The settings file in `dir`, read. The note, if any, is one sentence for the person.
 pub fn load(dir: &Path) -> (Settings, Option<String>) {
     let path = dir.join(FILE);
+    let home = crate::store::home_dir();
     let text = match fs::read(&path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Settings::default(), None),
         Err(e) => {
-            return (Settings::default(), Some(format!("Wake couldn't read its settings ({}: {e}), so it is using the defaults and left the file alone.", path.display())));
+            return (Settings::default(), Some(format!("Wake couldn't open its settings file {}, so it is using the defaults and left the file alone. ({e})", util::tilde(&path, &home))));
         }
     };
-    let parsed = std::str::from_utf8(&text).map_err(|e| e.to_string()).and_then(|s| s.parse::<Table>().map_err(|e| first_line(&e.to_string())));
-    match parsed {
+    match parse(&text) {
         Ok(t) => (Settings::from_table(t), None),
         Err(e) => match set_aside(&path) {
-            Some(aside) => (Settings::default(), Some(format!("Wake couldn't understand its settings file ({e}). It kept it as {} and is using the defaults.", aside.display()))),
-            None => (Settings::default(), Some(format!("Wake couldn't understand its settings file ({e}) and couldn't move it aside, so it is using the defaults and won't save over it."))),
+            Some(aside) => (Settings::default(), Some(format!("Wake's settings file was damaged, so it is using the defaults. Your old settings are kept as {}. ({e})", util::tilde(&aside, &home)))),
+            None => (Settings::default(), Some(format!("Wake's settings file was damaged and couldn't be moved aside, so Wake is using the defaults and won't save over it. ({e})"))),
+        },
+    }
+}
+
+fn parse(text: &[u8]) -> Result<Table, String> {
+    std::str::from_utf8(text).map_err(|e| e.to_string()).and_then(|s| s.parse::<Table>().map_err(|e| first_line(&e.to_string())))
+}
+
+/// The settings file, read only for `wake doctor`: unlike [`load`], a damaged file stays where it is.
+pub fn check(dir: &Path) -> crate::store::FileCheck {
+    use crate::store::FileCheck;
+    match fs::read(dir.join(FILE)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => FileCheck::Missing,
+        Err(e) => FileCheck::Unreadable(e.kind().to_string()),
+        Ok(b) => match parse(&b) {
+            Ok(t) => FileCheck::Fine(t.len()),
+            Err(e) => FileCheck::Damaged(e),
         },
     }
 }
@@ -274,10 +291,13 @@ mod tests {
         let dir = tmp("broken");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(FILE), "[look\ntheme = dark").unwrap();
+        assert!(matches!(check(&dir), crate::store::FileCheck::Damaged(_)));
+        assert!(dir.join(FILE).exists(), "checking moves nothing");
         let (s, note) = load(&dir);
         assert_eq!(s, Settings::default());
         let note = note.expect("says so");
-        assert!(note.starts_with("Wake couldn't understand its settings file") && note.contains("settings.toml.broken-"), "{note}");
+        assert!(note.starts_with("Wake's settings file was damaged, so it is using the defaults. Your old settings are kept as ") && note.contains("settings.toml.broken-"), "{note}");
+        assert_eq!(check(&dir), crate::store::FileCheck::Missing);
         assert!(!dir.join(FILE).exists());
         let kept: Vec<_> = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("settings.toml.broken-")).collect();
         assert_eq!(kept.len(), 1);

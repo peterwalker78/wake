@@ -46,6 +46,9 @@ pub struct LiveInfo {
     /// The entry says `"spare": true`: a background session Claude started ahead of time that no
     /// job has taken yet. The only sign of a spare Wake trusts (agent-notify's `is_spare`).
     pub spare: bool,
+    /// The process start time the entry recorded (`procStart`, clock ticks as text), when it has one.
+    /// `alive` already means it matched.
+    pub proc_start: Option<String>,
 }
 
 /// Process start time in clock ticks (field 22 of /proc/<pid>/stat), as text.
@@ -137,6 +140,7 @@ pub fn read_live(paths: &Paths, proc_root: &Path) -> HashMap<String, LiveInfo> {
             note,
             resume_command: read_resume_note(paths, pid),
             spare: rec.get("spare") == Some(&Value::Bool(true)),
+            proc_start: proc_start_s.filter(|s| !s.is_empty()),
         };
         let better = match out.get(sid) {
             None => true,
@@ -286,22 +290,22 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
         Some("busy") => {
             if let Some(n) = newest.filter(|n| now - n > STALE_BUSY) {
                 summary.state = State::Unknown;
-                summary.evidence = format!("says busy, but nothing has changed for {}", ago(Some(now - n)));
+                summary.evidence = format!("Claude says it's busy, but nothing has moved for {}", ago(Some(now - n)));
             } else if notify_newer("idle") {
                 summary.state = State::Unknown;
-                summary.evidence = "status files disagree (busy vs idle)".into();
+                summary.evidence = "Claude's notes disagree: one says working, one says idle".into();
             } else {
                 summary.state = State::Working;
                 summary.evidence = match newest {
-                    Some(n) => format!("live, updated {} ago", ago(Some(now - n))),
-                    None => "live".into(),
+                    Some(n) => format!("working, last moved {} ago", ago(Some(now - n))),
+                    None => "working".into(),
                 };
             }
         }
         Some("idle") => {
             if notify_newer("working") {
                 summary.state = State::Unknown;
-                summary.evidence = "status files disagree (idle vs working)".into();
+                summary.evidence = "Claude's notes disagree: one says idle, one says working".into();
                 return;
             }
             let text = acc.and_then(|a| a.last_text.as_deref());
@@ -342,7 +346,10 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
         }
         other => {
             summary.state = State::Unknown;
-            summary.evidence = format!("live, reports status '{}'", other.unwrap_or("none"));
+            summary.evidence = match other {
+                None => "Claude is running but doesn't say whether it's working".into(),
+                Some(o) => format!("Claude is running but says '{}', which Wake doesn't know", util::take_chars(o, 30)),
+            };
         }
     }
 }

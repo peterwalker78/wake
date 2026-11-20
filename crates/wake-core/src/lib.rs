@@ -11,6 +11,7 @@ pub mod disk;
 pub mod gitinfo;
 pub mod index;
 pub mod live;
+pub mod log;
 pub mod look;
 pub mod procs;
 pub mod questions;
@@ -149,6 +150,10 @@ pub trait Source: Send + Sync {
     /// projects.json.
     fn set_project_color(&self, _id: &str, _color: Option<&str>) -> Result<ProjectSummary, String> {
         Err("Colours can't be changed here.".into())
+    }
+    /// Set a project's next step without pausing it. Writes projects.json only.
+    fn set_next(&self, _id: &str, _next: &str) -> Result<ProjectSummary, String> {
+        Err("The next step can't be changed here.".into())
     }
 
     // ---- Disk, resources, attribution (added 2026-11-20; default bodies so other implementors still compile) ----

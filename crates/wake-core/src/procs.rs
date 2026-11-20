@@ -173,6 +173,17 @@ pub fn agent_of(argv: &[String], exe: Option<&str>) -> Option<Agent> {
     package_of(&resolved).or_else(|| package_of(script))
 }
 
+/// [`agent_of`] for a process as read from /proc, and one more case: inside a toolbox or distrobox
+/// `/proc/<pid>/exe` can't be read and argv[0] is often a bare `claude`, so a process with no
+/// readable executable is taken as Claude when a live `~/.claude/sessions/<pid>.json` names that pid
+/// with the very same start time (a reused pid has another start time and is not taken).
+pub fn identify(p: &ProcInfo, live: &HashMap<String, LiveInfo>) -> Option<Agent> {
+    agent_of(&p.argv, p.exe.as_deref()).or_else(|| {
+        let start = p.start_ticks.to_string();
+        (p.exe.is_none() && live.values().any(|l| l.alive && l.pid == p.pid && l.proc_start.as_deref() == Some(start.as_str()))).then_some(Agent::Claude)
+    })
+}
+
 /// Run once and exit (`claude -p`), or serving another program (`claude mcp serve`): such a process
 /// belongs to whatever started it, so Wake never calls it stale.
 pub fn is_headless(argv: &[String]) -> bool {
@@ -304,7 +315,7 @@ fn gb(b: u64) -> String {
 
 impl Explorer {
     pub fn new(root: &Path) -> Explorer {
-        let jobs_dir = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".claude/jobs"));
+        let jobs_dir = Some(crate::store::Paths::from_env().claude.join("jobs"));
         Explorer { root: root.to_path_buf(), uid: my_uid(), own_pid: std::process::id(), hz: clock_ticks(), samples: Mutex::new(HashMap::new()), jobs_dir }
     }
 
@@ -386,7 +397,7 @@ impl Explorer {
             .iter()
             .filter(|p| p.pid != self.own_pid)
             .filter_map(|p| {
-                let agent = agent_of(&p.argv, p.exe.as_deref())?;
+                let agent = identify(p, inp.live)?;
                 let role = if agent == Agent::Claude { role_of(&p.argv) } else { Role::Main };
                 Some(Cand { p, agent, role })
             })
@@ -843,11 +854,7 @@ impl Actor for RealActor {
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0 as libc::c_uint) };
         if raw < 0 {
             let e = std::io::Error::last_os_error();
-            return Err(if e.raw_os_error() == Some(libc::ESRCH) {
-                "the process has already gone".into()
-            } else {
-                format!("Wake could not get a safe handle on the process ({e}), so it sent nothing")
-            });
+            return Err(if e.raw_os_error() == Some(libc::ESRCH) { "the process has already gone".into() } else { format!("Wake couldn't safely reach the process ({e}), so it did nothing") });
         }
         // SAFETY: pidfd_open returned a new descriptor that nothing else owns.
         let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
@@ -863,6 +870,11 @@ impl Actor for RealActor {
     fn run(&self, argv: &[String]) -> (i32, String) {
         (crate::desktop::default_runner())(argv, std::time::Duration::from_secs(20))
     }
+}
+
+/// "asked 'x' (PID n) to exit", "force-stopped 'x' (PID n)", "asked Claude to stop 'x' (PID n)".
+fn said(what: &str, name: &str) -> String {
+    if what == "asked" { format!("asked {name} to exit") } else { format!("{what} {name}") }
 }
 
 /// The sentence for a pid that no longer names the process the person confirmed.
@@ -898,7 +910,7 @@ pub fn stop(
     if p.uid != explorer.uid {
         return refuse(format!("Process {pid} belongs to another user, so Wake will not touch it."));
     }
-    let Some(agent) = agent_of(&p.argv, p.exe.as_deref()) else {
+    let Some(agent) = identify(&p, live) else {
         return refuse(format!("Process {pid} ({}) is not an agent process, so Wake will not stop it.", util::take_chars(&p.comm, 40)));
     };
     let role = if agent == Agent::Claude { role_of(&p.argv) } else { Role::Main };
@@ -910,19 +922,19 @@ pub fn stop(
     let (steps, what) = match how {
         StopHow::AgentStop => {
             let Some(job) = info.and_then(|i| i.job_id.clone()) else {
-                return refuse(format!("{name} is not a background session with a job id, so there is nothing for 'claude stop'. Use End instead."));
+                return refuse(format!("{name} isn't a background session, so 'claude stop' can't stop it. Ask it to exit instead."));
             };
             if job.is_empty() || job.len() > 64 || !job.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
                 return refuse(format!("The job id of {name} looks wrong, so Wake will not pass it to 'claude stop'."));
             }
             (vec!["claude".to_string(), "stop".into(), job], "asked Claude to stop")
         }
-        StopHow::Terminate => (vec!["kill".into(), "-TERM".into(), pid.to_string()], "sent the polite stop signal (SIGTERM) to"),
-        StopHow::Kill => (vec!["kill".into(), "-KILL".into(), pid.to_string()], "force-stopped (SIGKILL)"),
+        StopHow::Terminate => (vec!["kill".into(), "-TERM".into(), pid.to_string()], "asked"),
+        StopHow::Kill => (vec!["kill".into(), "-KILL".into(), pid.to_string()], "force-stopped"),
     };
     let step = util::shell_join(&steps);
     if dry_run {
-        return ActionResult { ok: true, message: format!("Dry run. Wake would have {what} {name}."), steps: vec![step] };
+        return ActionResult { ok: true, message: format!("Dry run. Wake would have {}.", said(what, &name)), steps: vec![step] };
     }
     let outcome = match how {
         StopHow::AgentStop => {
@@ -935,7 +947,7 @@ pub fn stop(
     match outcome {
         Ok(()) => {
             let tail = if how == StopHow::Kill { "" } else { " If it is still running in 5 seconds, Force is offered." };
-            ActionResult { ok: true, message: format!("Wake {what} {name}.{tail}"), steps: vec![step] }
+            ActionResult { ok: true, message: format!("Wake {}.{tail}", said(what, &name)), steps: vec![step] }
         }
         Err(e) => ActionResult { ok: false, message: format!("Could not stop {name}: {e}."), steps: vec![step] },
     }
@@ -1195,7 +1207,12 @@ pub(crate) mod tests {
         assert!(r.ok);
         assert_eq!(r.steps, ["claude stop jobA"]);
         assert!(r.message.starts_with("Dry run.") && r.message.contains("'parser-work' (PID 201)"));
-        assert_eq!(go(221, StopHow::Terminate, true).steps, ["kill -TERM 221"]);
+        let t = go(221, StopHow::Terminate, true);
+        assert_eq!(t.steps, ["kill -TERM 221"]);
+        assert!(t.message.starts_with("Dry run. Wake would have asked ") && t.message.ends_with(" to exit."), "{}", t.message);
+        assert!(!t.message.contains("SIG"), "{}", t.message);
+        assert!(!go(500, StopHow::Kill, true).message.contains("SIG"));
+        assert!(!go(400, StopHow::AgentStop, true).message.contains("End"));
         assert_eq!(go(500, StopHow::Kill, true).steps, ["kill -KILL 500"]);
         assert!(actor.calls.lock().unwrap().is_empty(), "dry run acted");
         // a real run goes through the actor only (a fake here), with the start time checked
@@ -1290,6 +1307,45 @@ pub(crate) mod tests {
         assert_eq!(o.stale_count, 2);
         let stray = o.procs.iter().find(|p| p.pid == 160).unwrap();
         assert_eq!((stray.kind, stray.stale_reason.as_deref()), (ProcKind::Stray, None));
+    }
+
+    /// Inside a toolbox /proc/<pid>/exe can't be read and argv[0] is a bare `claude`: such a process
+    /// counts only when a live session file names it with the same start time.
+    #[test]
+    fn unreadable_exe_counts_only_when_a_live_session_file_vouches_for_it() {
+        let fp = FakeProc::new();
+        let uid = my_uid();
+        fp.add(610, 1, &["claude", "--resume", "x"], "", 90_000, 1, 5_000, uid);
+        fp.add(620, 1, &["claude"], "", 90_000, 1, 6_000, uid);
+        fp.add(630, 1, &["claude"], "", 90_000, 1, 7_000, uid);
+        let ex = Explorer::new(fp.root());
+        let mut live = HashMap::new();
+        let entry =
+            |pid: u32, start: Option<&str>| LiveInfo { pid, session_id: format!("s{pid}"), alive: true, name: Some(format!("t{pid}")), proc_start: start.map(Into::into), ..Default::default() };
+        live.insert("s610".into(), entry(610, Some("5000")));
+        live.insert("s620".into(), entry(620, Some("1234"))); // the pid was reused
+        live.insert("s630".into(), entry(630, None)); // no start time to compare
+        let p = |pid| read_proc(fp.root(), pid).unwrap();
+        assert_eq!(p(610).exe, None);
+        assert_eq!(identify(&p(610), &live), Some(Agent::Claude));
+        assert_eq!(identify(&p(620), &live), None);
+        assert_eq!(identify(&p(630), &live), None);
+        assert_eq!(identify(&p(610), &HashMap::new()), None);
+        let view = |i: &LiveInfo| SessionView { title: i.name.clone(), state: Some(State::Idle), used: true, ..Default::default() };
+        let locate = |_: u32, _: Option<&str>| -> Option<Location> { None };
+        let notes = HashMap::new();
+        let o = ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, now: util::now() });
+        assert_eq!(o.procs.iter().map(|r| r.pid).collect::<Vec<_>>(), [610]);
+        // Stopping keeps its checks: the vouched-for process can be stopped, the others can't.
+        let actor = FakeActor { calls: Mutex::new(vec![]) };
+        let title = |i: &LiveInfo| i.name.clone();
+        let r = stop(&ex, &actor, &live, &title, 610, Some(5_000), StopHow::Terminate, false);
+        assert!(r.ok, "{r:?}");
+        assert_eq!(r.message, "Wake asked 't610' (PID 610) to exit. If it is still running in 5 seconds, Force is offered.");
+        assert_eq!(stop(&ex, &actor, &live, &title, 610, Some(5_001), StopHow::Terminate, false).message, ALREADY_ENDED);
+        assert!(stop(&ex, &actor, &live, &title, 620, None, StopHow::Terminate, false).message.contains("not an agent"));
+        assert!(stop(&ex, &actor, &live, &title, 630, None, StopHow::Kill, false).message.contains("not an agent"));
+        assert_eq!(actor.calls.lock().unwrap().len(), 1);
     }
 
     #[test]

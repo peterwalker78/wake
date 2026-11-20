@@ -467,6 +467,11 @@ pub fn choice(ai: Ai, program: Option<&Path>, gemini_system_policies: bool) -> A
     AiChoice { ai, usable, hint }
 }
 
+/// The choice for an AI whose program isn't here.
+pub fn not_installed(ai: Ai) -> AiChoice {
+    AiChoice { ai, usable: false, hint: format!("{} isn't installed here.", ai.name()) }
+}
+
 /// True when gemini's system policy folder holds a policy (it then ignores `--admin-policy`).
 pub fn gemini_has_system_policies(dir: &Path) -> bool {
     fs::read_dir(dir).is_ok_and(|rd| rd.flatten().any(|e| e.path().extension().is_some_and(|x| x == "toml")))
@@ -763,7 +768,15 @@ impl Questions {
     /// Every AI, whether Wake can use it here, and a hint (for Settings).
     pub fn choices(&self) -> Vec<AiChoice> {
         let system = gemini_has_system_policies(Path::new(GEMINI_SYSTEM_POLICIES));
-        Ai::ALL.into_iter().map(|ai| choice(ai, self.tool(ai).as_deref(), system)).collect()
+        // Claude's program is always set (its installer's usual place when it isn't on PATH), so
+        // it counts as installed only when that file is there; said like the others when not.
+        Ai::ALL
+            .into_iter()
+            .map(|ai| match self.tool(ai) {
+                Some(p) if ai == Ai::Claude && !p.is_file() => not_installed(ai),
+                p => choice(ai, p.as_deref(), system),
+            })
+            .collect()
     }
 
     /// Which AI answers new questions from now on (one Wake can't use here falls back to Claude).
@@ -1763,6 +1776,14 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
     #[test]
     fn only_installed_ais_wake_can_keep_read_only_are_offered() {
         assert!(choice(Ai::Claude, None, false).usable);
+        // Claude's program missing from where Wake would run it: said like the others.
+        let env = Env::new();
+        let q = Questions::new(&env.paths, env.root.join("no-claude-here"));
+        let c = q.choices().into_iter().find(|c| c.ai == Ai::Claude).unwrap();
+        assert!(!c.usable && c.hint == "Claude isn't installed here.", "{c:?}");
+        q.set_tool(Ai::Claude, Some(env.root.join("claude-bin")));
+        fs::write(env.root.join("claude-bin"), "").unwrap();
+        assert!(q.choices()[0].usable);
         let c = choice(Ai::Codex, None, false);
         assert!(!c.usable && c.hint == "Codex isn't installed here.");
         assert!(choice(Ai::Codex, Some(Path::new("/x/codex")), false).usable);

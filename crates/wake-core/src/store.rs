@@ -6,7 +6,8 @@
 //! pauses.jsonl. The index lives in `index-v2/`.
 //!
 //! Environment overrides (as in Python): WAKE_DATA_DIR, WAKE_CLAUDE_DIR, WAKE_CODEX_DIR,
-//! WAKE_PROJECTS_DIR, WAKE_RUNTIME_DIR. Tests build a [`Paths`] directly instead.
+//! WAKE_PROJECTS_DIR, WAKE_RUNTIME_DIR; and, as the agents themselves do, CLAUDE_CONFIG_DIR and
+//! CODEX_HOME. Tests build a [`Paths`] directly instead.
 
 use std::collections::HashMap;
 use std::fs;
@@ -53,8 +54,9 @@ impl Paths {
         });
         Paths {
             data: env_path("WAKE_DATA_DIR").unwrap_or_else(|| home.join(".local/share/wake")),
-            claude: env_path("WAKE_CLAUDE_DIR").unwrap_or_else(|| home.join(".claude")),
-            codex: env_path("WAKE_CODEX_DIR").unwrap_or_else(|| home.join(".codex")),
+            // Claude Code and Codex move their folders with these, so Wake follows them.
+            claude: env_path("WAKE_CLAUDE_DIR").or_else(|| env_path("CLAUDE_CONFIG_DIR")).unwrap_or_else(|| home.join(".claude")),
+            codex: env_path("WAKE_CODEX_DIR").or_else(|| env_path("CODEX_HOME")).unwrap_or_else(|| home.join(".codex")),
             projects: env_path("WAKE_PROJECTS_DIR").unwrap_or_else(|| home.join("Projects")),
             plugin_state: home.join(".local/state/slipstream/plugins/wake/state"),
             config: env_path("WAKE_CONFIG_DIR").or_else(|| env_path("XDG_CONFIG_HOME").filter(|p| p.is_absolute()).map(|p| p.join("wake"))).unwrap_or_else(|| home.join(".config/wake")),
@@ -402,6 +404,10 @@ pub struct IdeaRec {
     /// own record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_at: Option<String>,
+    /// The brief it was sent in (`<data>/briefs/<id>.md`), from its "sent" record; None for ideas
+    /// sent before Wake kept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -537,6 +543,46 @@ impl Store {
             .collect()
     }
 
+    /// Only when the project list is first made: git repos agents have worked in outside
+    /// ~/Projects (the nearest folder with `.git` above where a session ran, under home but never
+    /// home itself, nor a hidden folder, nor a `*-deploy` copy).
+    fn add_session_repos(&self, projects: &mut Vec<ProjectRec>) {
+        let home = realpath(&self.paths.home);
+        let under_projects = realpath(&self.paths.projects);
+        let at = util::now_iso();
+        for cwd in session_cwds(&self.paths) {
+            let cwd = realpath(Path::new(fold_worktree(&cwd)));
+            let mut d = cwd.as_path();
+            let root = loop {
+                if d == home || !d.starts_with(&home) {
+                    break None;
+                }
+                if is_repo(d) {
+                    break Some(d.to_path_buf());
+                }
+                match d.parent() {
+                    Some(p) => d = p,
+                    None => break None,
+                }
+            };
+            let Some(root) = root else { continue };
+            let hidden = root.strip_prefix(&home).is_ok_and(|r| r.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')));
+            let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if hidden || name.is_empty() || name.ends_with("-deploy") || root.starts_with(&under_projects) {
+                continue;
+            }
+            let rs = root.to_string_lossy().into_owned();
+            if projects.iter().any(|p| p.roots.iter().any(|r| r == &rs || Path::new(&rs).starts_with(r))) {
+                continue;
+            }
+            let mut id = slug(&name);
+            while projects.iter().any(|p| p.id == id) {
+                id.push_str("-2");
+            }
+            projects.push(ProjectRec { id, name, roots: vec![rs], desc: String::new(), next: String::new(), why: String::new(), removed: false, added: at.clone(), color: None, extra: Map::new() });
+        }
+    }
+
     pub fn load_projects(&self) -> Vec<ProjectRec> {
         let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         self.load_projects_locked()
@@ -546,6 +592,10 @@ impl Store {
     /// overwritten), else None. The app shows it with the overview.
     pub fn projects_problem(&self) -> Option<String> {
         self.problem.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn tilde(&self, p: &Path) -> String {
+        util::tilde(p, &self.paths.home)
     }
 
     fn set_problem(&self, p: String) {
@@ -565,16 +615,17 @@ impl Store {
                     Ok(_) => buf,
                     Err(e) => {
                         self.set_problem(format!(
-                            "Wake could not read its project list ({}: {e}). It left the file alone and is showing the folders in {} for now.",
-                            path.display(),
-                            self.paths.projects.display()
+                            "Wake couldn't read its project list {}, so it left the file alone and is showing the folders in {} for now. ({e})",
+                            self.tilde(&path),
+                            self.tilde(&self.paths.projects)
                         ));
                         return self.discover_projects();
                     }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let projects = self.discover_projects();
+                let mut projects = self.discover_projects();
+                self.add_session_repos(&mut projects);
                 if self.ensure_data_dir().is_ok() {
                     let _ = self.save_projects_locked(&projects);
                 }
@@ -582,9 +633,9 @@ impl Store {
             }
             Err(e) => {
                 self.set_problem(format!(
-                    "Wake could not open its project list ({}: {e}). It left the file alone and is showing the folders in {} for now.",
-                    path.display(),
-                    self.paths.projects.display()
+                    "Wake couldn't open its project list {}, so it left the file alone and is showing the folders in {} for now. ({e})",
+                    self.tilde(&path),
+                    self.tilde(&self.paths.projects)
                 ));
                 return self.discover_projects();
             }
@@ -602,16 +653,13 @@ impl Store {
                 let projects = self.discover_projects();
                 if moved {
                     self.set_problem(format!(
-                        "Wake's project list could not be understood ({e}). It was kept as {} and a fresh list was made from {}; your descriptions and next steps are in the kept file.",
-                        aside.display(),
-                        self.paths.projects.display()
+                        "Wake's project list was damaged, so it started a new one from the folders in {}. Your old list, with your descriptions and next steps, is kept as {}. ({e})",
+                        self.tilde(&self.paths.projects),
+                        self.tilde(&aside)
                     ));
                     let _ = self.save_projects_locked(&projects);
                 } else {
-                    self.set_problem(format!(
-                        "Wake's project list could not be understood ({e}) and could not be moved aside, so Wake left {} as it is and is not saving project changes.",
-                        path.display()
-                    ));
+                    self.set_problem(format!("Wake's project list was damaged and couldn't be moved aside, so Wake left {} as it is and isn't saving project changes. ({e})", self.tilde(&path)));
                 }
                 projects
             }
@@ -672,6 +720,17 @@ impl Store {
         Ok(out)
     }
 
+    /// Set a project's next step (what to do when you come back), kept in projects.json.
+    pub fn set_project_next(&self, id: &str, next: &str) -> SResult<ProjectRec> {
+        let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut projects = self.load_projects_locked();
+        let p = projects.iter_mut().find(|p| p.id == id).ok_or_else(|| StoreError("No project with that id.".into()))?;
+        p.next = next.trim().to_string();
+        let out = p.clone();
+        self.save_projects_locked(&projects)?;
+        Ok(out)
+    }
+
     pub fn set_project_removed(&self, id: &str, removed: bool) -> SResult<ProjectRec> {
         let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut projects = self.load_projects_locked();
@@ -704,6 +763,7 @@ impl Store {
             cwd: cwd.map(Into::into),
             state: "inbox".into(),
             sent_at: None,
+            brief: None,
         };
         self.ensure_data_dir()?;
         self.writer.append_jsonl(&self.ideas_path(), &rec)?;
@@ -723,6 +783,7 @@ impl Store {
             rec.insert("state".into(), s.into());
             idea.state = s.into();
             idea.sent_at = None;
+            idea.brief = None;
         }
         if let Some(p) = project {
             rec.insert("project".into(), p.map(Value::from).unwrap_or(Value::Null));
@@ -735,7 +796,9 @@ impl Store {
     /// Marks ideas as sent to an agent working on `project` (they leave the list to sort): one
     /// `{"id","state":"sent","at","project"}` record each. Unknown ids are refused before anything
     /// is written.
-    pub fn mark_sent(&self, ids: &[String], project: &str) -> SResult<Vec<IdeaRec>> {
+    /// Mark ideas as sent to an agent for `project`, in the brief with id `brief` (kept on each
+    /// idea's "sent" record so the idea can be traced to the brief).
+    pub fn mark_sent(&self, ids: &[String], project: &str, brief: Option<&str>) -> SResult<Vec<IdeaRec>> {
         let all = self.list_ideas();
         let mut out = Vec::new();
         for id in ids {
@@ -744,10 +807,14 @@ impl Store {
         }
         let at = util::now_iso();
         for i in &mut out {
-            let rec = serde_json::json!({"id": i.id, "state": "sent", "at": at, "project": project});
+            let mut rec = serde_json::json!({"id": i.id, "state": "sent", "at": at, "project": project});
+            if let Some(b) = brief {
+                rec["brief"] = b.into();
+            }
             self.writer.append_jsonl(&self.ideas_path(), &rec)?;
             i.state = "sent".into();
             i.sent_at = Some(at.clone());
+            i.brief = brief.map(String::from);
             i.project = Some(project.into());
         }
         Ok(out)
@@ -771,6 +838,7 @@ impl Store {
                     cwd: s("cwd"),
                     state: s("state").unwrap_or_else(|| "inbox".into()),
                     sent_at: None,
+                    brief: None,
                 };
                 match at.get(id) {
                     Some(&i) => out[i] = rec,
@@ -785,6 +853,7 @@ impl Store {
                 {
                     out[i].state = st.into();
                     out[i].sent_at = if st == "sent" { o.get("at").and_then(Value::as_str).map(String::from) } else { None };
+                    out[i].brief = if st == "sent" { o.get("brief").and_then(Value::as_str).map(String::from) } else { None };
                 }
                 if let Some(p) = o.get("project") {
                     out[i].project = p.as_str().map(String::from);
@@ -819,6 +888,118 @@ impl Store {
         }
         out
     }
+}
+
+/// The folders agents' sessions started in, from the first lines of their transcripts (read only):
+/// one Claude transcript per folder of `~/.claude/projects` (each folder is one starting place),
+/// and every Codex rollout's opening line. Only the `cwd` is taken from what is read.
+pub fn session_cwds(paths: &Paths) -> Vec<String> {
+    let jsonl = |d: &Path| -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = fs::read_dir(d).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "jsonl") && !is_forbidden(p)).collect()).unwrap_or_default();
+        v.sort();
+        v
+    };
+    let dirs = |d: &Path| -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = fs::read_dir(d).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
+        v.sort();
+        v
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |c: String| {
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    };
+    for d in dirs(&paths.claude.join("projects")) {
+        if let Some(c) = jsonl(&d).iter().take(5).find_map(|f| first_cwd(f)) {
+            push(c);
+        }
+    }
+    for y in dirs(&paths.codex.join("sessions")) {
+        for m in dirs(&y) {
+            for d in dirs(&m) {
+                for f in jsonl(&d) {
+                    if let Some(c) = first_cwd(&f) {
+                        push(c);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The first `cwd` in a transcript's first 40 lines (at most 1 MB read).
+fn first_cwd(path: &Path) -> Option<String> {
+    let f = fs::File::open(path).ok()?;
+    let r = BufReader::new(std::io::Read::take(f, 1024 * 1024));
+    for line in r.split(b'\n').take(40) {
+        let line = line.ok()?;
+        if !util::contains(&line, b"\"cwd\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
+        let cwd = v.get("cwd").or_else(|| v.get("payload").and_then(|p| p.get("cwd"))).and_then(Value::as_str);
+        if let Some(c) = cwd.filter(|c| c.starts_with('/')) {
+            return Some(c.to_string());
+        }
+    }
+    None
+}
+
+// ------------------------------------------------------------------ read-only checks (`wake doctor`)
+
+/// How one of Wake's files reads, found without moving, renaming or rewriting anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileCheck {
+    /// Not there (Wake makes it when needed).
+    Missing,
+    /// There, but it couldn't be opened or read (the reason in words).
+    Unreadable(String),
+    /// Read, but not in a form Wake understands (the parser's words).
+    Damaged(String),
+    /// Fine; for projects.json, how many projects it holds.
+    Fine(usize),
+}
+
+/// projects.json, read only: unlike loading it, this never moves a damaged file aside.
+pub fn check_projects(paths: &Paths) -> FileCheck {
+    let path = paths.data.join("projects.json");
+    match fs::read(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => FileCheck::Missing,
+        Err(e) => FileCheck::Unreadable(e.kind().to_string()),
+        Ok(b) => match serde_json::from_slice::<ProjectsFile>(&b) {
+            Ok(f) => FileCheck::Fine(f.projects.len()),
+            Err(e) => FileCheck::Damaged(e.to_string()),
+        },
+    }
+}
+
+/// How many non-empty lines of ideas.jsonl couldn't be read (not JSON, or not a record with an id).
+pub fn unreadable_idea_lines(paths: &Paths) -> usize {
+    let path = paths.data.join("ideas.jsonl");
+    let Ok(f) = fs::File::open(&path) else { return 0 };
+    BufReader::new(f)
+        .split(b'\n')
+        .filter(|line| match line {
+            Err(_) => true,
+            Ok(l) if l.trim_ascii().is_empty() => false,
+            Ok(l) => serde_json::from_slice::<Value>(l.trim_ascii()).ok().is_none_or(|v| v.get("id").and_then(Value::as_str).is_none()),
+        })
+        .count()
+}
+
+/// Files Wake set aside because it couldn't understand them (`*.broken-*`), in its data and
+/// settings folders, oldest name first.
+pub fn broken_files(paths: &Paths) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = [&paths.data, &paths.config]
+        .iter()
+        .flat_map(|d| fs::read_dir(d).map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains(".broken-")))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 pub fn project_by_id<'a>(id: &str, projects: &'a [ProjectRec]) -> Option<&'a ProjectRec> {
@@ -970,14 +1151,16 @@ mod tests {
         let s = env.store();
         let a = s.add_idea("first", Some("alpha"), "typed", None).unwrap();
         let b = s.add_idea("second", Some("alpha"), "typed", None).unwrap();
-        assert!(s.mark_sent(&[a.id.clone(), "nope".into()], "alpha").is_err());
+        assert!(s.mark_sent(&[a.id.clone(), "nope".into()], "alpha", None).is_err());
         assert_eq!(s.list_ideas().iter().filter(|i| i.state == "sent").count(), 0, "nothing written when one id is unknown");
-        let sent = s.mark_sent(&[a.id.clone(), b.id.clone()], "alpha").unwrap();
+        let sent = s.mark_sent(&[a.id.clone(), b.id.clone()], "alpha", Some("b123")).unwrap();
+        assert!(sent.iter().all(|i| i.brief.as_deref() == Some("b123")));
         assert!(sent.iter().all(|i| i.state == "sent" && i.sent_at.is_some()));
         let ideas = s.list_ideas();
         let ia = ideas.iter().find(|i| i.id == a.id).unwrap();
         assert_eq!((ia.state.as_str(), ia.project.as_deref()), ("sent", Some("alpha")));
         assert_eq!(ia.sent_at, sent[0].sent_at);
+        assert_eq!(ia.brief.as_deref(), Some("b123"));
         // The record on disk: state, time and project, nothing else.
         let text = fs::read_to_string(env.paths.data.join("ideas.jsonl")).unwrap();
         let last: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
@@ -1004,6 +1187,76 @@ mod tests {
         let ideas = s.list_ideas();
         assert_eq!(ideas.len(), 1);
         assert_eq!((ideas[0].state.as_str(), ideas[0].source.as_str()), ("done", "shell"));
+    }
+
+    #[test]
+    fn next_step_is_kept_on_the_project() {
+        let env = Env::new();
+        let s = env.store();
+        let id = s.load_projects()[0].id.clone();
+        assert_eq!(s.set_project_next(&id, "  ship it\n").unwrap().next, "ship it");
+        let p = s.load_projects().into_iter().find(|p| p.id == id).unwrap();
+        assert_eq!(p.next, "ship it");
+        assert!(s.set_project_next("nope", "x").is_err());
+    }
+
+    #[test]
+    fn first_list_takes_repos_agents_worked_in_outside_projects_only_once() {
+        let env = Env::new();
+        let h = &env.paths.home;
+        for d in ["code/tool/.git", "code/tool/src", ".config/dots/.git", "site-deploy/.git", "notes", "elsewhere/app/.git"] {
+            fs::create_dir_all(h.join(d)).unwrap();
+        }
+        fs::create_dir_all(h.join("Projects/archive/old/.git")).unwrap();
+        let session = |dir: &str, cwd: &Path| {
+            let d = env.paths.claude.join("projects").join(dir);
+            fs::create_dir_all(&d).unwrap();
+            let line = serde_json::json!({"type": "user", "cwd": cwd.to_string_lossy(), "message": {"role": "user", "content": "hi"}});
+            fs::write(d.join("s.jsonl"), format!("{{\"type\":\"summary\"}}\n{line}\n")).unwrap();
+        };
+        session("-a", &h.join("code/tool/src"));
+        session("-b", &h.join(".config/dots"));
+        session("-c", &h.join("site-deploy"));
+        session("-d", &h.join("notes"));
+        session("-e", h);
+        session("-f", &h.join("Projects/archive/old"));
+        let codex = env.paths.codex.join("sessions/2026/11/20");
+        fs::create_dir_all(&codex).unwrap();
+        let meta = serde_json::json!({"type": "session_meta", "payload": {"cwd": h.join("elsewhere/app").to_string_lossy()}});
+        fs::write(codex.join("rollout-x.jsonl"), format!("{meta}\n")).unwrap();
+        let s = env.store();
+        let names = |s: &Store| s.load_projects().into_iter().map(|p| p.name).collect::<Vec<_>>();
+        let first = names(&s);
+        assert!(first.contains(&"tool".to_string()) && first.contains(&"app".to_string()), "{first:?}");
+        for not in ["dots", "site-deploy", "notes", "home", "old"] {
+            assert!(!first.contains(&not.to_string()), "{not} in {first:?}");
+        }
+        let tool = s.load_projects().into_iter().find(|p| p.name == "tool").unwrap();
+        assert_eq!(tool.roots, [realpath(&h.join("code/tool")).to_string_lossy().to_string()]);
+        // an existing list is never changed by later sessions
+        fs::create_dir_all(h.join("more/.git")).unwrap();
+        session("-g", &h.join("more"));
+        assert_eq!(names(&s), first);
+    }
+
+    #[test]
+    fn doctor_checks_read_without_repairing() {
+        let env = Env::new();
+        let p = &env.paths;
+        assert_eq!(check_projects(p), FileCheck::Missing);
+        let n = env.store().load_projects().len();
+        assert_eq!(check_projects(p), FileCheck::Fine(n));
+        fs::write(p.data.join("projects.json"), "{not json").unwrap();
+        assert!(matches!(check_projects(p), FileCheck::Damaged(_)));
+        assert_eq!(fs::read_to_string(p.data.join("projects.json")).unwrap(), "{not json", "left as it was");
+        assert!(broken_files(p).is_empty());
+        assert_eq!(unreadable_idea_lines(p), 0);
+        fs::write(p.data.join("ideas.jsonl"), "{\"id\":\"i1\",\"text\":\"x\"}\n\ngarbage\n{\"no\":\"id\"}\n").unwrap();
+        assert_eq!(unreadable_idea_lines(p), 2);
+        fs::create_dir_all(&p.config).unwrap();
+        fs::write(p.config.join("settings.toml.broken-2026"), "x").unwrap();
+        fs::write(p.data.join("projects.json.broken-2026"), "x").unwrap();
+        assert_eq!(broken_files(p), [p.config.join("settings.toml.broken-2026"), p.data.join("projects.json.broken-2026")]);
     }
 
     #[test]
@@ -1067,7 +1320,7 @@ mod tests {
         assert_eq!(kept.len(), 1);
         assert_eq!(fs::read_to_string(&kept[0]).unwrap(), broken);
         let problem = s.projects_problem().unwrap();
-        assert!(problem.contains("could not be understood") && problem.contains("projects.json.broken-"), "{problem}");
+        assert!(problem.starts_with("Wake's project list was damaged, so it started a new one") && problem.contains("projects.json.broken-"), "{problem}");
         assert_eq!(s.load_projects().len(), 3); // the fresh file reads back
         // valid JSON of the wrong shape is treated the same way
         fs::write(&path, r#"{"projects":"oops"}"#).unwrap();

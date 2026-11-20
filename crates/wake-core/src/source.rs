@@ -27,7 +27,7 @@ use crate::store::{self, IdeaRec, Paths, PauseRec, ProjectRec, Store};
 use crate::types::*;
 use crate::util;
 use crate::{Source, brief, gitinfo};
-use crate::{attrib, disk};
+use crate::{attrib, disk, log};
 
 pub const RECENT_DAYS: f64 = 14.0;
 const INDEX_EVERY: Duration = Duration::from_secs(10);
@@ -196,7 +196,16 @@ impl Live {
         let _ = std::thread::Builder::new().name("wake-index".into()).spawn(move || {
             while !a.stop.load(Ordering::SeqCst) {
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.indexer.run()));
-                *lock(&a.index_error) = r.err().map(|_| "Indexing failed; Wake keeps showing what it had.".to_string());
+                let now = match r {
+                    Ok(_) => a.indexer.stats().sentence(),
+                    Err(e) => Some(format!("Indexing failed; Wake keeps showing what it had. ({})", panic_text(&e))),
+                };
+                let mut cur = lock(&a.index_error);
+                if now.is_some() && *cur != now {
+                    log::note_error(&a.paths, "Reading transcripts", now.as_deref().unwrap_or_default());
+                }
+                *cur = now;
+                drop(cur);
                 wait(&a.stop, INDEX_EVERY);
             }
         });
@@ -232,7 +241,14 @@ impl Live {
                     }
                 }));
                 first = false;
-                *lock(&b.side_error) = r.err().map(|_| "Checking git and Konsole tabs failed once; Wake keeps trying.".to_string());
+                let mut cur = lock(&b.side_error);
+                if let Err(e) = &r
+                    && cur.is_none()
+                {
+                    log::note_error(&b.paths, "Checking git and Konsole tabs", &panic_text(e));
+                }
+                *cur = r.err().map(|_| "Checking git and Konsole tabs failed once; Wake keeps trying.".to_string());
+                drop(cur);
                 wait(&b.stop, SIDE_EVERY);
             }
         });
@@ -252,11 +268,15 @@ impl Live {
                 let asked = std::mem::take(&mut lock(&d.disk).asked);
                 let full = Instant::now() >= next_full || asked.iter().any(|a| a.is_empty());
                 if full {
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.measure_disk(None)));
+                    if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.measure_disk(None))) {
+                        log::note_error(&d.paths, "Measuring the disk", &panic_text(&e));
+                    }
                     next_full = Instant::now() + disk::EVERY;
                 } else {
                     for p in asked {
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.measure_disk(Some(&p))));
+                        if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.measure_disk(Some(&p)))) {
+                            log::note_error(&d.paths, "Measuring the disk", &panic_text(&e));
+                        }
                     }
                 }
                 while !d.stop.load(Ordering::SeqCst) && Instant::now() < next_full && lock(&d.disk).asked.is_empty() {
@@ -270,7 +290,9 @@ impl Live {
         let _ = std::thread::Builder::new().name("wake-remote".into()).spawn(move || {
             wait(&c.stop, Duration::from_secs(3));
             while !c.stop.load(Ordering::SeqCst) {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.check_remotes_pass()));
+                if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.check_remotes_pass())) {
+                    log::note_error(&c.paths, "Asking the remotes", &panic_text(&e));
+                }
                 let end = Instant::now() + Duration::from_secs(30);
                 while !c.stop.load(Ordering::SeqCst) && Instant::now() < end && lock(&c.remote).asked.is_empty() {
                     std::thread::sleep(Duration::from_millis(500));
@@ -418,7 +440,7 @@ impl Inner {
             .scan()
             .into_iter()
             .filter_map(|p| {
-                let agent = procs::agent_of(&p.argv, p.exe.as_deref())?;
+                let agent = procs::identify(&p, &infos)?;
                 let role = if agent == Agent::Claude { procs::role_of(&p.argv) } else { procs::Role::Main };
                 let owner = match role {
                     procs::Role::Daemon | procs::Role::PtyHost => return None,
@@ -563,7 +585,16 @@ impl Inner {
             last_summary: by_last.iter().find_map(|s| s.away_summary.clone()),
             git_checked: gitinfo::cached_totals(p).is_some(),
             color: Some(p.color.as_deref().and_then(store::colour_name).unwrap_or_else(|| store::default_colour(&p.name)).to_string()),
+            remote_problem: self.remote_problem(p),
         }
+    }
+
+    /// "Wake couldn't ask GitHub (offline)." when the last check of any of the project's repos got
+    /// no answer from its remote.
+    fn remote_problem(&self, p: &ProjectRec) -> Option<String> {
+        let repos = gitinfo::cached_repos(p)?;
+        let r = lock(&self.remote);
+        repos.iter().filter_map(|x| r.checks.get(&x.state.path)).find_map(|c| c.problem.as_ref().map(|why| format!("Wake couldn't ask {} ({why}).", c.host)))
     }
 
     /// Ask the remote of every repo that is due (ten minutes since its last check) or asked for.
@@ -689,6 +720,7 @@ impl Inner {
             source: i.source.clone(),
             state: i.state.clone(),
             sent_at: i.sent_at.clone(),
+            brief: i.brief.clone(),
         }
     }
 
@@ -748,6 +780,17 @@ impl Inner {
         }
         title
     }
+}
+
+/// What a caught panic said, for Wake's log ("it failed" when it said nothing readable).
+fn panic_text(e: &Box<dyn std::any::Any + Send>) -> String {
+    let said = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned());
+    format!("Wake hit a bug here: {}", said.unwrap_or_else(|| "it failed".into()))
+}
+
+/// `~/…` for a path under home.
+fn tilde(p: &str, home: &Path) -> String {
+    util::tilde(Path::new(p), home)
 }
 
 fn snippet(text: Option<&str>, q: &str) -> Option<String> {
@@ -832,7 +875,7 @@ impl Source for Live {
             let mut s = live::live_only_summary(info, &projects, &i.paths.home, now);
             s.location = i.location(info.pid);
             i.overrides.apply(&mut s, &projects);
-            return Some(SessionDetail { summary: s, prompts: vec![], files: vec![], commands: 0, tests: 0, pr_links: vec![], cost_usd: None, subagents: vec![] });
+            return Some(SessionDetail { summary: s, prompts: vec![], files: vec![], commands: 0, tests: 0, pr_links: vec![], cost_usd: None, subagents: vec![], transcript: None });
         };
         let mut s = index::base_summary(&acc, &projects, &i.paths.home);
         live::apply_live(&mut s, Some(&acc), info, now);
@@ -851,6 +894,7 @@ impl Source for Live {
             pr_links: acc.pr_links.clone(),
             cost_usd: acc.cost,
             subagents: subs,
+            transcript: acc.source.as_deref().map(|p| tilde(p, &i.paths.home)),
         })
     }
 
@@ -982,6 +1026,13 @@ impl Source for Live {
             .take(200)
             .collect();
         let rec = i.store.add_pause(&p.id, note, next, git, sessions).map_err(|e| e.0)?;
+        // The next step also goes on the project itself, so it is still there after later pauses
+        // without one and wherever the project is shown.
+        if !next.trim().is_empty()
+            && let Err(e) = i.store.set_project_next(&p.id, next)
+        {
+            return Err(format!("The pause was saved, but Wake couldn't save the next step on the project: {}", e.0));
+        }
         Ok(checkpoint_of(&rec))
     }
 
@@ -996,61 +1047,9 @@ impl Source for Live {
     }
 
     fn go_to(&self, session: &str, dry_run: bool) -> ActionResult {
-        let i = &self.inner;
-        let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
-        if session.is_empty() {
-            return fail("Say which session.");
-        }
-        let infos = i.live();
-        let info = infos.get(session);
-        let projects = i.store.load_projects();
-        let acc = i.indexer.get_lite(session);
-        if let Some(info) = info.filter(|x| x.alive) {
-            // The shared map; if it has no tab for this session, read Konsole afresh before deciding
-            // the session is in the background (a second attach is worse than a short wait).
-            let loc = i.location(info.pid).or_else(|| {
-                i.refresh_locations(true);
-                i.location(info.pid)
-            });
-            let title = i.title_for(session, Some(info), &projects);
-            if loc.is_none()
-                && let Some(job) = &info.job_id
-            {
-                // A background session no tab shows: a new Konsole window attached to it.
-                let cmd = format!("claude attach {job}");
-                let cwd = info.cwd.clone().or_else(|| acc.as_ref().and_then(|a| a.launch_cwd.clone()));
-                let (mut r, konsole) = i.desktop.reopen_at(cwd.as_deref(), &cmd, dry_run);
-                if let Some(k) = konsole {
-                    let b = i.look.bring(k, dry_run);
-                    r.steps.extend(b.steps);
-                }
-                if r.ok {
-                    let pre = if dry_run { "Dry run. " } else { "" };
-                    r.message = format!("{pre}{title} runs in the background. Opened it in a new Konsole window ({cmd}).");
-                }
-                return r;
-            }
-            let mut r = i.desktop.jump(loc.as_ref(), &title, dry_run);
-            if r.ok
-                && let Some(l) = &loc
-            {
-                // Then straight to the window, by the desktop's own means; never a notification.
-                let b = i.look.bring(l.konsole_pid, dry_run);
-                r.steps.extend(b.steps);
-                if b.ok && !dry_run {
-                    r.message = format!("Went to {title} ({}).", l.label.clone().unwrap_or_else(|| l.tab_title.clone()));
-                }
-            }
-            return r;
-        }
-        let Some(acc) = acc else {
-            return fail("No session with that id.");
-        };
-        let cmd = info.and_then(|x| x.resume_command.clone()).unwrap_or_else(|| if acc.agent == "codex" { format!("codex resume {session}") } else { format!("claude --resume {session}") });
-        let cwd = acc.launch_cwd.clone().or_else(|| info.and_then(|x| x.cwd.clone()));
-        let (mut r, konsole) = i.desktop.reopen_at(cwd.as_deref(), &cmd, dry_run);
-        if let Some(k) = konsole {
-            r.steps.extend(i.look.bring(k, dry_run).steps);
+        let (r, what, target) = self.go_to_steps(session, dry_run);
+        if !dry_run {
+            log::record_action(&self.inner.paths, what, &target, r.ok, &r.message, &r.steps);
         }
         r
     }
@@ -1084,6 +1083,9 @@ impl Source for Live {
         if r.ok && !dry_run {
             i.forget_disk_item(path, owner.as_deref());
         }
+        if !dry_run {
+            log::record_action(&i.paths, "move to Trash", &tilde(path, &i.paths.home), r.ok, &r.message, &r.steps);
+        }
         r
     }
 
@@ -1096,6 +1098,9 @@ impl Source for Live {
         let r = disk::remove_worktree(&report, path, &i.disk_places, dry_run);
         if r.ok && !dry_run {
             i.forget_disk_item(path, owner.as_deref());
+        }
+        if !dry_run {
+            log::record_action(&i.paths, "remove worktree", &tilde(path, &i.paths.home), r.ok, &r.message, &r.steps);
         }
         r
     }
@@ -1120,6 +1125,16 @@ impl Source for Live {
         let title = |info: &LiveInfo| Some(i.title_for(&info.session_id, Some(info), &projects));
         let r = procs::stop(&i.explorer, i.actor.as_ref(), &infos, &title, pid, start_ticks, how, dry_run);
         *lock(&i.live_cache) = None;
+        if !dry_run {
+            // The task's title and PID and which agent it is: never its command line.
+            let name = infos.values().find(|l| l.alive && l.pid == pid).and_then(title).map_or(format!("PID {pid}"), |t| format!("'{t}' (PID {pid})"));
+            let agent = procs::read_proc(&i.explorer.root, pid).and_then(|p| procs::identify(&p, &infos)).map(|a| format!(", {a:?}")).unwrap_or_default();
+            let what = match how {
+                StopHow::Kill => "force",
+                _ => "stop",
+            };
+            log::record_action(&i.paths, what, &format!("{name}{agent}"), r.ok, &r.message, &r.steps);
+        }
         r
     }
 
@@ -1152,66 +1167,11 @@ impl Source for Live {
     }
 
     fn start_agent(&self, req: &brief::StartAgent, dry_run: bool) -> ActionResult {
-        let i = &self.inner;
-        let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
-        let projects = i.store.load_projects();
-        let Some(p) = store::project_by_id(&req.project, &projects).filter(|p| !p.removed) else {
-            return fail("No tracked project with that id.");
-        };
-        let Some(agent) = brief::Agent::from_id(&req.agent).filter(|a| self.agent_choices().contains(a)) else {
-            return fail("That agent isn't installed here.");
-        };
-        if req.ideas.is_empty() {
-            return fail("Pick at least one idea.");
+        let r = self.start_agent_steps(req, dry_run);
+        if !dry_run {
+            let agent = brief::Agent::from_id(&req.agent).map_or(req.agent.clone(), |a| a.label().to_string());
+            log::record_action(&self.inner.paths, "start an agent", &format!("{agent} in {}", self.project_words(&req.project)), r.ok, &r.message, &r.steps);
         }
-        let ideas = i.store.list_ideas();
-        for id in &req.ideas {
-            match ideas.iter().find(|x| &x.id == id) {
-                None => return fail("One of those ideas is gone."),
-                Some(x) if x.project.as_deref() != Some(p.id.as_str()) => {
-                    return fail(&format!("Those ideas aren't all for {}. Start one agent per project.", p.name));
-                }
-                Some(_) => {}
-            }
-        }
-        if req.brief.trim().is_empty() {
-            return fail("The brief is empty.");
-        }
-        let Some(root) = p.roots.iter().find(|r| std::path::Path::new(r).is_dir()) else {
-            return fail(&format!("{}'s folder is no longer there.", p.name));
-        };
-        let briefs = i.paths.data.join("briefs");
-        let path = brief::path(&i.paths.data, &req.id);
-        let Some(cmd) = brief::command(agent, &path) else {
-            return fail("Wake can't type a command for a brief in this folder (its path has a quote in it).");
-        };
-        if !dry_run && let Err(e) = brief::write(&i.store.writer, &i.paths.data, &req.id, &req.brief) {
-            return fail(&format!("Couldn't save the brief: {}", e.0));
-        }
-        let mut steps = vec![format!("write {}", path.display())];
-        let (mut r, konsole) = i.desktop.start_typed(root, &cmd, &briefs, dry_run);
-        steps.append(&mut r.steps);
-        r.steps = steps;
-        if !r.ok {
-            return r;
-        }
-        if let Some(k) = konsole {
-            let b = i.look.bring(k, dry_run);
-            r.steps.extend(b.steps);
-        }
-        if !dry_run && let Err(e) = i.store.mark_sent(&req.ideas, &p.id) {
-            r.message = format!("{} (Wake couldn't mark the ideas as sent: {})", r.message, e.0);
-            return r;
-        }
-        let pre = if dry_run { "Dry run. " } else { "" };
-        r.message = format!(
-            "{pre}{} is starting in a new Konsole window in {}.",
-            agent.label(),
-            match std::path::Path::new(root).strip_prefix(&i.paths.home) {
-                Ok(rest) => format!("~/{}", rest.display()),
-                Err(_) => root.clone(),
-            }
-        );
         r
     }
 
@@ -1273,6 +1233,11 @@ impl Source for Live {
         Ok(self.project_summary_now(&p))
     }
 
+    fn set_next(&self, id: &str, next: &str) -> Result<ProjectSummary, String> {
+        let p = self.inner.store.set_project_next(id, next).map_err(|e| e.0)?;
+        Ok(self.project_summary_now(&p))
+    }
+
     fn check_remotes(&self, project: Option<&str>) {
         lock(&self.inner.remote).asked.push(project.unwrap_or("").to_string());
     }
@@ -1282,6 +1247,96 @@ impl Source for Live {
     }
 
     fn pull(&self, project: &str, dry_run: bool) -> ActionResult {
+        let r = self.pull_steps(project, dry_run);
+        if !dry_run {
+            log::record_action(&self.inner.paths, "pull", &self.project_words(project), r.ok, &r.message, &r.steps);
+        }
+        r
+    }
+
+    fn mark_read(&self, thread: &str) {
+        self.inner.questions.mark_read(thread)
+    }
+}
+
+impl Live {
+    /// A project in words for Wake's log: its name and first folder.
+    fn project_words(&self, id: &str) -> String {
+        let projects = self.inner.store.load_projects();
+        match store::project_by_id(id, &projects) {
+            Some(p) => match p.roots.first() {
+                Some(r) => format!("{} ({})", p.name, tilde(r, &self.inner.paths.home)),
+                None => p.name.clone(),
+            },
+            None => format!("project {id}"),
+        }
+    }
+
+    fn start_agent_steps(&self, req: &brief::StartAgent, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
+        let projects = i.store.load_projects();
+        let Some(p) = store::project_by_id(&req.project, &projects).filter(|p| !p.removed) else {
+            return fail("No tracked project with that id.");
+        };
+        let Some(agent) = brief::Agent::from_id(&req.agent).filter(|a| self.agent_choices().contains(a)) else {
+            return fail("That agent isn't installed here.");
+        };
+        if req.ideas.is_empty() {
+            return fail("Pick at least one idea.");
+        }
+        let ideas = i.store.list_ideas();
+        for id in &req.ideas {
+            match ideas.iter().find(|x| &x.id == id) {
+                None => return fail("One of those ideas is gone."),
+                Some(x) if x.project.as_deref() != Some(p.id.as_str()) => {
+                    return fail(&format!("Those ideas aren't all for {}. Start one agent per project.", p.name));
+                }
+                Some(_) => {}
+            }
+        }
+        if req.brief.trim().is_empty() {
+            return fail("The brief is empty.");
+        }
+        let Some(root) = p.roots.iter().find(|r| std::path::Path::new(r).is_dir()) else {
+            return fail(&format!("{}'s folder is no longer there.", p.name));
+        };
+        let briefs = i.paths.data.join("briefs");
+        let path = brief::path(&i.paths.data, &req.id);
+        let Some(cmd) = brief::command(agent, &path) else {
+            return fail("Wake can't type a command for a brief in this folder (its path has a quote in it).");
+        };
+        if !dry_run && let Err(e) = brief::write(&i.store.writer, &i.paths.data, &req.id, &req.brief) {
+            return fail(&format!("Couldn't save the brief: {}", e.0));
+        }
+        let mut steps = vec![format!("write {}", path.display())];
+        let (mut r, konsole) = i.desktop.start_typed(root, &cmd, &briefs, dry_run);
+        steps.append(&mut r.steps);
+        r.steps = steps;
+        if !r.ok {
+            return r;
+        }
+        if let Some(k) = konsole {
+            let b = i.look.bring(k, dry_run);
+            r.steps.extend(b.steps);
+        }
+        if !dry_run && let Err(e) = i.store.mark_sent(&req.ideas, &p.id, Some(&req.id)) {
+            r.message = format!("{} (Wake couldn't mark the ideas as sent: {})", r.message, e.0);
+            return r;
+        }
+        let pre = if dry_run { "Dry run. " } else { "" };
+        r.message = format!(
+            "{pre}{} is starting in a new Konsole window in {}.",
+            agent.label(),
+            match std::path::Path::new(root).strip_prefix(&i.paths.home) {
+                Ok(rest) => format!("~/{}", rest.display()),
+                Err(_) => root.clone(),
+            }
+        );
+        r
+    }
+
+    fn pull_steps(&self, project: &str, dry_run: bool) -> ActionResult {
         let i = &self.inner;
         let refuse = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
         let projects = i.store.load_projects();
@@ -1301,10 +1356,10 @@ impl Source for Live {
             return refuse(&format!("{} isn't behind any more; nothing to pull.", p.name));
         };
         if !b.can_pull {
-            return refuse(if b.dirty > 0 {
-                "There are uncommitted changes. Commit or stash first; Wake only pulls a clean tree."
+            return refuse(&if b.ahead > 0 {
+                format!("Your copy and {} both have new commits, so Wake won't pull. Ask your agent to merge them, or run `git pull` in a terminal.", b.host)
             } else {
-                "This branch can't fast-forward (it has commits the remote doesn't). Pull in a terminal."
+                "Some files have changes that aren't committed yet. Commit them first; Wake only pulls when everything is committed.".to_string()
             });
         }
         let r = remote::pull_ff_only(&b.repo, dry_run);
@@ -1316,12 +1371,73 @@ impl Source for Live {
         r
     }
 
-    fn mark_read(&self, thread: &str) {
-        self.inner.questions.mark_read(thread)
+    /// Go to a session; also says what that was (go to / reopen) and to what, for Wake's log.
+    fn go_to_steps(&self, session: &str, dry_run: bool) -> (ActionResult, &'static str, String) {
+        let i = &self.inner;
+        let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
+        if session.is_empty() {
+            return (fail("Say which session."), "go to", String::new());
+        }
+        let infos = i.live();
+        let info = infos.get(session);
+        let projects = i.store.load_projects();
+        let acc = i.indexer.get_lite(session);
+        if let Some(info) = info.filter(|x| x.alive) {
+            // The shared map; if it has no tab for this session, read Konsole afresh before deciding
+            // the session is in the background (a second attach is worse than a short wait).
+            let loc = i.location(info.pid).or_else(|| {
+                i.refresh_locations(true);
+                i.location(info.pid)
+            });
+            let title = i.title_for(session, Some(info), &projects);
+            let target = format!("'{title}' (PID {})", info.pid);
+            if loc.is_none()
+                && let Some(job) = &info.job_id
+            {
+                // A background session no tab shows: a new Konsole window attached to it.
+                let cmd = format!("claude attach {job}");
+                let cwd = info.cwd.clone().or_else(|| acc.as_ref().and_then(|a| a.launch_cwd.clone()));
+                let (mut r, konsole) = i.desktop.reopen_at(cwd.as_deref(), &cmd, dry_run);
+                if let Some(k) = konsole {
+                    let b = i.look.bring(k, dry_run);
+                    r.steps.extend(b.steps);
+                }
+                if r.ok {
+                    let pre = if dry_run { "Dry run. " } else { "" };
+                    r.message = format!("{pre}{title} runs in the background. Opened it in a new Konsole window ({cmd}).");
+                }
+                return (r, "reopen", target);
+            }
+            let mut r = i.desktop.jump(loc.as_ref(), &title, dry_run);
+            if r.ok
+                && let Some(l) = &loc
+            {
+                // Then straight to the window, by the desktop's own means; never a notification.
+                let b = i.look.bring(l.konsole_pid, dry_run);
+                r.steps.extend(b.steps);
+                if b.ok && !dry_run {
+                    r.message = format!("Went to {title} ({}).", l.label.clone().unwrap_or_else(|| l.tab_title.clone()));
+                }
+            }
+            return (r, "go to", target);
+        }
+        let Some(acc) = acc else {
+            return (fail("No session with that id."), "reopen", format!("session {session}"));
+        };
+        let cmd = info.and_then(|x| x.resume_command.clone()).unwrap_or_else(|| if acc.agent == "codex" { format!("codex resume {session}") } else { format!("claude --resume {session}") });
+        let cwd = acc.launch_cwd.clone().or_else(|| info.and_then(|x| x.cwd.clone()));
+        let (mut r, konsole) = i.desktop.reopen_at(cwd.as_deref(), &cmd, dry_run);
+        if let Some(k) = konsole {
+            r.steps.extend(i.look.bring(k, dry_run).steps);
+        }
+        let title = i.title_for(session, info, &projects);
+        let target = match &cwd {
+            Some(c) => format!("'{title}' in {}", tilde(c, &i.paths.home)),
+            None => format!("'{title}'"),
+        };
+        (r, "reopen", target)
     }
-}
 
-impl Live {
     /// Where a question runs: Wake's questions folder, or the project's first folder.
     fn question_context(&self, project: Option<&str>) -> Result<crate::questions::Context, String> {
         let q = &self.inner.questions;
@@ -1539,6 +1655,7 @@ mod tests {
         let env = Env::new();
         let (l, _) = make(&env, &FakeBus::new(konsoles()));
         let d = l.session("sess-aaaa").unwrap();
+        assert!(d.transcript.as_deref().is_some_and(|t| t.ends_with("/projects/-home/sess-aaaa.jsonl")), "{:?}", d.transcript);
         assert_eq!(d.subagents.len(), 2);
         assert_eq!(d.summary.subagents.total, 2);
         assert_eq!(l.subagent("sess-aaaa", "a1").unwrap().steps.len(), 3);
@@ -1564,6 +1681,15 @@ mod tests {
         let pd = l.project("alpha").unwrap();
         assert_eq!(pd.last_pause.unwrap().note, "stopping");
         assert_eq!(pd.summary.paused.unwrap().note, "stopping");
+        // The next step is kept on the project too, and a later pause without one leaves it.
+        assert_eq!(pd.summary.next, "parser");
+        l.pause("alpha", "again", "").unwrap();
+        assert_eq!(l.project("alpha").unwrap().summary.next, "parser");
+        // set_next changes the project only and adds no pause.
+        let pauses = l.inner.store.list_pauses(Some("alpha")).len();
+        assert_eq!(l.set_next("alpha", " write the docs ").unwrap().next, "write the docs");
+        assert_eq!(l.inner.store.list_pauses(Some("alpha")).len(), pauses);
+        assert!(l.set_next("nope", "x").is_err());
         assert!(l.remove_project("alpha", true).unwrap().removed);
         assert!(!l.remove_project("alpha", false).unwrap().removed);
         let nd = env.paths.home.join("elsewhere");
@@ -1613,8 +1739,10 @@ mod tests {
             let i = ideas.iter().find(|i| i.id == x.id).unwrap();
             assert_eq!((i.state.as_str(), i.project.as_deref()), ("sent", Some("alpha")));
             assert!(i.sent_at.is_some());
+            assert_eq!(i.brief.as_deref(), Some(id.as_str()), "the idea leads to its brief");
         }
         assert_eq!(ideas.iter().find(|i| i.id == other.id).unwrap().state, "inbox");
+        assert!(log::recent(&env.paths, 5).iter().any(|l| l.contains("  start an agent  Claude in alpha (~/Projects/alpha)  ok  ")), "{:?}", log::recent(&env.paths, 5));
         assert_eq!(l.overview().projects.iter().find(|p| p.id == "alpha").unwrap().ideas, 0, "sent ideas leave the count to sort");
     }
 
@@ -1648,6 +1776,34 @@ mod tests {
         assert_eq!(r.steps.len(), 1, "select the tab; no notification (this desktop has no link)");
         assert!(r.message.contains("It's in"), "{}", r.message);
         assert!(bus.writes().is_empty());
+        assert!(log::recent(&env.paths, 5).is_empty(), "a dry run was logged");
+        // a real one (through the fake bus) is logged with the task and its PID
+        let r = l.go_to("sess-aaaa", false);
+        let lines = log::recent(&env.paths, 5);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("  go to  '") && lines[0].contains(&format!("(PID {})  {}", std::process::id(), if r.ok { "ok" } else { "failed" })), "{lines:?}");
+    }
+
+    #[test]
+    fn stopping_is_logged_without_the_processs_command_line() {
+        use crate::procs::tests::FakeProc;
+        let env = Env::new();
+        let fp = FakeProc::new();
+        fp.add(4321, 1, &["/usr/bin/claude", "--api-key", "sk-SECRET-123", "do the thing"], "/usr/bin/claude", 1000, 1, 100, procs::my_uid());
+        let bus = FakeBus::new(konsoles());
+        let actor = Arc::new(FakeActor { calls: Mutex::new(vec![]) });
+        let l = Live::new(LiveConfig { paths: env.paths.clone(), proc_root: fp.root().to_path_buf(), runner: bus.runner(), systemd_run: Some(String::new()), actor: actor.clone() });
+        assert!(l.stop(4321, None, StopHow::Kill, true).ok);
+        assert!(log::recent(&env.paths, 5).is_empty(), "a dry run was logged");
+        let r = l.stop(4321, None, StopHow::Terminate, false);
+        assert!(r.ok, "{r:?}");
+        assert_eq!(actor.calls.lock().unwrap().len(), 1);
+        let lines = log::recent(&env.paths, 5);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("  stop  PID 4321, Claude  ok  Wake asked PID 4321 to exit."), "{}", lines[0]);
+        assert!(lines[0].ends_with("steps: kill -TERM 4321"), "{}", lines[0]);
+        let all = fs::read_to_string(log::path(&env.paths)).unwrap();
+        assert!(!all.contains("SECRET") && !all.contains("do the thing") && !all.contains("api-key"), "{all}");
     }
 
     #[test]
@@ -1775,7 +1931,7 @@ mod tests {
         let (l, _) = make(&env, &FakeBus::new(konsoles()));
         fs::write(env.paths.data.join("projects.json"), "{\"projects\": [").unwrap();
         let o = l.overview();
-        assert!(o.index_error.as_deref().is_some_and(|e| e.contains("project list could not be understood")), "{:?}", o.index_error);
+        assert!(o.index_error.as_deref().is_some_and(|e| e.contains("project list was damaged, so it started a new one")), "{:?}", o.index_error);
         assert!(!o.projects.is_empty());
     }
 
@@ -1799,7 +1955,7 @@ mod tests {
         let b = l.overview().behind.unwrap().into_iter().find(|b| b.project == p.id).unwrap();
         assert_eq!(b.count, None);
         assert!(b.can_pull && b.alarm.is_none());
-        assert!(b.line.starts_with("Behind origin/main (new commits on the remote"), "{}", b.line);
+        assert_eq!(b.line, "Someone pushed new commits to the remote that you don't have yet. Pull them before you start.");
         // Calm while idle: the first look is the baseline.
         l.inner.watch_behind();
         l.inner.watch_behind();

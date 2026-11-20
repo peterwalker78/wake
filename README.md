@@ -34,8 +34,8 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
   spare nobody used, a process whose terminal has gone). You can stop them from here; Wake names
   the task and PID and asks first.
 - **Projects** shows where you left each project: Claude's own last recap, the next step you
-  wrote down, git loose ends in plain words (uncommitted files, branches only on this computer,
-  commits not pushed), and a pause note when you put one down on purpose.
+  wrote down, git loose ends in plain words (uncommitted files, branches and commits not pushed,
+  repos with no remote at all), and a pause note when you put one down on purpose.
 - **Ideas** keeps what you noticed while working (`c`, or `wake , text` in a terminal), to sort
   into projects later. Tick a few and start an agent on them with a brief.
 - **History** searches everything you asked, every session title and every file touched, including
@@ -101,7 +101,7 @@ an agent.
 It writes its own files in `~/.local/share/wake/` (projects, ideas, pause notes, and an index that
 keeps each session's summary after Claude deletes the transcript at 30 days) and its settings in
 `~/.config/wake/settings.toml`. It keeps a short log of what it did and what went wrong in
-`~/.local/share/wake/wake.log`, at most about 512 KB.
+`~/.local/share/wake/wake.log` (and the older `wake.log.1`), about 512 KB at most.
 
 Everything else it does is something you ask for, and it asks again first:
 
@@ -149,8 +149,8 @@ live state. Gemini CLI processes appear in Agents, and Questions can ask any of 
 is installed.
 
 **Desktops.** Go there and Start an agent use Konsole. Switching to a session's tab needs
-`qdbus-qt6` (Fedora's `qt6-qttools`; Debian and Ubuntu install it as `qdbus6` from the
-`qdbus-qt6` package, so link it to `~/.local/bin/qdbus-qt6`). Peek on Slipstream and KWin, and
+`qdbus-qt6` (Fedora's `qt6-qttools`), or `qdbus6`, as Debian and Ubuntu name it in their
+`qdbus-qt6` package. Peek on Slipstream and KWin, and
 the notice when a project is behind, use `gdbus`. On Slipstream and KDE Plasma the desktop
 brings the window forward; elsewhere Konsole switches tab and Wake says which window it is in.
 The KWin scripts are written against KWin 6's scripting API and have not yet been tried on a

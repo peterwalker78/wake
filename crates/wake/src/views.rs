@@ -2130,6 +2130,7 @@ mod tests {
             last_summary: None,
             git_checked: true,
             color: None,
+            remote_problem: None,
         }
     }
 

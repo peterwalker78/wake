@@ -60,6 +60,7 @@ fn project(id: &str, desc: &str, next: &str, why: &str, last: i64, ahead: u32, d
         last_summary: None,
         git_checked: true,
         color: Some(wake_core::store::default_colour(id).to_string()),
+        remote_problem: None,
     }
 }
 
@@ -456,6 +457,7 @@ fn idea(id: &str, secs: i64, text: &str, project: Option<&str>, source: &str, st
         source: source.into(),
         state: state.into(),
         sent_at: (state == "sent").then(|| ago(secs.saturating_sub(600))),
+        brief: None,
     }
 }
 
@@ -589,6 +591,7 @@ impl Source for DemoSource {
             .collect();
         Some(SessionDetail {
             subagents: st.subagents(id),
+            transcript: None,
             prompts,
             files,
             commands: 23,

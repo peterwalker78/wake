@@ -555,6 +555,7 @@ mod tests {
             last_summary: None,
             git_checked: true,
             color: Some("violet".into()),
+            remote_problem: None,
         };
         assert_eq!(colour_of(&p), "purple");
         p.color = Some("nonsense".into());

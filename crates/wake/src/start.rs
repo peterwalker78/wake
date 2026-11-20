@@ -187,6 +187,7 @@ mod tests {
             source: "typed".into(),
             state: "inbox".into(),
             sent_at: None,
+            brief: None,
         }
     }
 

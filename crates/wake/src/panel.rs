@@ -1000,8 +1000,8 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
     if !(s.location.is_some() || app::can_reopen(s) || app::is_live(s.state)) {
         return None;
     }
-    let (loc, _, _, tip) = app::loc_of(s, app::unsure(ui));
-    let word = go_words(s, &loc);
+    let (loc, _, can_go, tip) = app::loc_of(s, app::unsure(ui));
+    let word = go_words(s, &loc, can_go);
     let ui2 = ui.clone();
     let id = s.id.clone();
     let b = w::button(&word, if primary { Some("o") } else { None }, if primary { &["primary"] } else { &["sm"] }, move || app::go_to(&ui2, &id));
@@ -1016,15 +1016,17 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
 
 /// What the way-there button says, from `loc_of`'s place: "Go to tab 3" (with one Konsole),
 /// "Go to Konsole 2 · tab 1" (with several), "Open in a new window", "Resume in a new window".
-fn go_words(s: &SessionSummary, loc: &str) -> String {
+fn go_words(s: &SessionSummary, loc: &str, can_go: bool) -> String {
     if s.location.is_some() {
         format!("Go to {}", loc.strip_prefix("Konsole · ").unwrap_or(loc))
-    } else if loc == "background" {
-        "Open in a new window".into()
+    } else if !can_go {
+        // Wake is still finding its tab.
+        "Go to".into()
     } else if app::can_reopen(s) {
         "Resume in a new window".into()
     } else {
-        "Go to".into()
+        // Live with no tab: a background job, attached in a new window.
+        "Open in a new window".into()
     }
 }
 

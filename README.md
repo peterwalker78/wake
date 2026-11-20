@@ -100,7 +100,8 @@ an agent.
 
 It writes its own files in `~/.local/share/wake/` (projects, ideas, pause notes, and an index that
 keeps each session's summary after Claude deletes the transcript at 30 days) and its settings in
-`~/.config/wake/settings.toml`.
+`~/.config/wake/settings.toml`. It keeps a short log of what it did and what went wrong in
+`~/.local/share/wake/wake.log`, at most about 512 KB.
 
 Everything else it does is something you ask for, and it asks again first:
 
@@ -115,29 +116,45 @@ Everything else it does is something you ask for, and it asks again first:
 
 ## Getting it
 
-Wake is built from source for now. It needs GTK 4.14 or newer, Pango 1.56 or newer and a Rust
-toolchain; `rust-toolchain.toml` names the version.
+Wake is built from source for now. It needs GTK 4.14 or newer and Pango 1.56 or newer: Fedora 43
+and later, Debian 13 and Ubuntu 26.04 have them. It also needs Rust through
+[rustup](https://rustup.rs), because `rust-toolchain.toml` pins the version and a distribution's
+own Rust ignores that file.
 
 ```sh
-# Fedora: sudo dnf install gcc gtk4-devel
-# Debian, Ubuntu: sudo apt install build-essential libgtk-4-dev
+# Fedora: sudo dnf install gcc gtk4-devel rustup, then rustup-init
+# Debian, Ubuntu: sudo apt install build-essential libgtk-4-dev, then rustup from rustup.rs
+# (open a new terminal after installing rustup, so cargo is on your PATH)
+git clone https://github.com/peterwalker78/wake && cd wake
 cargo build --release --locked
 install -D target/release/wake ~/.local/bin/wake
 install -Dm644 data/io.github.peterwalker78.Wake.desktop ~/.local/share/applications/io.github.peterwalker78.Wake.desktop
 install -Dm644 data/io.github.peterwalker78.Wake.svg ~/.local/share/icons/hicolor/scalable/apps/io.github.peterwalker78.Wake.svg
 ```
 
-`wake --demo` opens the window on made-up data, which is what the pictures above show.
+Make sure `~/.local/bin` is on your `PATH`, or neither `wake` nor the app launcher entry will
+find it.
+
+**First run.**
+
+```sh
+wake --demo       # the window on made-up data, as in the pictures above
+wake doctor       # what Wake can see here, and what to install for anything missing
+wake              # the real thing: it finds git folders under ~/Projects; track others from Projects
+```
 
 **Agents.** Claude Code is what Wake knows best: live state, background sessions, subagents,
 recaps and questions it is waiting on. Codex sessions are read from their transcripts, without
 live state. Gemini CLI processes appear in Agents, and Questions can ask any of the three that
 is installed.
 
-**Desktops.** Go there and peek need Konsole for tabs, and `qdbus-qt6` or `gdbus`. On Slipstream
-and KDE Plasma the desktop brings the window forward; elsewhere Konsole switches tab and Wake
-says which window it is in. The KWin scripts are written against KWin 6's scripting API and
-have not yet been tried on a real Plasma session.
+**Desktops.** Go there and Start an agent use Konsole. Switching to a session's tab needs
+`qdbus-qt6` (Fedora's `qt6-qttools`; Debian and Ubuntu install it as `qdbus6` from the
+`qdbus-qt6` package, so link it to `~/.local/bin/qdbus-qt6`). Peek on Slipstream and KWin, and
+the notice when a project is behind, use `gdbus`. On Slipstream and KDE Plasma the desktop
+brings the window forward; elsewhere Konsole switches tab and Wake says which window it is in.
+The KWin scripts are written against KWin 6's scripting API and have not yet been tried on a
+real Plasma session.
 
 ## With Slipstream
 

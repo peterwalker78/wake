@@ -137,7 +137,7 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
             busy.set(true);
             let agent = choices.get(agent_dd.selected() as usize).copied().unwrap_or(brief::Agent::Claude);
             let req = brief::StartAgent { project: project.clone(), ideas: ids.clone(), brief: text, agent: agent.id().into(), id: id.clone() };
-            let (err, busy, ids) = (err.clone(), busy.clone(), ids.clone());
+            let (err, busy, ids, name) = (err.clone(), busy.clone(), ids.clone(), name.clone());
             err.set_text("Opening the tab…");
             app::bg(
                 &ui,
@@ -149,7 +149,8 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
                         return;
                     }
                     dialogs::close(ui);
-                    app::toast(ui, &r.message, false);
+                    // Which project it is for: the message says the agent and the folder.
+                    app::toast(ui, &format!("{name}: {}", r.message), false);
                     {
                         let mut st = ui.st.borrow_mut();
                         st.picked.retain(|p| !ids.contains(p));

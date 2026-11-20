@@ -686,14 +686,26 @@ fn session_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
     let line = w::hbox(7, &["dline"]);
     line.append(&w::dot(class));
     line.append(&w::label(word, &["state", class]));
-    let (loc, ..) = app::loc_of(s, app::unsure(ui));
-    let wl = w::wrap(&format!("· {} · {loc}", crate::disk::project_words(ui, s)), &["where"]); // disk.rs hook: "probably X"
+    let (mut loc, ..) = app::loc_of(s, app::unsure(ui));
+    // The tab's own title, as Konsole shows it, after Wake's "Konsole · tab 2".
+    if let Some(l) = s.location.as_ref().filter(|l| !l.tab_title.is_empty()) {
+        loc = format!("{loc} “{}”", l.tab_title);
+    }
+    // The project in the attribution's own words ("probably Skyhook (it changed files there)"),
+    // and always a way to change it: the link opens Set project, as `m` does.
+    let m = format!("· {} <a href=\"change\" title=\"Say which project it belongs to (m)\">change</a> · {}", w::esc(&crate::disk::project_reason(ui, s)), w::esc(&loc)); // disk.rs hook
+    let wl = w::wrap("", &["where"]);
+    wl.set_markup(&m);
     wl.set_hexpand(true);
+    let (ui2, id) = (ui.clone(), s.id.clone());
+    wl.connect_activate_link(move |_, _| {
+        crate::disk::set_project(&ui2, &id);
+        glib::Propagation::Stop
+    });
     line.append(&wl);
     // How Wake knows, and the rest of the small print, only when asked.
     let agent = format!("{:?}", s.agent).to_lowercase();
-    let tab = s.location.as_ref().map(|l| format!("\ntab \"{}\"", l.tab_title)).unwrap_or_default();
-    line.set_tooltip_text(Some(&format!("{}{tab}\n{agent} · {} · {}", s.evidence, fmt::minutes(s.minutes), fmt::pl(s.prompts, "prompt", "prompts"))));
+    line.set_tooltip_text(Some(&format!("{}\n{agent} · {} · {}", s.evidence, fmt::minutes(s.minutes), fmt::pl(s.prompts, "prompt", "prompts"))));
     line
 }
 
@@ -719,7 +731,7 @@ fn session(ui: &Ui, id: &str) {
     }
     head(ui, &s.title, &sub);
 
-    let act = w::hbox(8, &["dact"]);
+    let act = w::hbox(8, &[]);
     if let Some(b) = go_button(ui, &s, true) {
         act.append(&b);
     } else {
@@ -729,7 +741,6 @@ fn session(ui: &Ui, id: &str) {
         let ui2 = ui.clone();
         act.append(&w::button("Project", None, &["ghost"], move || open_project(&ui2, &p, true)));
     }
-    crate::disk::session_extras(ui, &s, &act); // disk.rs hook: Set project (m)
     // Stopping is quiet here (the same confirmation as in Agents): last, and never the main button.
     let pid = { res_of(&ui.st.borrow(), &s.id).map(|r| r.pid) };
     if let Some(pid) = pid.filter(|_| app::is_live(s.state)) {
@@ -740,7 +751,13 @@ fn session(ui: &Ui, id: &str) {
         b.set_tooltip_text(Some("Stop this agent. Wake asks first, and says what it last said."));
         act.append(&b);
     }
-    put_top(ui, &act);
+    let top = w::vbox(6, &["dact"]);
+    top.append(&act);
+    // Peeking has no button: say it where the way there is.
+    if app::is_live(s.state) {
+        top.append(&w::wrap("Hold Space to peek without leaving Wake.", &["hint"]));
+    }
+    put_top(ui, &top);
 
     let b = body(ui);
     // What it is doing now: the decision or question it is waiting on (with the way there right
@@ -906,7 +923,7 @@ fn session(ui: &Ui, id: &str) {
             lines.push(format!("resume: {r}"));
         }
         if let Some(j) = &s.job_id {
-            lines.push(format!("background job {j}"));
+            lines.push(format!("background job {j} · attach: claude attach {j}"));
         }
         lines.push(format!("started {} · id {}", fmt::when(s.started_at.as_deref()), s.id));
         let f = w::wrap(&lines.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"), &["facts"]);
@@ -976,17 +993,18 @@ pub fn tick_procs(ui: &Ui) {
     }
 }
 
-/// "Go to" for a session with a tab or a live process, "Resume" for one that has ended and can be
-/// reopened (the same key, o).
+/// The way to a session, saying where it goes (the same key, o): "Go to tab 3" for one in a tab,
+/// "Open in a new window" for one running in the background, "Resume in a new window" for one
+/// that has ended and can be reopened.
 pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Button> {
     if !(s.location.is_some() || app::can_reopen(s) || app::is_live(s.state)) {
         return None;
     }
-    let (_, _, _, tip) = app::loc_of(s, app::unsure(ui));
-    let word = if app::can_reopen(s) && !app::is_live(s.state) { "Resume" } else { "Go to" };
+    let (loc, _, can_go, tip) = app::loc_of(s, app::unsure(ui));
+    let word = go_words(s, &loc, can_go);
     let ui2 = ui.clone();
     let id = s.id.clone();
-    let b = w::button(word, if primary { Some("o") } else { None }, if primary { &["primary"] } else { &["sm"] }, move || app::go_to(&ui2, &id));
+    let b = w::button(&word, if primary { Some("o") } else { None }, if primary { &["primary"] } else { &["sm"] }, move || app::go_to(&ui2, &id));
     if primary {
         b.set_widget_name("primary");
     }
@@ -994,6 +1012,22 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
         b.set_tooltip_text(Some(&tip));
     }
     Some(b)
+}
+
+/// What the way-there button says, from `loc_of`'s place: "Go to tab 3" (with one Konsole),
+/// "Go to Konsole 2 · tab 1" (with several), "Open in a new window", "Resume in a new window".
+fn go_words(s: &SessionSummary, loc: &str, can_go: bool) -> String {
+    if s.location.is_some() {
+        format!("Go to {}", loc.strip_prefix("Konsole · ").unwrap_or(loc))
+    } else if !can_go {
+        // Wake is still finding its tab.
+        "Go to".into()
+    } else if app::can_reopen(s) {
+        "Resume in a new window".into()
+    } else {
+        // Live with no tab: a background job, attached in a new window.
+        "Open in a new window".into()
+    }
 }
 
 /// The amber card for a session that wants something from you: what it asks, and the way there
@@ -1075,13 +1109,18 @@ fn repo(r: &RepoState) -> gtk::Box {
     let b = w::vbox(3, &["repo"]);
     b.append(&w::wrap(&format!("{} · {}", fmt::base(&r.path), r.branch.as_deref().unwrap_or("no branch")), &["rn"]));
     let mut lines: Vec<(&str, String)> = Vec::new();
-    if r.upstream.is_none() {
-        lines.push(("w", "This branch has no copy on GitHub at all.".into()));
+    // No branch is pushed anywhere: most likely there is no remote at all, which is a fine way to
+    // work. Said once, quietly, rather than as a loose end.
+    let local_only = local_only(r);
+    if local_only {
+        lines.push(("", "Only on this computer: nothing is pushed to a remote.".into()));
+    } else if r.upstream.is_none() {
+        lines.push(("w", "This branch isn't pushed anywhere yet.".into()));
     } else if let Some(a) = r.ahead.filter(|a| *a > 0) {
-        lines.push(("w", format!("{} not on GitHub yet (ahead of {}).", fmt::pl(a, "commit", "commits"), r.upstream.as_deref().unwrap_or("its upstream"))));
+        lines.push(("w", format!("{} not pushed yet (ahead of {}).", fmt::pl(a, "commit", "commits"), r.upstream.as_deref().unwrap_or("its upstream"))));
     }
     if let Some(b) = r.behind.filter(|b| *b > 0) {
-        lines.push(("", format!("{} on GitHub you don't have here.", fmt::pl(b, "change", "changes"))));
+        lines.push(("", format!("{} on the remote you don't have here.", fmt::pl(b, "change", "changes"))));
     }
     if r.dirty_files > 0 {
         lines.push(("w", format!("{} edited but not committed.", fmt::pl(r.dirty_files, "file", "files"))));
@@ -1089,14 +1128,15 @@ fn repo(r: &RepoState) -> gtk::Box {
     if r.untracked > 0 {
         lines.push(("", format!("{} git isn't tracking.", fmt::pl(r.untracked, "new file", "new files"))));
     }
-    if r.branches_no_upstream > 0 {
-        lines.push(("", format!("{} of {} {} no copy on GitHub.", r.branches_no_upstream, fmt::pl(r.branches, "branch", "branches"), if r.branches_no_upstream == 1 { "has" } else { "have" })));
+    if r.branches_no_upstream > 0 && !local_only {
+        let n = r.branches_no_upstream;
+        lines.push(("", format!("{n} of {} {} only on this computer.", fmt::pl(r.branches, "branch", "branches"), if n == 1 { "is" } else { "are" })));
     }
     if r.worktrees > 1 {
         lines.push(("", format!("{} (worktrees) open.", fmt::pl(r.worktrees - 1, "side copy", "side copies"))));
     }
     if lines.is_empty() {
-        lines.push(("ok", "In step with GitHub. Nothing unsaved.".into()));
+        lines.push(("ok", "In step with the remote. Nothing unsaved.".into()));
     }
     for (c, t) in lines {
         b.append(&w::wrap(&t, &["ex", if c.is_empty() { "plain" } else { c }]));
@@ -1105,6 +1145,51 @@ fn repo(r: &RepoState) -> gtk::Box {
         b.append(&w::wrap(&format!("last commit {}: {}", fmt::ago(Some(at)), r.last_commit_subject.as_deref().unwrap_or("")), &["meta"]));
     }
     b
+}
+
+/// Why no repo of a project could be read, from its `could_not_check` lines ("<path>: <reason>"),
+/// in plain words; None when there is simply no git repository in its folders.
+fn git_unread(failed: &[String]) -> Option<String> {
+    let reasons: Vec<&str> = failed.iter().map(|f| f.split_once(": ").map_or(f.as_str(), |(_, r)| r)).filter(|r| *r != "no git repository here").collect();
+    if reasons.iter().any(|r| r.contains("(os error 2)")) {
+        // Running `git` itself failed: it isn't on PATH.
+        return Some("git isn't installed".into());
+    }
+    let first = reasons.first()?;
+    Some(if *first == "folder not found" { "its folder isn't there".into() } else { (*first).to_string() })
+}
+
+/// What a pause kept besides the note, in one quiet line: "Saved with main @ 7d05b9e · 2 open
+/// sessions"; with several repos each is named ("wake main @ 7d05b9e, site dev @ 1a2b3c4"). None
+/// when it kept neither.
+fn saved_with(cp: &Checkpoint) -> Option<String> {
+    let short = |h: &String| h.chars().take(7).collect::<String>();
+    let repos: Vec<String> = cp
+        .git
+        .iter()
+        .map(|(path, branch, head, _)| {
+            let at = match (branch, head) {
+                (Some(b), Some(h)) => format!("{b} @ {}", short(h)),
+                (Some(b), None) => b.clone(),
+                (None, Some(h)) => format!("@ {}", short(h)),
+                (None, None) => "no branch".into(),
+            };
+            if cp.git.len() > 1 { format!("{} {at}", fmt::base(path)) } else { at }
+        })
+        .collect();
+    let mut parts = Vec::new();
+    if !repos.is_empty() {
+        parts.push(repos.join(", "));
+    }
+    if !cp.sessions.is_empty() {
+        parts.push(fmt::pl(cp.sessions.len() as u64, "open session", "open sessions"));
+    }
+    (!parts.is_empty()).then(|| format!("Saved with {}", parts.join(" · ")))
+}
+
+/// No branch of `r` is pushed anywhere (most often: it has no remote).
+fn local_only(r: &RepoState) -> bool {
+    r.upstream.is_none() && r.branches_no_upstream >= r.branches
 }
 
 fn project(ui: &Ui, id: &str) {
@@ -1247,6 +1332,9 @@ fn project(ui: &Ui, id: &str) {
         let x = w::vbox(6, &["now"]);
         x.append(&w::sec(&format!("Where you left it · {}", fmt::when(Some(&lp.at)))));
         x.append(&w::wrap(if lp.note.is_empty() { "(no note)" } else { &lp.note }, &["lead"]));
+        if let Some(saved) = saved_with(lp) {
+            x.append(&w::wrap(&saved, &["meta"]));
+        }
         for s in d.since_pause.iter().take(3) {
             x.append(&w::wrap(&format!("Since then: {s}"), &["meta"]));
         }
@@ -1308,23 +1396,31 @@ fn project(ui: &Ui, id: &str) {
         }));
     }
     if !d.repos.is_empty() {
-        // The one git fact that asks for something, else that all is well.
+        // The one git fact that asks for something, else that all is well. Repos only on this
+        // computer are a way of working, not a loose end: said, but not in amber.
         let g = &p.git;
-        let note = if crate::behind::of(ui, &p.id).is_some() {
-            "behind its remote".to_string()
-        } else if g.no_upstream > 0 || g.ahead_total > 0 {
-            "not all on GitHub".to_string()
+        let all_local = d.repos.iter().all(local_only);
+        let (note, warn) = if crate::behind::of(ui, &p.id).is_some() {
+            ("behind its remote", true)
+        } else if g.ahead_total > 0 || (g.no_upstream > 0 && !all_local) {
+            ("not pushed", true)
         } else if g.dirty_files > 0 {
-            "uncommitted edits".to_string()
+            ("uncommitted edits", true)
+        } else if all_local {
+            ("only on this computer", false)
         } else {
-            "in step".to_string()
+            ("in step", false)
         };
-        let warn = note != "in step";
-        folds.append(&fold(ui, "git", "Git", &note, if warn { "amber" } else { "" }, |x| {
+        folds.append(&fold(ui, "git", "Git", note, if warn { "amber" } else { "" }, |x| {
             for r in &d.repos {
                 x.append(&repo(r));
             }
-            x.append(&w::wrap("Read only: Wake changes a repo only when you confirm Pull now.", &["meta"]));
+            x.append(&w::wrap("Read only: Wake changes a repo only when you press Pull or Remove worktree.", &["meta"]));
+        }));
+    } else if let Some(why) = git_unread(&d.could_not_check).filter(|_| !p.roots.is_empty()) {
+        // Rather than no Git section at all: say why Wake can't read it.
+        folds.append(&fold(ui, "git", "Git", "can't read", "amber", |x| {
+            x.append(&w::wrap(&format!("Wake can't read git here: {why}. Run wake doctor in a terminal to check."), &["ex", "w"]));
         }));
     }
     // The project's dot colour: a row of swatches (Tab or the arrows move, Enter picks).
@@ -1409,4 +1505,52 @@ fn project(ui: &Ui, id: &str) {
         x.append(&row);
     }));
     b.append(&folds);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pause_says_what_it_saved() {
+        let mut cp = Checkpoint { project: "p".into(), at: String::new(), note: String::new(), next: String::new(), git: Vec::new(), sessions: Vec::new() };
+        assert_eq!(saved_with(&cp), None);
+        cp.git.push(("/home/sam/Projects/wake".into(), Some("main".into()), Some("7d05b9e1f2a3".into()), Some(0)));
+        cp.sessions = vec!["a".into(), "b".into()];
+        assert_eq!(saved_with(&cp).as_deref(), Some("Saved with main @ 7d05b9e · 2 open sessions"));
+        cp.git.push(("/home/sam/Projects/site".into(), None, None, None));
+        cp.sessions.clear();
+        assert_eq!(saved_with(&cp).as_deref(), Some("Saved with wake main @ 7d05b9e, site no branch"));
+    }
+
+    #[test]
+    fn unreadable_git_says_why_and_a_plain_folder_says_nothing() {
+        assert_eq!(git_unread(&["/home/sam/x: No such file or directory (os error 2)".into()]).as_deref(), Some("git isn't installed"));
+        assert_eq!(git_unread(&["/home/sam/x: no git repository here".into()]), None);
+        assert_eq!(git_unread(&["/home/sam/x: folder not found".into()]).as_deref(), Some("its folder isn't there"));
+        assert_eq!(git_unread(&["/home/sam/x: fatal: detected dubious ownership".into()]).as_deref(), Some("fatal: detected dubious ownership"));
+        assert_eq!(git_unread(&[]), None);
+    }
+
+    #[test]
+    fn a_branch_never_pushed_anywhere_is_local_only() {
+        let r = RepoState {
+            path: "/x".into(),
+            branch: Some("main".into()),
+            head: None,
+            upstream: None,
+            ahead: None,
+            behind: None,
+            dirty_files: 0,
+            untracked: 0,
+            branches_no_upstream: 2,
+            branches: 2,
+            worktrees: 1,
+            last_commit_at: None,
+            last_commit_subject: None,
+        };
+        assert!(local_only(&r));
+        assert!(!local_only(&RepoState { branches_no_upstream: 1, ..r.clone() }));
+        assert!(!local_only(&RepoState { upstream: Some("origin/main".into()), ..r }));
+    }
 }

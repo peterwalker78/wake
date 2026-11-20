@@ -1,4 +1,4 @@
-//! Subcommands: `wake , <idea>`, `wake ideas`, `wake index`, `wake doctor`, `wake ps`, `wake disk`, `wake behind`, `wake help`.
+//! Subcommands: `wake , <idea>`, `wake ideas`, `wake index`, `wake doctor`, `wake ps`, `wake disk`, `wake behind`, `wake version`, `wake help`.
 //! Returns None when there is no subcommand, so main opens the window. None of these start GTK.
 
 use std::process::ExitCode;
@@ -19,8 +19,11 @@ use wake_core::store::{self, Store};
 use wake_core::util;
 use wake_core::{Live, LiveConfig, ProcKind, Source, State};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 const HELP: &str = "\
 wake                 open Wake
+wake --demo          open Wake on made-up data, to see what it shows
 wake , <idea...>     keep an idea; the project comes from the folder you're in
 wake ideas           list the ideas waiting to be sorted
 wake index           index your agent sessions once and say what was found
@@ -29,10 +32,13 @@ wake disk            what takes disk space, by project and for the machine, in p
                      (measures at low priority; read-only; may take a minute)
 wake behind          tracked projects that are behind their remote and need a pull (asks the
                      remote with git ls-remote; never fetches; exits 1 when one is behind)
-wake doctor          check what Wake can see on this machine
+wake doctor          check what Wake can see on this computer, and what to install
+wake version         which version of Wake this is
 wake help            this text
 
-Wake reads ~/.claude and your git repos. It writes only to ~/.local/share/wake/.
+In the window, press ? to see every key.
+Wake reads ~/.claude and your git repos. It writes only to ~/.local/share/wake/
+and its settings to ~/.config/wake/.
 It never stops a process from the command line; use the Agents view for that.";
 
 pub fn run(args: &[String]) -> Option<ExitCode> {
@@ -50,6 +56,10 @@ pub fn run(args: &[String]) -> Option<ExitCode> {
         "ps" => cmd_ps(),
         "disk" => cmd_disk(),
         "behind" => cmd_behind(),
+        "version" | "--version" | "-V" => {
+            out!("wake {VERSION}");
+            0
+        }
         "help" | "-h" | "--help" => {
             out!("{HELP}");
             0
@@ -137,36 +147,346 @@ fn cmd_index() -> u8 {
     0
 }
 
+/// `wake doctor`: what Wake can see on this computer, and what to install for anything missing.
+/// Read-only: it never repairs, moves or creates a file (opening Wake does that, and says so).
+/// Exits 1 only when something Wake needs is missing (a `!!` line).
 fn cmd_doctor() -> u8 {
-    let mut ok = true;
-    let mut line = |good: bool, text: &str| {
-        ok &= good;
-        out!("{}{}", if good { "  ok   " } else { "  !!   " }, text);
-    };
     let paths = store::Paths::from_env();
-    let claude = paths.claude.display().to_string();
-    line(paths.claude.join("projects").is_dir(), &format!("Claude transcripts in {claude}/projects"));
-    line(paths.claude.join("sessions").is_dir(), &format!("Claude live sessions in {claude}/sessions"));
-    let which = |n: &str| std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(n).is_file()));
-    line(which("git"), "git is installed");
-    line(which("qdbus-qt6") || which("qdbus"), "qdbus is installed (needed to switch Konsole tabs)");
-    let live = Live::new(LiveConfig::real());
-    let tabs = live.desktop().konsole_map(true);
-    let problem = live.desktop().problem();
-    line(problem.is_none(), &problem.unwrap_or_else(|| format!("Konsole can be reached over D-Bus ({} tabs)", tabs.len())));
-    line(paths.runtime.join("working").is_dir(), &format!("agent-notify notes in {}", paths.runtime.join("working").display()));
-    let projects: Vec<_> = live.store().load_projects().into_iter().filter(|p| !p.removed).collect();
-    if let Some(problem) = live.store().projects_problem() {
-        line(false, &problem);
-    }
-    let names: Vec<&str> = projects.iter().take(8).map(|p| p.name.as_str()).collect();
-    line(!projects.is_empty(), &format!("{} projects tracked: {}", projects.len(), names.join(", ")));
-    out!("\nWake writes only to {}", paths.data.display());
-    if ok { 0 } else { 1 }
+    let mut d = Doctor::default();
+    out!("Wake {VERSION}: what it can see on this computer");
+    out!("ok = working · -- = optional, not set up here · !! = needed and missing");
+    doctor_sessions(&mut d, &paths);
+    doctor_programs(&mut d, &paths);
+    doctor_desktop(&mut d, &paths);
+    doctor_files(&mut d, &paths);
+    doctor_log(&mut d, &paths);
+    out!();
+    out!("Wake writes only to {} and its settings to {}.", tilde_path(&paths.data), tilde_path(&paths.config.join("settings.toml")));
+    out!("If Wake shows the wrong thing, include this output and {} in your report.", tilde_path(&paths.data.join("wake.log")));
+    u8::from(d.needed)
 }
 
+#[derive(Default)]
+struct Doctor {
+    needed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mark {
+    Ok,
+    /// Optional and missing: the line says what you would gain.
+    Optional,
+    /// Needed and missing: makes doctor exit 1.
+    Needed,
+}
+
+impl Doctor {
+    fn heading(&self, h: &str) {
+        out!();
+        out!("{h}");
+    }
+
+    fn ok(&mut self, text: &str) {
+        self.line(Mark::Ok, text, "");
+    }
+
+    /// Every line that isn't ok says what's missing, what the person loses, and how to fix it.
+    fn line(&mut self, mark: Mark, text: &str, fix: &str) {
+        let m = match mark {
+            Mark::Ok => "ok",
+            Mark::Optional => "--",
+            Mark::Needed => "!!",
+        };
+        self.needed |= mark == Mark::Needed;
+        out!("  {m}   {text}");
+        if mark != Mark::Ok && !fix.is_empty() {
+            out!("       Fix: {fix}");
+        }
+    }
+}
+
+fn install(fedora: &str, debian: &str) -> String {
+    format!("Fedora: sudo dnf install {fedora} · Debian, Ubuntu: sudo apt install {debian}")
+}
+
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+}
+
+fn plural(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
+fn tilde_path(p: &std::path::Path) -> String {
+    tilde(&p.to_string_lossy())
+}
+
+fn doctor_sessions(d: &mut Doctor, paths: &store::Paths) {
+    d.heading("Sessions");
+    let found = wake_core::index::Indexer::new(paths.clone()).discover();
+    let claude = found.iter().filter(|f| f.1 == "claude").count();
+    let codex = found.len() - claude;
+    let (claude_dir, codex_dir) = (tilde_path(&paths.claude.join("projects")), tilde_path(&paths.codex.join("sessions")));
+    if found.is_empty() {
+        d.line(
+            Mark::Needed,
+            &format!("No agent sessions found in {claude_dir} or {codex_dir}, so Wake has nothing to show yet."),
+            "run `claude` (or `codex`) in a project folder once. Wake lists it from then on.",
+        );
+    }
+    if claude > 0 {
+        d.ok(&format!("Claude Code: {} saved in {claude_dir}", plural(claude, "session")));
+        doctor_open_now(d, paths);
+    }
+    if codex > 0 {
+        d.ok(&format!("Codex: {} saved in {codex_dir}", plural(codex, "session")));
+    }
+    doctor_index(d, paths, &found);
+}
+
+/// Open Claude sessions, and whether Wake can tell their processes are agents. Inside a toolbox
+/// or distrobox it often can't, and then Agents quietly shows fewer than are running.
+fn doctor_open_now(d: &mut Doctor, paths: &store::Paths) {
+    let dir = paths.claude.join("sessions");
+    if !dir.is_dir() {
+        d.line(
+            Mark::Optional,
+            &format!("Wake can't tell which Claude Code sessions are open: {} isn't there yet.", tilde_path(&dir)),
+            "start `claude` in a project; the folder appears while it runs. If it still doesn't, update Claude Code.",
+        );
+        return;
+    }
+    let proc = std::path::Path::new("/proc");
+    let pids: Vec<u32> = wake_core::live::read_live(paths, proc).into_values().filter(|l| l.alive).map(|l| l.pid).collect();
+    let seen = pids.iter().filter(|&&pid| procs::read_proc(proc, pid).is_some_and(|p| procs::agent_of(&p.argv, p.exe.as_deref()).is_some())).count();
+    if pids.is_empty() {
+        d.ok("Open now: no Claude Code session");
+    } else if seen == pids.len() {
+        d.ok(&format!("Open now: {}, and Wake can see all of their processes", plural(pids.len(), "Claude Code session")));
+    } else {
+        d.line(
+            Mark::Needed,
+            &format!("Wake can see {seen} of {} agent processes, so Agents shows fewer than are running and leaves the rest out of its memory totals.", pids.len()),
+            "this usually means Wake is running inside a toolbox or distrobox. Run Wake on the host instead.",
+        );
+    }
+}
+
+fn doctor_index(d: &mut Doctor, paths: &store::Paths, found: &[(String, &str)]) {
+    let dir = paths.index_dir();
+    let Some(read) = store::read_json::<std::collections::HashMap<String, serde_json::Value>>(&dir.join("files.json")) else {
+        d.ok("Index: not made yet. Wake makes it the first time it opens (or run `wake index`).");
+        return;
+    };
+    let kept = std::fs::read_dir(dir.join("sessions")).map_or(0, |rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count());
+    let new = found.iter().filter(|(p, _)| !read.contains_key(p)).count();
+    let mut text = format!("Index: {} kept", plural(kept, "session"));
+    if new > 0 {
+        text.push_str(&format!("; {} not read yet (Wake reads them when it opens)", plural(new, "new transcript")));
+    }
+    d.ok(&text);
+    index_problem(d, paths);
+}
+
+/// Transcripts the index couldn't read or understand, and summaries it couldn't save.
+// wiring: the core's read-only index health (the counts behind `Overview::index_error`). Today
+// index_error is only set by the window's indexing thread, so there is nothing to read here yet.
+// Print it as `!!` with the core's sentence, Fix: "include ~/.local/share/wake/wake.log in a report".
+fn index_problem(_d: &mut Doctor, _paths: &store::Paths) {}
+
+fn doctor_programs(d: &mut Doctor, paths: &store::Paths) {
+    use wake_core::questions::{Ai, find_tool};
+    d.heading("Programs");
+    if on_path("git") {
+        d.ok("git");
+    } else {
+        d.line(Mark::Needed, "git isn't installed. Wake reads each project's state with it.", &install("git", "git"));
+    }
+    let tools: Vec<(Ai, Option<std::path::PathBuf>)> = Ai::ALL.iter().map(|&ai| (ai, find_tool(paths, ai))).collect();
+    let other_agent = tools.iter().any(|(ai, p)| *ai != Ai::Claude && p.is_some());
+    for (ai, found) in &tools {
+        match (ai, found) {
+            (_, Some(p)) => d.ok(&format!("{}: {}", ai.id(), tilde_path(p))),
+            (Ai::Claude, None) => d.line(
+                if other_agent { Mark::Optional } else { Mark::Needed },
+                "claude: Wake can't find it (it looked on your PATH and in ~/.local/bin). Questions and Start an agent need it.",
+                "install Claude Code, or set WAKE_CLAUDE to where claude is.",
+            ),
+            (Ai::Codex, None) => {
+                d.line(Mark::Optional, "codex isn't installed. With it, Questions can also ask Codex.", "only if you want it, install the Codex CLI, or set WAKE_CODEX to where it is.")
+            }
+            (Ai::Gemini, None) => {
+                d.line(Mark::Optional, "gemini isn't installed. With it, Questions can also ask Gemini.", "only if you want it, install Gemini CLI, or set WAKE_GEMINI to where it is.")
+            }
+        }
+    }
+}
+
+fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
+    use wake_core::desktop;
+    d.heading("Desktop");
+    let konsole = on_path("konsole");
+    if konsole {
+        d.ok("konsole");
+    } else {
+        d.line(Mark::Optional, "Konsole isn't installed. Go there and Start an agent open sessions in a new Konsole window, so they can't here.", &install("konsole", "konsole"));
+    }
+    if !on_path(desktop::QDBUS) {
+        let fix = if on_path("qdbus6") {
+            "this system calls it qdbus6. Link it under the name Wake looks for: ln -s \"$(command -v qdbus6)\" ~/.local/bin/qdbus-qt6".to_string()
+        } else {
+            install("qt6-qttools", "qdbus-qt6, then ln -s /usr/bin/qdbus6 ~/.local/bin/qdbus-qt6")
+        };
+        d.line(Mark::Optional, "Konsole tabs: Wake can't see them (qdbus-qt6 isn't installed). Go there opens a new window instead of switching tab.", &fix);
+    } else if konsole {
+        match desktop::Desktop::real().tabs(true) {
+            Ok(t) if !t.is_empty() => d.ok(&format!("Konsole tabs: Wake can see {}", plural(t.len(), "tab"))),
+            Ok(_) => d.ok("Konsole tabs: Konsole isn't open right now, so there are none to see"),
+            Err(e) => d.line(Mark::Optional, &e, "run Wake from a terminal in your desktop session, with Konsole open."),
+        }
+    }
+    if on_path(desktop::GDBUS) {
+        d.ok("gdbus");
+    } else {
+        d.line(Mark::Optional, "gdbus isn't installed. Peek on Slipstream and KDE Plasma, and the notice when a project is behind, need it.", &install("glib2", "libglib2.0-bin"));
+    }
+    let kind = wake_core::look::detect(&desktop::default_runner(), &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default());
+    match kind {
+        wake_core::LookKind::Slipstream => d.ok("Peek: Slipstream flies to the session's window"),
+        wake_core::LookKind::Kwin => d.ok("Peek: KDE Plasma switches to the session's window"),
+        wake_core::LookKind::Preview => d.ok("Peek: Wake shows the session's terminal text (no Slipstream or KDE Plasma found)"),
+    }
+    if kind != wake_core::LookKind::Slipstream {
+        d.line(
+            Mark::Optional,
+            "Slipstream isn't running. On Slipstream, peek and Go there fly to the agent's window, and Wake adds a card to its plugin panel.",
+            "only if you want it, see https://github.com/peterwalker78/slipstream-desktop",
+        );
+    }
+    let notes = paths.runtime.join("working");
+    if notes.is_dir() {
+        d.ok(&format!("agent-notify: its notes are in {}", tilde_path(&notes)));
+    } else {
+        d.line(Mark::Optional, "agent-notify isn't running. With it, Agents draws each agent's activity trace.", "only if you want it, see https://github.com/peterwalker78/agent-notify");
+    }
+}
+
+fn doctor_files(d: &mut Doctor, paths: &store::Paths) {
+    d.heading("Wake's own files");
+    doctor_projects(d, paths);
+    doctor_settings(d, paths);
+    doctor_ideas(d, paths);
+    doctor_broken(d, paths);
+    doctor_self(d, paths);
+}
+
+/// The tracked projects, read straight from projects.json. `Store::load_projects` is not used:
+/// it moves a broken file aside and writes a fresh one.
+// wiring: the core's read-only projects.json check goes at the top of this function; when it reports
+// a problem, print that as `!!` and return before counting.
+fn doctor_projects(d: &mut Doctor, paths: &store::Paths) {
+    let path = paths.data.join("projects.json");
+    let file = tilde_path(&path);
+    let projects: Vec<store::ProjectRec> = match std::fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes).ok().and_then(|v| serde_json::from_value(v.get("projects")?.clone()).ok()) {
+            Some(ps) => ps,
+            None => {
+                d.line(
+                    Mark::Needed,
+                    &format!("Wake can't understand its project list ({file}). When it next opens, it keeps that file as projects.json.broken-<time> and starts a fresh list."),
+                    "open Wake, then copy any descriptions or next steps you need from the kept file.",
+                );
+                return;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            d.ok(&format!("Project list: not made yet. Wake makes it from {} the first time it opens.", tilde_path(&paths.projects)));
+            return;
+        }
+        Err(e) => {
+            d.line(Mark::Needed, &format!("Wake can't read its project list ({file}: {e})."), &format!("check who owns it: ls -l {file}"));
+            return;
+        }
+    };
+    let names: Vec<&str> = projects.iter().filter(|p| !p.removed).map(|p| p.name.as_str()).collect();
+    if names.is_empty() {
+        d.line(Mark::Optional, &format!("No projects yet: Wake looks in {} and the folders your sessions ran in.", tilde_path(&paths.projects)), "open Projects → Track a folder for others.");
+        return;
+    }
+    let mut text = format!("{} tracked: {}", plural(names.len(), "project"), names.iter().take(8).copied().collect::<Vec<_>>().join(", "));
+    if names.len() > 8 {
+        text.push_str(&format!(" … and {} more", names.len() - 8));
+    }
+    d.ok(&text);
+}
+
+/// settings.toml, if Wake can't understand it.
+// wiring: the core's read-only settings.toml check (`settings::load` can't be used: it moves a
+// broken file aside). A problem prints as `--` "Wake can't understand settings.toml and uses its
+// defaults", with the core's reason and Fix: "correct or delete <path>".
+fn doctor_settings(_d: &mut Doctor, _paths: &store::Paths) {}
+
+/// Lines of ideas.jsonl that Ideas can't show.
+// wiring: the core's read-only count of unreadable ideas.jsonl lines (`list_ideas` skips them
+// silently). Non-zero prints as `--` "N saved ideas can't be read, so Ideas doesn't show them",
+// Fix: "they are still in ~/.local/share/wake/ideas.jsonl".
+fn doctor_ideas(_d: &mut Doctor, _paths: &store::Paths) {}
+
+/// Files Wake kept aside because it couldn't understand them (`*.broken-*`).
+// wiring: the core's read-only list of `*.broken-*` files in the data and config folders. Each
+// prints as `--` "Wake kept a file it couldn't understand: <path>", Fix: "copy what you need from
+// it, then delete it".
+fn doctor_broken(_d: &mut Doctor, _paths: &store::Paths) {}
+
+/// Wake's own memory (the window, when it is open) and its index on disk.
+fn doctor_self(d: &mut Doctor, paths: &store::Paths) {
+    let index = match dir_size(&paths.index_dir()) {
+        0 => "no index yet".to_string(),
+        n if n < 1 << 20 => "index under 1 MB on disk".to_string(),
+        n => format!("index {} on disk", crate::fmt::bytes(n)),
+    };
+    let me = std::process::id();
+    let window = procs::Explorer::new(std::path::Path::new("/proc")).scan().into_iter().filter(|p| p.comm == "wake" && p.pid != me).map(|p| p.rss_bytes).max();
+    match window {
+        Some(rss) => d.ok(&format!("Wake itself: {} of memory, {index}", crate::fmt::bytes(rss))),
+        None => d.ok(&format!("Wake itself: not open now; {index}")),
+    }
+}
+
+/// Space a folder takes on disk (allocated blocks, as `du` counts them).
+fn dir_size(dir: &std::path::Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| std::os::unix::fs::MetadataExt::blocks(&m) * 512),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The last few things Wake did, and what went wrong, from its log.
+// wiring: `wake_core::log::recent(paths, 5)`. When it returns lines, print a "Recently" heading
+// and each line indented by two spaces, with no mark.
+fn doctor_log(_d: &mut Doctor, _paths: &store::Paths) {}
+
 fn mem(b: u64) -> String {
-    if b >= 1 << 30 { format!("{:.1}G", b as f64 / (1u64 << 30) as f64) } else { format!("{}M", b >> 20) }
+    crate::fmt::bytes(b)
+}
+
+/// One line saying what each kind and state in the table means, for only those that appear.
+fn ps_legend(seen: &[&str]) -> Option<String> {
+    const WORDS: [(&str, &str); 7] = [
+        ("daemon", "Claude's background service that keeps background sessions running"),
+        ("session", "an agent working on one task"),
+        ("terminal", "the terminal a background session runs in or is shown in"),
+        ("spare", "started ahead of time, not used yet"),
+        ("stray", "an agent process Wake can't tie to a session"),
+        ("subagent", "a helper the session above it started"),
+        ("lost track", "Wake can't tell what it is doing"),
+    ];
+    let parts: Vec<String> = WORDS.iter().filter(|(w, _)| seen.contains(w)).map(|(w, m)| format!("{w} = {m}")).collect();
+    if parts.is_empty() { None } else { Some(parts.join(" · ")) }
 }
 
 fn idle(s: Option<u64>) -> String {
@@ -179,7 +499,7 @@ fn idle(s: Option<u64>) -> String {
 
 /// `wake disk`: measure once and print each project's items and the machine's (added 2026-11-20).
 fn cmd_disk() -> u8 {
-    use wake_core::disk::human;
+    use crate::fmt::bytes;
     let live = Live::new(LiveConfig::real());
     live.index_now();
     let started = Instant::now();
@@ -190,7 +510,7 @@ fn cmd_disk() -> u8 {
     let ov = live.overview();
     let name = |id: &str| ov.projects.iter().find(|p| p.id == id).map_or(id.to_string(), |p| p.name.clone());
     if let Some(m) = &r.machine {
-        out!("{} free of {} on {} · {} could be rebuilt (measured in {:.0} s)", human(m.home_free), human(m.home_total), m.home_mount, human(r.rebuildable), started.elapsed().as_secs_f64());
+        out!("{} free of {} on {} · {} could be rebuilt (measured in {:.0} s)", bytes(m.home_free), bytes(m.home_total), m.home_mount, bytes(r.rebuildable), started.elapsed().as_secs_f64());
         if let Some(n) = &m.root_note {
             out!("{n}");
         }
@@ -200,32 +520,40 @@ fn cmd_disk() -> u8 {
         wake_core::DiskSafety::Check => "look first",
         wake_core::DiskSafety::Keep => "keep",
     };
-    let mut ps: Vec<&wake_core::ProjectDisk> = r.projects.iter().collect();
+    let mut seen: Vec<wake_core::DiskSafety> = Vec::new();
+    let mut ps: Vec<&wake_core::ProjectDisk> = r.projects.iter().filter(|p| !p.items.is_empty()).collect();
     ps.sort_by_key(|p| std::cmp::Reverse(p.bytes));
     for p in ps {
         out!();
-        out!("{}  {}{} · {} rebuildable", name(&p.project), if p.partial { ">= " } else { "" }, human(p.bytes), human(p.rebuildable));
+        out!("{}  {}{} · {} rebuildable", name(&p.project), if p.partial { ">= " } else { "" }, bytes(p.bytes), bytes(p.rebuildable));
         for i in &p.items {
             let pad = if i.within.is_some() { "    " } else { "  " };
-            out!("{pad}{:>7}  {:<11} {}{}", human(i.bytes), safety(i.safety), i.name, i.refused.as_deref().map(|r| format!("  [{r}]")).unwrap_or_default());
+            seen.push(i.safety);
+            out!("{pad}{:>7}  {:<11} {}  {}{}", bytes(i.bytes), safety(i.safety), i.name, tilde(&i.path), i.refused.as_deref().map(|r| format!("  [{r}]")).unwrap_or_default());
         }
     }
-    if let Some(m) = &r.machine {
+    if let Some(m) = r.machine.as_ref().filter(|m| !m.items.is_empty()) {
         out!();
         out!("Outside projects");
         for i in &m.items {
-            out!("  {:>7}  {:<11} {}{}", human(i.bytes), safety(i.safety), i.name, i.command.as_deref().map(|c| format!("  ({c})")).unwrap_or_default());
+            seen.push(i.safety);
+            out!("  {:>7}  {:<11} {}  {}{}", bytes(i.bytes), safety(i.safety), i.name, tilde(&i.path), i.command.as_deref().map(|c| format!("  ({c})")).unwrap_or_default());
         }
     }
-    let unattributed = ov.attribution.as_ref().map_or(0, |a| a.iter().filter(|x| x.how == "none" && x.started_at_home).count());
-    let guessed: Vec<String> = ov.attribution.iter().flatten().filter(|x| x.guessed()).map(|x| x.words.clone()).collect();
+    let legend: Vec<&str> = [
+        (wake_core::DiskSafety::Safe, "safe = comes back by itself (build output, caches)"),
+        (wake_core::DiskSafety::Check, "look first = check before clearing"),
+        (wake_core::DiskSafety::Keep, "keep = may be the only copy; leave it unless you know"),
+    ]
+    .into_iter()
+    .filter(|(s, _)| seen.contains(s))
+    .map(|(_, w)| w)
+    .collect();
     out!();
-    out!("Sessions guessed into a project: {} · still \"no project (~)\": {}", guessed.len(), unattributed);
-    let titles: Vec<&str> =
-        ov.attribution.iter().flatten().filter(|x| x.how == "none" && x.started_at_home).filter_map(|x| ov.sessions.iter().find(|s| s.id == x.session)).map(|s| s.title.as_str()).take(8).collect();
-    if !titles.is_empty() {
-        out!("  {}", titles.join(" · "));
+    if !legend.is_empty() {
+        out!("{}", legend.join(" · "));
     }
+    out!("To clear something, open Wake → Projects → Disk details. It moves things to the Trash.");
     0
 }
 
@@ -238,7 +566,8 @@ fn cmd_ps() -> u8 {
     out!("{}", procs::headline(&o));
     out!();
     let h = ["PID", "KIND", "MEM", "CPU", "STATE", "IDLE", "WHERE", "TASK", "PROJECT"];
-    out!("{:<9} {:<8} {:>6} {:>5}  {:<8} {:<8} {:<16} {:<34} {}", h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
+    out!("{:<9} {:<8} {:>6} {:>5}  {:<10} {:<8} {:<16} {:<34} {}", h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
+    let mut seen: Vec<&str> = Vec::new();
     for p in &o.procs {
         // pty hosts and attach clients fold in silently; a subagent folds in but keeps its task
         let sub = p.kind == ProcKind::Subagent;
@@ -246,13 +575,7 @@ fn cmd_ps() -> u8 {
         let kind = match p.kind {
             ProcKind::Session => "session",
             ProcKind::Daemon => "daemon",
-            ProcKind::PtyHost => {
-                if p.command.contains(" attach ") {
-                    "attach"
-                } else {
-                    "pty"
-                }
-            }
+            ProcKind::PtyHost => "terminal",
             ProcKind::Spare => "spare",
             ProcKind::Stray => "stray",
             ProcKind::Subagent => "subagent",
@@ -262,7 +585,7 @@ fn cmd_ps() -> u8 {
             State::Waiting => "waiting",
             State::Idle => "idle",
             State::Ended => "ended",
-            State::Unknown => "unknown",
+            State::Unknown => "lost track",
         };
         let where_ = match &p.location {
             Some(l) => l.label.clone().unwrap_or_else(|| format!("tab {}", l.tab_index + 1)).replace("Konsole", "K"),
@@ -280,9 +603,14 @@ fn cmd_ps() -> u8 {
         } else {
             p.title.clone().unwrap_or_else(|| p.command.clone())
         };
+        for word in [kind, if folded { "" } else { state }] {
+            if !seen.contains(&word) {
+                seen.push(word);
+            }
+        }
         let cpu = p.cpu_percent.map(|c| format!("{c:.0}%")).unwrap_or_else(|| "-".into());
         out!(
-            "{:<9} {:<8} {:>6} {:>5}  {:<8} {:<8} {:<16} {:<34} {}",
+            "{:<9} {:<8} {:>6} {:>5}  {:<10} {:<8} {:<16} {:<34} {}",
             pid,
             kind,
             mem(p.rss_bytes),
@@ -303,6 +631,10 @@ fn cmd_ps() -> u8 {
         {
             out!("{:<9} stray: {t}", "");
         }
+    }
+    if let Some(legend) = ps_legend(&seen) {
+        out!();
+        out!("{legend}");
     }
     if !o.dead_notes.is_empty() {
         let pids: Vec<String> = o.dead_notes.iter().map(|p| p.to_string()).collect();

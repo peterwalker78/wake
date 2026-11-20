@@ -398,11 +398,8 @@ fn doctor_projects(d: &mut Doctor, paths: &store::Paths) {
         }
         FileCheck::Fine(_) => {}
     }
-    let projects: Vec<store::ProjectRec> = std::fs::read(&path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| serde_json::from_value(v.get("projects")?.clone()).ok())
-        .unwrap_or_default();
+    let projects: Vec<store::ProjectRec> =
+        std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).and_then(|v| serde_json::from_value(v.get("projects")?.clone()).ok()).unwrap_or_default();
     let names: Vec<&str> = projects.iter().filter(|p| !p.removed).map(|p| p.name.as_str()).collect();
     if names.is_empty() {
         d.line(Mark::Optional, &format!("No projects yet: Wake looks in {} and the folders your sessions ran in.", tilde_path(&paths.projects)), "open Projects → Track a folder for others.");

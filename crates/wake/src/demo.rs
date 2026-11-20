@@ -674,8 +674,8 @@ impl Source for DemoSource {
         st.sessions
             .iter()
             .filter_map(|s| {
-                let hay = [Some(&s.title), s.last_prompt.as_ref(), s.away_summary.as_ref(), s.project_name.as_ref()];
-                hay.into_iter().flatten().find(|t| t.to_lowercase().contains(&q)).map(|t| (s.clone(), t.clone()))
+                let hay = [("title", Some(&s.title)), ("prompt", s.last_prompt.as_ref()), ("recap", s.away_summary.as_ref()), ("project", s.project_name.as_ref())];
+                hay.into_iter().find_map(|(k, t)| t.filter(|t| t.to_lowercase().contains(&q)).map(|t| (s.clone(), format!("{k}: {t}"))))
             })
             .collect()
     }

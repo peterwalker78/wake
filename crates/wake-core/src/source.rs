@@ -963,13 +963,16 @@ impl Source for Live {
         let mut hits = Vec::new();
         for acc in accs {
             let title = index::title_of(&acc);
-            let mut m = [Some(title.as_str()), acc.away_summary.as_deref(), acc.first_prompt.as_deref(), acc.last_prompt_meta.as_deref()].into_iter().find_map(|f| snippet(f, &q));
+            // Each snippet says what it matched ("prompt: …"), so the window can open that part.
+            let mut m = [("title", Some(title.as_str())), ("recap", acc.away_summary.as_deref()), ("prompt", acc.first_prompt.as_deref()), ("prompt", acc.last_prompt_meta.as_deref())]
+                .into_iter()
+                .find_map(|(k, f)| snippet(f, &q).map(|m| format!("{k}: {m}")));
             if m.is_none()
                 && let Some(full) = i.indexer.read_acc(&acc.id)
             {
-                m = full.prompts_list.iter().rev().find_map(|p| snippet(Some(&p.text), &q));
+                m = full.prompts_list.iter().rev().find_map(|p| snippet(Some(&p.text), &q)).map(|m| format!("prompt: {m}"));
                 if m.is_none() {
-                    m = full.files.iter().find(|(p, _)| p.to_lowercase().contains(&q)).map(|(p, _)| index::short_path(p, &i.paths.home));
+                    m = full.files.iter().find(|(p, _)| p.to_lowercase().contains(&q)).map(|(p, _)| format!("file: {}", index::short_path(p, &i.paths.home)));
                 }
             }
             if let Some(m) = m {
@@ -1672,7 +1675,7 @@ mod tests {
         assert!(l.session("nope").is_none());
         let r = l.search("parser.py");
         assert_eq!(r.iter().map(|(s, _)| s.id.as_str()).collect::<Vec<_>>(), ["sess-aaaa"]);
-        assert!(r[0].1.contains("parser.py"));
+        assert!(r[0].1.starts_with("file: ") && r[0].1.contains("parser.py"), "{}", r[0].1);
         assert!(l.search("x").is_empty());
     }
 

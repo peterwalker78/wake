@@ -19,6 +19,24 @@ pub fn open_session(ui: &Ui, id: &str, focus: bool) {
             st.sub_open.clear();
             st.subs_done_open = false;
             st.panel_open = folds_for(st.detailed);
+            // From a History search: open the part that holds the match, all of it.
+            let hit = (st.view == app::View::History && !st.search_q.trim().is_empty())
+                .then(|| st.search.as_ref()?.iter().find(|(s, _)| s.id == id).map(|(_, m)| m.split_once(": ").map_or("", |(k, _)| k).to_string()))
+                .flatten();
+            match hit.as_deref() {
+                Some("prompt") => {
+                    st.panel_open.insert("asked");
+                    st.all_prompts = true;
+                }
+                Some("file") => {
+                    st.panel_open.insert("files");
+                    st.all_files = true;
+                }
+                Some("recap") => {
+                    st.panel_open.insert("recap");
+                }
+                _ => {}
+            }
         }
         st.drawer = Some(Drawer::Session(id.to_string()));
         if matches!(st.view, app::View::Monitor | app::View::History) {

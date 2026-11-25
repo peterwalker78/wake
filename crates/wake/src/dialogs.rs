@@ -258,6 +258,7 @@ pub fn keys(ui: &Ui) {
                 ("Ctrl+Q", "quit".into()),
                 ("/", "search History: everything you asked".into()),
                 ("Tab  F6", "next part of the window (Shift: back)".into()),
+                ("↑ ↓ ← →", "move within the part that has the keyboard: the list, the details, the title bar or a menu".into()),
                 ("Esc  Alt+←", "one step back: a dialog, a page of the details, the details, then the list".into()),
                 ("click blank space", "put the details away".into()),
             ],

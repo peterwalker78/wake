@@ -1242,7 +1242,7 @@ fn local_only(r: &RepoState) -> bool {
 type ProjectChange = Box<dyn FnOnce(&dyn wake_core::Source) -> Result<ProjectSummary, String> + Send>;
 
 /// ⋯ beside Pause: how much the project matters, and which group it is in.
-fn project_menu(ui: &Ui, p: &ProjectSummary) -> gtk::MenuButton {
+pub fn project_menu(ui: &Ui, p: &ProjectSummary) -> gtk::MenuButton {
     let mb = gtk::MenuButton::new();
     mb.set_child(Some(&w::icon(w::icons::MORE)));
     mb.add_css_class("flat");

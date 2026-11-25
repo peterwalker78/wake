@@ -1563,6 +1563,26 @@ fn importance_tag(p: &ProjectSummary) -> Option<gtk::Box> {
     }
 }
 
+/// A project's ⋯ on its card or row: importance and group, where you see the project.
+fn card_menu(ui: &Ui, p: &ProjectSummary) -> gtk::MenuButton {
+    let m = crate::panel::project_menu(ui, p);
+    m.set_widget_name("card-more");
+    m.set_focus_on_click(false);
+    m
+}
+
+/// A right-click on `w` opens `menu`, as a context menu does anywhere.
+fn right_click_opens(w: &impl IsA<gtk::Widget>, menu: &gtk::MenuButton) {
+    let click = gtk::GestureClick::new();
+    click.set_button(3);
+    let menu = menu.clone();
+    click.connect_pressed(move |g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        menu.popup();
+    });
+    w.add_controller(click);
+}
+
 /// One project as a row of a boxed list: its colour and name, its importance, the next step (or
 /// where it was left), and at the end its open sessions and when it was last touched.
 fn project_item(ui: &Ui, p: &ProjectSummary, edge: (bool, bool)) -> gtk::ListBoxRow {
@@ -1575,6 +1595,11 @@ fn project_item(ui: &Ui, p: &ProjectSummary, edge: (bool, bool)) -> gtk::ListBox
     top.append(&dot);
     top.append(&w::label(&p.name, &["pname"]));
     if let Some(t) = importance_tag(p) {
+        top.append(&t);
+    }
+    if let Some(g) = p.group.as_deref().filter(|_| prefs::projects_group() != "groups") {
+        let t = w::state_tag(g, "group");
+        t.set_valign(gtk::Align::Center);
         top.append(&t);
     }
     if let Some(pause) = &p.paused {
@@ -1611,8 +1636,11 @@ fn project_item(ui: &Ui, p: &ProjectSummary, edge: (bool, bool)) -> gtk::ListBox
     let id = p.id.clone();
     live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
     end.append(&last);
+    let menu = card_menu(ui, p);
+    end.append(&menu);
     row.append(&end);
     let r = list_row(&p.id, &row);
+    right_click_opens(&r, &menu);
     r.add_css_class("itemrow");
     if edge.0 {
         r.add_css_class("first");
@@ -1774,7 +1802,14 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
     let id = p.id.clone();
     live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
     head.append(&last);
+    let menu = card_menu(ui, p);
+    head.append(&menu);
     body.append(&head);
+    if let Some(g) = p.group.as_deref().filter(|_| prefs::projects_group() != "groups") {
+        let t = w::state_tag(g, "group");
+        t.set_halign(gtk::Align::Start);
+        body.append(&t);
+    }
     let sub = if p.desc.is_empty() { p.roots.first().map(|r| fmt::folder_hint(r, &p.name)).unwrap_or_default() } else { p.desc.clone() };
     if !sub.is_empty() {
         body.append(&w::clip(&sub, &["dim"]));
@@ -1840,7 +1875,8 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
     let c = gtk::FlowBoxChild::new();
     c.set_widget_name(&p.id);
     c.set_child(Some(&card));
-    c.set_tooltip_text(Some("Double-click for details · Enter"));
+    c.set_tooltip_text(Some("Double-click for details · Enter · right-click or Menu key for importance and group"));
+    right_click_opens(&c, &menu);
     if p.removed {
         c.add_css_class("gone");
     }

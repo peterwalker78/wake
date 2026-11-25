@@ -170,6 +170,8 @@ pub struct AppState {
     pub sub_open: HashSet<String>,
     /// Agents: Claude's own background processes (daemon, terminal hosts, unused spares) shown.
     pub show_background: bool,
+    /// The first overview has arrived (the keyboard is put in the list once, then).
+    pub started: bool,
     /// Agents asked to stop: their rows stay, dimmed, until the process has gone.
     pub agent_leaving: HashSet<u32>,
     /// Their rows are folding away: the list waits to be redrawn until they have.
@@ -244,6 +246,7 @@ impl Default for AppState {
             panel_page: None,
             show_background: false,
             agent_leaving: HashSet::new(),
+            started: false,
             agents_folding: false,
             edit_next: false,
             confirm_remove: false,
@@ -1612,8 +1615,15 @@ pub fn refresh(ui: &Ui) {
                 st.ov_error = None;
                 st.last_ok = Some(glib::monotonic_time());
             }
+            let first = !ui.st.borrow().started;
+            ui.st.borrow_mut().started = true;
             render_all(ui);
             panel::tick_procs(ui);
+            // On opening, the keyboard starts in the list (not on the title bar's first button).
+            if first {
+                let ui = ui.clone();
+                glib::idle_add_local_once(move || focus_list(&ui));
+            }
         },
     );
 }
@@ -2028,7 +2038,9 @@ pub fn move_sel(ui: &Ui, d: i32) {
         return;
     }
     let sel = ui.st.borrow().sel.clone();
-    let i = rows.iter().position(|r| Some(r.widget_name().as_str()) == sel.as_deref());
+    // From the selected row, else from the row that has the keyboard.
+    let focused = gtk::prelude::GtkWindowExt::focus(&ui.window);
+    let i = rows.iter().position(|r| Some(r.widget_name().as_str()) == sel.as_deref()).or_else(|| rows.iter().position(|r| focused.as_ref().is_some_and(|f| f == r.upcast_ref::<gtk::Widget>())));
     let i = match i {
         None if d > 0 => 0,
         None => rows.len() - 1,
@@ -2600,7 +2612,24 @@ fn step_view(ui: &Ui, d: i32) {
 
 /// Shift+F10 or the Menu key: the selected item's ⋯ menu (its details open first).
 fn context_menu(ui: &Ui) {
-    if ui.st.borrow().drawer.is_none() {
+    // Projects: the selected card's (or row's) own menu, where it is.
+    let (view, sel, open) = {
+        let st = ui.st.borrow();
+        (st.view, st.sel.clone(), st.drawer.is_some())
+    };
+    if view == View::Projects
+        && !open
+        && let Some(sel) = sel
+    {
+        let list: gtk::Widget = ui.w.views[&View::Projects].list.clone().upcast();
+        if let Some(item) = panel::find_named(&list, &sel)
+            && let Some(mb) = panel::find_named(&item, "card-more").and_downcast::<gtk::MenuButton>()
+        {
+            mb.popup();
+            return;
+        }
+    }
+    if !open {
         open_sel(ui);
     }
     let ui = ui.clone();
@@ -2665,9 +2694,17 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
         Cmd::Down => move_sel(ui, 1),
         Cmd::Up => move_sel(ui, -1),
         Cmd::Edge(first) => {
-            // From no selection, a step down lands on the first and a step up on the last.
-            ui.st.borrow_mut().sel = None;
-            move_sel(ui, if first { 1 } else { -1 });
+            let view = ui.st.borrow().view;
+            if grids_of(ui, view).is_empty() {
+                let rs = rows(ui);
+                if let Some(r) = if first { rs.first() } else { rs.last() } {
+                    select_row(ui, r);
+                }
+            } else {
+                // Cards: from no selection, a step down lands on the first and a step up on the last.
+                ui.st.borrow_mut().sel = None;
+                move_sel(ui, if first { 1 } else { -1 });
+            }
         }
         Cmd::Page(d) => {
             for _ in 0..8 {
@@ -2766,9 +2803,28 @@ pub fn selected_session(ui: &Ui) -> Option<String> {
 pub fn focus_list(ui: &Ui) {
     let v = ui.st.borrow().view;
     let list = &ui.w.views[&v].list;
-    if let Some(row) = list.selected_row() {
-        row.grab_focus();
-    } else if let Some(row) = rows(ui).first() {
+    // Cards: the selected one, else the first.
+    let grids = grids_of(ui, v);
+    if !grids.is_empty() {
+        let cards: Vec<gtk::FlowBoxChild> = grids.iter().flat_map(grid_cards).collect();
+        let sel = ui.st.borrow().sel.clone();
+        if let Some(c) = cards.iter().find(|c| Some(c.widget_name().as_str()) == sel.as_deref()).or(cards.first()) {
+            // Focused and selected, together.
+            ui.st.borrow_mut().sel = Some(c.widget_name().to_string());
+            if let Some(g) = c.parent().and_downcast::<gtk::FlowBox>() {
+                g.select_child(c);
+            }
+            c.grab_focus();
+        }
+        return;
+    }
+    // The keyboard and the selection are on the same row, as in any list: the selected row (found
+    // again by name after a redraw), else the first, selected.
+    let sel = ui.st.borrow().sel.clone();
+    let row = list.selected_row().or_else(|| rows(ui).into_iter().find(|r| Some(r.widget_name().as_str()) == sel.as_deref())).or_else(|| rows(ui).into_iter().next());
+    if let Some(row) = row {
+        ui.st.borrow_mut().sel = Some(row.widget_name().to_string());
+        list.select_row(Some(&row));
         row.grab_focus();
     } else {
         list.grab_focus();

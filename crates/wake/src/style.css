@@ -780,3 +780,4 @@ window.wake .pair > button.pairbtn.on image { color: @accent; }
 window.wake .layoutswitch > button.pairbtn { padding: 5px 9px; }
 window.wake button.organise, window.wake menubutton.organise > button { font-weight: 700; font-size: 12.5px; padding: 5px 12px; border-radius: 8px; border: 1px solid @line2; background-color: @panel2; color: @ink; }
 .menuhead { padding: 6px 10px 2px; }
+.state.tag.group { color: @muted; background-color: alpha(@muted, .1); } .d.group { background-color: @muted; }

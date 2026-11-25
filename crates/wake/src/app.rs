@@ -1972,7 +1972,10 @@ fn grid_step(ui: &Ui, view: View, d: i32, by_row: bool) {
         Some(i) => {
             let list = ui.w.views[&view].list.clone();
             let b = |c: &gtk::FlowBoxChild| c.compute_bounds(&list).map(|r| (f64::from(r.x() + r.width() / 2.0), f64::from(r.y()), f64::from(r.height())));
-            let Some((cx, cy, ch)) = b(&cards[i]) else { return };
+            // Not laid out yet (just redrawn): a step in reading order instead.
+            let Some((cx, cy, ch)) = b(&cards[i]).filter(|r| r.2 > 0.0) else {
+                return grid_step(ui, view, d.signum(), false);
+            };
             cards
                 .iter()
                 .enumerate()
@@ -2367,6 +2370,10 @@ fn focus_in_text(ui: &Ui) -> Option<gtk::Widget> {
 pub enum Cmd {
     /// ←/→ among cards (Projects, Ideas): the previous or next card.
     Across(i32),
+    /// Home and End: the first or last row (or card).
+    Edge(bool),
+    /// Page Up and Page Down: a screenful up or down.
+    Page(i32),
     Switcher,
     View(View),
     Down,
@@ -2420,6 +2427,10 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
         K::a => Cmd::Ask,
         K::j | K::Down => Cmd::Down,
         K::k | K::Up => Cmd::Up,
+        K::Home | K::KP_Home => Cmd::Edge(true),
+        K::End | K::KP_End => Cmd::Edge(false),
+        K::Page_Down | K::KP_Page_Down => Cmd::Page(1),
+        K::Page_Up | K::KP_Page_Up => Cmd::Page(-1),
         K::Return | K::KP_Enter => Cmd::Open,
         K::space if settings => Cmd::Open,
         K::o => Cmd::GoTo,
@@ -2467,6 +2478,10 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagat
         focus_list(ui);
         return Stop;
     }
+    // The shortcuts people bring from other desktop apps (Ctrl+F, Ctrl+N, F5, F10...).
+    if let Some(p) = standard_key(ui, key, mods) {
+        return p;
+    }
     // Tab, Shift+Tab and F6 move between the window's regions.
     if let Some(p) = crate::keynav::on_key(ui, key, mods) {
         return p;
@@ -2505,10 +2520,10 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagat
         }
         return Proceed;
     }
-    // Details pushed over the list (a narrow window): Backspace or Alt+← go back, as Esc does.
-    let pushed = ui.st.borrow().lay.push && ui.st.borrow().drawer.is_some();
-    if pushed && ((key == gdk::Key::BackSpace && !alt && !ctrl) || (alt && !ctrl && key == gdk::Key::Left)) {
-        panel::close(ui);
+    // Details open: Alt+← (anywhere) and Backspace go back a page, then close them, as Esc does.
+    let open = ui.st.borrow().drawer.is_some();
+    if open && ((key == gdk::Key::BackSpace && !alt && !ctrl) || (alt && !ctrl && key == gdk::Key::Left)) {
+        panel::back(ui);
         return Stop;
     }
     if alt || ctrl {
@@ -2533,6 +2548,68 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagat
         Some(cmd) if run_cmd(ui, cmd) => Stop,
         _ => Proceed,
     }
+}
+
+/// The keys Windows and Linux apps share, besides Wake's own single keys: Ctrl+F finds, Ctrl+N
+/// is a new idea, Ctrl+, settings, Ctrl+Q quits, Ctrl+Tab and Ctrl+Page Down step through the
+/// views, F5 or Ctrl+R refreshes, F1 or Ctrl+? shows the keys, F10 opens the main menu, and
+/// Shift+F10 or the Menu key opens the selected item's ⋯ menu.
+fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
+    use gdk::Key as K;
+    let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
+    let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
+    let alt = mods.contains(gdk::ModifierType::ALT_MASK);
+    if alt {
+        return None;
+    }
+    match key {
+        K::f | K::F if ctrl => switcher::open(ui),
+        K::n | K::N if ctrl => open_capture(ui),
+        K::comma if ctrl => set_view(ui, View::Settings),
+        K::q | K::Q if ctrl => ui.window.close(),
+        K::r | K::R if ctrl => refresh_now(ui),
+        K::F5 => refresh_now(ui),
+        K::question if ctrl => dialogs::keys(ui),
+        K::slash if ctrl && shift => dialogs::keys(ui),
+        K::F1 => dialogs::keys(ui),
+        K::F10 if shift => context_menu(ui),
+        K::Menu => context_menu(ui),
+        K::F10 => ui.w.menu.popup(),
+        K::Tab | K::ISO_Left_Tab if ctrl => step_view(ui, if shift || key == K::ISO_Left_Tab { -1 } else { 1 }),
+        K::Page_Down if ctrl => step_view(ui, 1),
+        K::Page_Up if ctrl => step_view(ui, -1),
+        _ => return None,
+    }
+    Some(glib::Propagation::Stop)
+}
+
+/// F5: read everything again now.
+fn refresh_now(ui: &Ui) {
+    refresh(ui);
+    refresh_procs(ui);
+    refresh_ideas(ui);
+}
+
+/// Ctrl+Tab and Ctrl+Page Down: the next view in the switcher's order (wrapping); back with Shift.
+fn step_view(ui: &Ui, d: i32) {
+    const ORDER: [View; 5] = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents];
+    let now = ui.st.borrow().view;
+    let i = ORDER.iter().position(|v| *v == now).map_or(0, |i| (i as i32 + d).rem_euclid(ORDER.len() as i32) as usize);
+    set_view(ui, ORDER[i]);
+}
+
+/// Shift+F10 or the Menu key: the selected item's ⋯ menu (its details open first).
+fn context_menu(ui: &Ui) {
+    if ui.st.borrow().drawer.is_none() {
+        open_sel(ui);
+    }
+    let ui = ui.clone();
+    glib::idle_add_local_once(move || {
+        let root: gtk::Widget = ui.w.drawer.clone().upcast();
+        if let Some(mb) = panel::find_named(&root, "panel-more").or_else(|| panel::find_named(&root, "project-more")).and_downcast::<gtk::MenuButton>() {
+            mb.popup();
+        }
+    });
 }
 
 /// What a widget under a click is, for telling a click on blank space from one on something.
@@ -2587,6 +2664,16 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
         Cmd::Ask => crate::questions::ask_key(ui),
         Cmd::Down => move_sel(ui, 1),
         Cmd::Up => move_sel(ui, -1),
+        Cmd::Edge(first) => {
+            // From no selection, a step down lands on the first and a step up on the last.
+            ui.st.borrow_mut().sel = None;
+            move_sel(ui, if first { 1 } else { -1 });
+        }
+        Cmd::Page(d) => {
+            for _ in 0..8 {
+                move_sel(ui, d);
+            }
+        }
         Cmd::Open => open_sel(ui),
         Cmd::GoTo => match selected_session(ui) {
             Some(id) => go_to(ui, &id),
@@ -2764,6 +2851,14 @@ mod tests {
         assert_eq!(command_for(K::S, true, View::Monitor, false), None);
         assert_eq!(command_for(K::s, false, View::Monitor, false), None);
         assert_eq!(command_for(K::Right, false, View::Agents, false), Some(Cmd::Expand));
+        // As in any list on Windows or Linux: Home and End, Page Up and Page Down; and ← → among cards.
+        assert_eq!(command_for(K::Home, false, View::Monitor, false), Some(Cmd::Edge(true)));
+        assert_eq!(command_for(K::End, false, View::History, false), Some(Cmd::Edge(false)));
+        assert_eq!(command_for(K::Page_Down, false, View::Agents, false), Some(Cmd::Page(1)));
+        assert_eq!(command_for(K::Page_Up, false, View::Projects, false), Some(Cmd::Page(-1)));
+        assert_eq!(command_for(K::Right, false, View::Projects, false), Some(Cmd::Across(1)));
+        assert_eq!(command_for(K::Left, false, View::Ideas, false), Some(Cmd::Across(-1)));
+        assert_eq!(command_for(K::Right, false, View::Monitor, false), None, "a list has no across");
     }
 
     #[test]

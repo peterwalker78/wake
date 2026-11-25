@@ -87,7 +87,12 @@ bar.
 | `/` | search everything you asked |
 | `s` / `Shift+S` | in Agents: stop the selected agent / every stale one |
 | `,` | Settings |
-| `?` | every key |
+| `?` or `F1` | every key |
+
+The usual desktop shortcuts work too: `Ctrl+F` finds, `Ctrl+N` is a new idea, `Ctrl+Tab` and
+`Ctrl+Page Down` step through the views, `Home`, `End`, `Page Up` and `Page Down` move in a list,
+`F5` reads everything again, `F10` opens the main menu, `Shift+F10` or the Menu key opens the
+selected item's menu, `Alt+←` goes back, and `Ctrl+Q` quits.
 
 From a terminal:
 

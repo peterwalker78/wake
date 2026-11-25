@@ -872,6 +872,19 @@ fn build(app: &gtk::Application, opts: Opts) {
         });
         ui.w.stack.add_controller(click);
     }
+    // A click anywhere in the details puts the keyboard there (as clicking into any pane does):
+    // on what was clicked if it takes the keyboard, else on the control nearest the click. It only
+    // watches: the click goes on to whatever is there.
+    {
+        let ui2 = ui.clone();
+        let click = gtk::GestureClick::new();
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        click.connect_released(move |_, _, x, y| {
+            let ui3 = ui2.clone();
+            glib::idle_add_local_once(move || panel::focus_near(&ui3, x, y));
+        });
+        ui.w.drawer.add_controller(click);
+    }
     for v in View::ALL {
         let ui2 = ui.clone();
         ui.w.views[&v].list.connect_row_activated(move |_, row| {
@@ -1385,7 +1398,9 @@ fn screenshot(ui: &Ui, path: PathBuf, show: Option<String>) {
         let slow = show.as_deref().is_some_and(|s| s.starts_with("behind"));
         // A key replay: its keys (150 ms apart) and a beat for what they open.
         let keyed = show.as_deref().is_some_and(|s| s.starts_with("keys:"));
-        if tries < 6 || (long && tries < 24) || (slow && tries < 45) || (keyed && tries < 10) {
+        // Long enough for every key of the replay (150 ms apart), then a beat.
+        let keys_for = show.as_deref().and_then(|s| s.strip_prefix("keys:")).map_or(0, |k| k.split(',').count() * 150 / 700 + 4);
+        if tries < 6 || (long && tries < 24) || (slow && tries < 45) || (keyed && tries < 10.max(keys_for)) {
             refresh(&ui);
             return glib::ControlFlow::Continue;
         }

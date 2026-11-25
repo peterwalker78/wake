@@ -1,10 +1,10 @@
 //! Moving round the window with the keyboard.
 //!
 //! The window has regions, in the order they sit on screen: the title bar, the filters (the
-//! controls above the list), the list (the view itself), and the details. Tab and Shift+Tab are
-//! GTK's own, control by control in that same order, with a list as one stop (as in any GTK app).
-//! The arrows move within the region that has the keyboard and never leave it; in the list they
-//! move the selection. F6 and Shift+F6 jump region to region. The region the keyboard is in gets a
+//! controls above the list), the list (the view itself), the details, and the view tabs along the
+//! bottom of a narrow window. Tab and Shift+Tab follow a fixed sequence of stops, area by area in
+//! that order (`stops` lists it), with a list as one stop. The arrows move within the area that
+//! has the keyboard and never leave it; in the list they move the selection. F6 and Shift+F6 jump region to region. The region the keyboard is in gets a
 //! quiet accent edge, but only after keyboard use (GTK's focus-visible). Esc in the filters or the
 //! title bar steps back to the list.
 //!
@@ -229,16 +229,6 @@ pub fn cycle(ui: &Ui, forward: bool) {
     }
 }
 
-/// Arrows inside the rail (up and down) and the filters (left and right).
-fn step_within(ui: &Ui, r: Region, f: &gtk::Widget, d: i32) -> bool {
-    let Some(w) = widget(ui, r) else { return false };
-    let cs = controls(&w);
-    let Some(i) = cs.iter().position(|c| c == f || f.is_ancestor(c)) else { return false };
-    let j = (i as i32 + d).clamp(0, cs.len() as i32 - 1) as usize;
-    cs[j].grab_focus();
-    true
-}
-
 /// The words on a control (its label, else its tooltip), for the replay's log.
 fn label_of(w: &gtk::Widget) -> Option<String> {
     if let Some(b) = w.downcast_ref::<gtk::Button>()
@@ -262,11 +252,22 @@ fn label_of(w: &gtk::Widget) -> Option<String> {
     first_label(w).or_else(|| w.tooltip_text().map(|t| t.to_string())).map(|t| t.chars().take(30).collect())
 }
 
-/// The list item (a selectable row or a card) holding `w`, if any.
+/// A list's item: a selectable row or a card.
+fn is_item(w: &gtk::Widget) -> bool {
+    w.is::<gtk::FlowBoxChild>() || w.downcast_ref::<gtk::ListBoxRow>().is_some_and(|r| r.is_selectable())
+}
+
+/// A row that only holds things (a heading, a row of column heads, a row of cards): never a stop
+/// itself; what it holds may be.
+fn is_holder_row(w: &gtk::Widget) -> bool {
+    w.downcast_ref::<gtk::ListBoxRow>().is_some_and(|r| !r.is_selectable())
+}
+
+/// The list item holding `w` (or `w` itself), if any.
 fn item_of(w: &gtk::Widget) -> Option<gtk::Widget> {
     let mut p = Some(w.clone());
     while let Some(x) = p {
-        if x.is::<gtk::FlowBoxChild>() || x.downcast_ref::<gtk::ListBoxRow>().is_some_and(|r| r.is_selectable()) {
+        if is_item(&x) {
             return Some(x);
         }
         p = x.parent();
@@ -274,48 +275,71 @@ fn item_of(w: &gtk::Widget) -> Option<gtk::Widget> {
     None
 }
 
-/// The next (or previous) control in the window after `from`, wrapping round, that takes the focus.
-fn step_on(ui: &Ui, from: Option<&gtk::Widget>, back: bool) {
-    let all = controls(ui.window.upcast_ref());
-    if all.is_empty() {
+/// Every Tab stop on the page, in order. Area by area, as they sit on screen:
+///
+/// | area       | its stops, in reading order                                               |
+/// |------------|---------------------------------------------------------------------------|
+/// | title bar  | Find, New idea, the views, Ask, the menu, close                             |
+/// | filters    | the controls above the list                                                 |
+/// | list       | its own controls (a search box, column heads), and one item: the selected   |
+/// |            | one (else the first), followed by that item's own buttons                   |
+/// | details    | every control, top to bottom                                                |
+/// | view tabs  | the views along the bottom of a narrow window                               |
+///
+/// Hidden areas have no stops; details that take the list's place leave the list and its
+/// filters out. Inside an area the arrow keys move and never leave it (see `on_key`).
+pub fn stops(ui: &Ui) -> Vec<gtk::Widget> {
+    let (covered, sel) = {
+        let st = ui.st.borrow();
+        (st.lay.push && st.drawer.is_some(), st.sel.clone())
+    };
+    let mut out = Vec::new();
+    for r in ORDER {
+        if !shown(ui, r) || (covered && matches!(r, Region::List | Region::Filters)) {
+            continue;
+        }
+        let Some(w) = widget(ui, r) else { continue };
+        let cs: Vec<gtk::Widget> = controls(&w).into_iter().filter(|c| !is_holder_row(c)).collect();
+        let items: Vec<&gtk::Widget> = cs.iter().filter(|c| is_item(c)).collect();
+        let chosen = items.iter().find(|i| Some(i.widget_name().as_str()) == sel.as_deref()).or(items.first()).map(|i| (*i).clone());
+        out.extend(cs.iter().filter(|c| item_of(c).is_none_or(|i| Some(&i) == chosen.as_ref())).cloned());
+    }
+    out
+}
+
+/// Tab (or Shift+Tab): to the next (or previous) stop, wrapping round; a stop that can't take the
+/// keyboard is passed over, so a press always moves.
+fn tab_to(ui: &Ui, back: bool) {
+    let all = stops(ui);
+    let n = all.len();
+    if n == 0 {
         return;
     }
-    let n = all.len();
-    let at = from.and_then(|f| all.iter().rposition(|c| c == f || f.is_ancestor(c)));
+    let f = focus(ui);
+    let at = f.as_ref().and_then(|f| all.iter().rposition(|c| c == f || f.is_ancestor(c)));
+    // Somewhere that isn't a stop (another item of a list, say): from where its area's stops begin.
+    let start = at.or_else(|| {
+        let r = f.as_ref().and_then(|f| region_of(ui, f))?;
+        all.iter().position(|c| region_of(ui, c) == Some(r)).map(|i| if back { i } else { (i + n - 1) % n })
+    });
     for k in 1..=n {
-        let i = match at {
+        let i = match start {
             Some(a) if back => (a + n - k) % n,
             Some(a) => (a + k) % n,
             None if back => n - k,
             None => k - 1,
         };
-        if Some(&all[i]) != from && all[i].grab_focus() {
+        let c = &all[i];
+        // An item: the list's own way, which keeps the keyboard and the selection together.
+        if is_item(c) {
+            app::focus_list(ui);
+        } else {
+            c.grab_focus();
+        }
+        if focus(ui).is_some_and(|x| &x == c || x.is_ancestor(c)) {
             return;
         }
     }
-}
-
-/// The list items (rows, cards) under `root` that Tab skips while the keyboard is on `f`: every
-/// item but the one holding it, and rows with nothing to press (a heading). Rows that only hold
-/// controls of their own (column heads, a group's "Show them") stay stops: they are buttons.
-fn items_besides(root: &gtk::Widget, f: &gtk::Widget) -> Vec<gtk::Widget> {
-    fn walk(w: &gtk::Widget, f: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
-        let heading = || w.downcast_ref::<gtk::ListBoxRow>().is_some_and(|r| !r.is_selectable() && controls(w).iter().all(|c| c == w));
-        let item = w.is::<gtk::FlowBoxChild>() || w.downcast_ref::<gtk::ListBoxRow>().is_some_and(|r| r.is_selectable()) || heading();
-        let holds = w == f || f.is_ancestor(w);
-        if item && !holds && w.is_sensitive() {
-            out.push(w.clone());
-            return;
-        }
-        let mut c = w.first_child();
-        while let Some(x) = c {
-            walk(&x, f, out);
-            c = x.next_sibling();
-        }
-    }
-    let mut out = Vec::new();
-    walk(root, f, &mut out);
-    out
 }
 
 /// A move the arrow keys (and Home, End) make among controls.
@@ -382,7 +406,11 @@ pub fn arrow_target(at: usize, rects: &[(f64, f64, f64, f64)], a: Arrow) -> usiz
 
 /// Moves the focus among the controls of `area` (the details, the title bar, a menu) by `a`.
 fn arrow_within(area: &gtk::Widget, f: &gtk::Widget, a: Arrow) {
-    let cs = controls(area);
+    arrow_among(area, &controls(area), f, a);
+}
+
+/// Moves the focus among `cs` (controls inside `area`) by `a`, never out of them.
+fn arrow_among(area: &gtk::Widget, cs: &[gtk::Widget], f: &gtk::Widget, a: Arrow) {
     let Some(at) = cs.iter().position(|c| c == f || f.is_ancestor(c)) else {
         if let Some(c) = cs.first() {
             c.grab_focus();
@@ -415,47 +443,18 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
         return None;
     }
     match key {
-        // Tab in a list: GTK's own move, with the list as one stop (as on any desktop): from a
-        // row to its own buttons, then out of the list; never on to the next row.
+        // Tab and Shift+Tab: Wake's own sequence of stops (see `stops`). A dialog, the Find
+        // pop-up and an open menu keep GTK's.
         K::Tab | K::KP_Tab | K::ISO_Left_Tab => {
             let st = ui.st.borrow();
             if st.modal_open || st.sw.open {
                 return None;
             }
-            let v = st.view;
             drop(st);
-            let root: gtk::Widget = ui.w.views[&v].root.clone().upcast();
-            let back = shift || key == K::ISO_Left_Tab;
-            let off = focus(ui).filter(|f| f.is_ancestor(&root)).map(|f| items_besides(&root, &f)).unwrap_or_default();
-            // Out of reach for this one move (and back before anything is drawn): a list and a
-            // card grid both pass over items that can't be used.
-            for w in &off {
-                w.set_sensitive(false);
+            if focus(ui).is_some_and(|f| f.ancestor(gtk::Popover::static_type()).is_some()) {
+                return None;
             }
-            let before = focus(ui);
-            ui.window.emit_by_name::<()>("move-focus", &[&if back { gtk::DirectionType::TabBackward } else { gtk::DirectionType::TabForward }]);
-            // GTK said it moved but didn't (a scrolling area with nothing to focus does that):
-            // the next control on screen, so a press is never lost.
-            if focus(ui) == before {
-                step_on(ui, before.as_ref(), back);
-            }
-            for w in &off {
-                w.set_sensitive(true);
-            }
-            // Landed on a list's scrolling area or the list itself (no row it could take, as when
-            // nothing is selected yet), or came into the list on an item that isn't the selected
-            // one (a card grid comes in at its end): the selected item, else the first.
-            if let Some(f) = focus(ui)
-                && f.is_ancestor(&root)
-            {
-                let bare = f.is::<gtk::ScrolledWindow>() || f.is::<gtk::Viewport>() || f.is::<gtk::ListBox>() || f.is::<gtk::FlowBox>();
-                let came_in = !before.as_ref().is_some_and(|b| b.is_ancestor(&root));
-                let item = item_of(&f).map(|i| i.widget_name().to_string());
-                let sel = ui.st.borrow().sel.clone();
-                if bare || (came_in && item.is_some() && item != sel) {
-                    app::focus_list(ui);
-                }
-            }
+            tab_to(ui, shift || key == K::ISO_Left_Tab);
             return Some(Stop);
         }
         K::F6 => {
@@ -495,7 +494,23 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
         app::focus_list(ui);
         return Some(Stop);
     }
-    if matches!(r, Region::Panel | Region::Top | Region::Tabs)
+    // The list's own controls (column heads, a search box): ← → among them, ↓ into the list.
+    if r == Region::List
+        && item_of(&f).is_none()
+        && let Some(a) = arrow_key(key)
+    {
+        match a {
+            Arrow::Down => app::focus_list(ui),
+            _ => {
+                if let Some(w) = widget(ui, r) {
+                    let own: Vec<gtk::Widget> = stops(ui).into_iter().filter(|c| c.is_ancestor(&w) && item_of(c).is_none()).collect();
+                    arrow_among(&w, &own, &f, a);
+                }
+            }
+        }
+        return Some(Stop);
+    }
+    if r != Region::List
         && let Some(a) = arrow_key(key)
     {
         if let Some(w) = widget(ui, r) {
@@ -503,20 +518,12 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
         }
         return Some(Stop);
     }
-    let d = match (r, key) {
-        (Region::Rail, K::Down) => 1,
-        (Region::Rail, K::Up) => -1,
-        (Region::Filters, K::Right) => 1,
-        (Region::Filters, K::Left) => -1,
-        (Region::Rail | Region::Filters | Region::Top, K::Escape) => {
-            app::set_rail_open(ui, false);
-            app::focus_list(ui);
-            return Some(Stop);
-        }
-        _ => return None,
-    };
-    step_within(ui, r, &f, d);
-    Some(Stop)
+    if matches!(r, Region::Rail | Region::Filters | Region::Top) && key == K::Escape {
+        app::set_rail_open(ui, false);
+        app::focus_list(ui);
+        return Some(Stop);
+    }
+    None
 }
 
 /// Marks the region the keyboard is in (class `here`), only while focus is visible.
@@ -570,6 +577,8 @@ pub enum Step {
     /// `wait`: a beat with no key.
     Wait,
     Redraw,
+    ClickDetails,
+    Stops,
 }
 
 pub fn parse(seq: &str) -> Result<Vec<Step>, String> {
@@ -581,6 +590,14 @@ pub fn parse(seq: &str) -> Result<Vec<Step>, String> {
         }
         if tok == "redraw" {
             out.push(Step::Redraw);
+            continue;
+        }
+        if tok == "stops" {
+            out.push(Step::Stops);
+            continue;
+        }
+        if tok == "click-details" {
+            out.push(Step::ClickDetails);
             continue;
         }
         if let Some(t) = tok.strip_prefix("type:") {
@@ -691,6 +708,17 @@ pub fn replay(ui: &Ui, seq: &str) {
                 Step::Type(t) => type_text(&ui, &t),
                 Step::Wait => {}
                 // As when new data arrives: the details and the list are drawn again.
+                // A click in the middle of the details (what the click handler does after it).
+                // Prints the page's Tab sequence: area, then what each stop is.
+                Step::Stops => {
+                    for c in stops(&ui) {
+                        eprintln!("stop: {:<10} {:<16} {}", region_of(&ui, &c).map_or("?", Region::name), c.type_().name().trim_start_matches("Gtk"), label_of(&c).unwrap_or_default());
+                    }
+                }
+                Step::ClickDetails => {
+                    let d = &ui.w.drawer;
+                    crate::panel::focus_near(&ui, f64::from(d.width()) / 2.0, f64::from(d.height()) / 2.0);
+                }
                 Step::Redraw => {
                     ui.st.borrow_mut().panel_drawn = None;
                     crate::panel::render(&ui);

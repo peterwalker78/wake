@@ -37,6 +37,8 @@ for wd in 1300 1000 700; do
     replay "$wd" "$v" "$settle,Down,Return,wait,wait,wait,${tabs%,}" > "$tmp/$v-$wd-fwd.txt"
     replay "$wd" "$v" "$settle,Down,Return,wait,wait,wait,${backs%,}" > "$tmp/$v-$wd-back.txt"
     replay "$wd" "$v" "$settle,Down,Return,wait,wait,wait,Escape,wait" > "$tmp/$v-$wd-esc.txt"
+    # Keyboard back on the list, then a click in the details, then arrows: they stay in the details.
+    replay "$wd" "$v" "$settle,Down,Return,wait,Shift+Tab,Shift+Tab,Shift+Tab,wait,click-details,wait,Down,Down,Down,Up,Up,Up" > "$tmp/$v-$wd-click.txt"
   done
 done
 
@@ -96,6 +98,15 @@ for path in sorted(glob.glob(d + '/*-esc.txt')):
     ok = before and after and after[1] == 'list' and after[0] == before[0] and after[2] == 'false'
     bad += not ok
     print(f"{'ok  ' if ok else 'FAIL'} {name:22} Esc {'back on the same row' if ok else 'did not come back to the row'}")
+for path in sorted(glob.glob(d + '/*-click.txt')):
+    name = os.path.basename(path)[:-4]
+    if name.startswith(('ideas', 'questions')):
+        continue
+    s = steps(path)
+    after = [s[k] for k in sorted(s) if k >= 16]
+    ok = bool(after) and all(t[1] == 'details' for t in after)
+    bad += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} {name:22} a click puts the keyboard in the details{'' if ok else ': it went to ' + ', '.join(sorted({t[1] or 'nowhere' for t in after}))}")
 print("PASS: the keyboard goes round every view, in order, and never sticks" if not bad else f"FAIL: {bad}")
 sys.exit(1 if bad else 0)
 EOF

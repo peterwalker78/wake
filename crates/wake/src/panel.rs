@@ -119,6 +119,38 @@ pub fn close(ui: &Ui) {
     app::focus_list(ui);
 }
 
+/// After a click at (`x`, `y`) in the details: the keyboard goes there too, unless it already is,
+/// onto the control nearest the click, without scrolling the details.
+pub fn focus_near(ui: &Ui, x: f64, y: f64) {
+    if ui.st.borrow().drawer.is_none() || gtk::prelude::GtkWindowExt::focus(&ui.window).is_some_and(|f| f.is_ancestor(&ui.w.drawer)) {
+        return;
+    }
+    let root: gtk::Widget = ui.w.drawer.clone().upcast();
+    let cs = crate::keynav::controls(&root);
+    let near = cs
+        .iter()
+        .filter_map(|c| {
+            let b = c.compute_bounds(&root)?;
+            let dx = (f64::from(b.x()) - x).max(x - f64::from(b.x() + b.width())).max(0.0);
+            let dy = (f64::from(b.y()) - y).max(y - f64::from(b.y() + b.height())).max(0.0);
+            Some((dy * 4.0 + dx, c.clone()))
+        })
+        .filter(|(_, c)| c.widget_name() != "close")
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, c)| c);
+    let viewport = find_scroll(&ui.w.drawer).and_then(|s| s.child()).and_downcast::<gtk::Viewport>();
+    if let Some(v) = &viewport {
+        v.set_scroll_to_focus(false);
+    }
+    if !near.is_some_and(|c| c.grab_focus()) {
+        focus_primary(ui);
+    }
+    if let Some(v) = viewport {
+        let v2 = v.clone();
+        crate::motion::after_layout(&v, move || v2.set_scroll_to_focus(true));
+    }
+}
+
 pub fn focus_primary(ui: &Ui) {
     let mut child = ui.w.drawer.first_child();
     // The primary button carries the "primary" class; else the close button.

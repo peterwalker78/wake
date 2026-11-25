@@ -24,7 +24,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const HELP: &str = "\
 wake                 open Wake
 wake --demo          open Wake on made-up data, to see what it shows
-wake find            bring Wake forward with Find open, to go to a session by name;
+wake find            bring Wake forward with Find open, to find a session by name;
                      bind it to a key in your desktop's shortcut settings
 wake , <idea...>     keep an idea; the project comes from the folder you're in
 wake ideas           list the ideas waiting to be sorted

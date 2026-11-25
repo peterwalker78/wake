@@ -56,7 +56,7 @@ impl View {
             View::Projects => "Projects",
             View::Ideas => "Ideas",
             View::History => "History",
-            View::Questions => "Questions",
+            View::Questions => "Ask",
             View::Settings => "Settings",
         }
     }
@@ -139,6 +139,10 @@ pub enum Drawer {
 #[derive(Default)]
 pub struct Sw {
     pub open: bool,
+    /// Which tab: Find (sessions) or New idea.
+    pub idea: bool,
+    /// New idea: the project chosen for it (None: unsorted); None until one is picked (the guess).
+    pub proj: Option<Option<String>>,
     pub q: String,
     pub sel_id: Option<String>,
     pub in_subs: bool,
@@ -166,6 +170,10 @@ pub struct AppState {
     pub sub_open: HashSet<String>,
     /// Agents: Claude's own background processes (daemon, terminal hosts, unused spares) shown.
     pub show_background: bool,
+    /// Agents asked to stop: their rows stay, dimmed, until the process has gone.
+    pub agent_leaving: HashSet<u32>,
+    /// Their rows are folding away: the list waits to be redrawn until they have.
+    pub agents_folding: bool,
     /// The section of the details shown as a page of its own ("asked", "files"...), else the summary.
     pub panel_page: Option<&'static str>,
     pub edit_next: bool,
@@ -189,10 +197,7 @@ pub struct AppState {
     pub drawn: HashMap<View, String>,
     /// Where each view was scrolled when it was last rebuilt, so restoring focus can't move it.
     pub kept_scroll: HashMap<View, f64>,
-    pub cap_projects: Vec<Option<String>>,
-    pub cap_manual: bool,
     pub toast_gen: u64,
-    pub kept_gen: u64,
     /// Agents: the screensaver's full readouts instead of the small waves (`v`).
     /// Agents: rows opened to show their subagents, and subagents opened to show their steps.
     pub agent_open: HashSet<u32>,
@@ -238,6 +243,8 @@ impl Default for AppState {
             sub_open: HashSet::new(),
             panel_page: None,
             show_background: false,
+            agent_leaving: HashSet::new(),
+            agents_folding: false,
             edit_next: false,
             confirm_remove: false,
             idea_tab: IdeaTab::Sort,
@@ -256,10 +263,7 @@ impl Default for AppState {
             busy_procs: false,
             drawn: HashMap::new(),
             kept_scroll: HashMap::new(),
-            cap_projects: vec![None],
-            cap_manual: false,
             toast_gen: 0,
-            kept_gen: 0,
             agent_open: HashSet::new(),
             agent_sub_open: HashSet::new(),
             agent_done_open: HashSet::new(),
@@ -287,12 +291,17 @@ pub struct ViewW {
     pub glide: Rc<Glide>,
 }
 
-/// The selection block: a highlight the shape of the selected row's box, gliding to the next row
-/// when the selection moves (the row's own highlight shows again once it arrives).
+/// The selection block: the one highlight of the selected row, the shape of the row's own box. It
+/// stays on the row, placed each time the list is laid out (so a resize or a redraw never leaves it
+/// behind), and glides to the next row when the selection moves.
 pub struct Glide {
     pub over: gtk::Overlay,
     pub bar: gtk::Box,
-    /// Where the block last was (x, y, width, height), and which row it was on.
+    /// The selected row's box, which the block sits on.
+    pub target: RefCell<Option<gtk::Widget>>,
+    /// While gliding, where the block is now (x, y, width, height); at rest, None (it follows the target).
+    pub anim: std::cell::Cell<Option<(f64, f64, f64, f64)>>,
+    /// Where the block was last placed, and which row it is on.
     pub at: std::cell::Cell<Option<(f64, f64, f64, f64)>>,
     pub key: RefCell<String>,
     pub stop: RefCell<Option<Rc<std::cell::Cell<bool>>>>,
@@ -331,9 +340,6 @@ pub struct Widgets {
     pub stack: gtk::Stack,
     pub views: HashMap<View, ViewW>,
     pub history_entry: gtk::Entry,
-    pub cap_entry: gtk::Entry,
-    pub cap_to: gtk::DropDown,
-    pub kept: gtk::Label,
     pub status: gtk::Box,
     pub drawer: gtk::Box,
     /// The side panel's slide in and out.
@@ -443,9 +449,10 @@ fn view_widgets(view: View) -> ViewW {
     inner.append(&empty);
     let over = gtk::Overlay::new();
     over.set_child(Some(&inner));
+    // It fills the rectangle the overlay gives it (an empty box's own size is nothing).
     let bar = w::vbox(0, &["selbar"]);
-    bar.set_halign(gtk::Align::Start);
-    bar.set_valign(gtk::Align::Start);
+    bar.set_halign(gtk::Align::Fill);
+    bar.set_valign(gtk::Align::Fill);
     bar.set_can_target(false);
     bar.set_visible(false);
     over.add_overlay(&bar);
@@ -453,7 +460,26 @@ fn view_widgets(view: View) -> ViewW {
     root.append(&top);
     root.append(&head);
     root.append(&scroll);
-    let glide = Rc::new(Glide { over, bar, at: Default::default(), key: Default::default(), stop: Default::default() });
+    let glide = Rc::new(Glide { over, bar, target: Default::default(), anim: Default::default(), at: Default::default(), key: Default::default(), stop: Default::default() });
+    {
+        // The block's place, worked out whenever the overlay lays out: where the glide has got
+        // to, else on its row's box.
+        let g = Rc::downgrade(&glide);
+        glide.over.connect_get_child_position(move |over, child| {
+            let g = g.upgrade()?;
+            if child != g.bar.upcast_ref::<gtk::Widget>() {
+                return None;
+            }
+            let rect = g.anim.get().or_else(|| {
+                let t = g.target.borrow().clone()?;
+                t.parent()?;
+                t.compute_bounds(over).map(|b| (f64::from(b.x()), f64::from(b.y()), f64::from(b.width()), f64::from(b.height())))
+            });
+            let Some((x, y, w, h)) = rect else { return Some(gdk::Rectangle::new(0, 0, 0, 0)) };
+            g.at.set(Some((x, y, w, h)));
+            Some(gdk::Rectangle::new(x.round() as i32, y.round() as i32, w.round().max(1.0) as i32, h.round().max(1.0) as i32))
+        });
+    }
     ViewW { root, top, head, list, scroll, empty, glide }
 }
 
@@ -617,37 +643,6 @@ fn build(app: &gtk::Application, opts: Opts) {
     }
     main.append(&stack);
 
-    // Capture bar.
-    let cap = gtk::Box::builder().spacing(10).accessible_role(gtk::AccessibleRole::Form).build();
-    cap.add_css_class("capture");
-    cap.update_property(&[gtk::accessible::Property::Label("Capture a thought")]);
-    let cap_label = w::hbox(6, &["lbl"]);
-    cap_label.append(&w::icon(w::icons::IDEAS));
-    cap_label.append(&w::label("New idea", &[]));
-    cap.append(&cap_label);
-    let cap_entry = gtk::Entry::builder().placeholder_text(crate::capture::PLACEHOLDER).hexpand(true).max_length(2000).build();
-    cap_entry.update_property(&[gtk::accessible::Property::Label("Capture a thought")]);
-    cap_entry.set_valign(gtk::Align::Center);
-    cap.append(&cap_entry);
-    let cap_to = gtk::DropDown::from_strings(&["Unsorted"]);
-    cap_to.add_css_class("mini");
-    cap_to.set_valign(gtk::Align::Center);
-    cap_to.set_tooltip_text(Some("Keep it in project"));
-    cap_to.update_property(&[gtk::accessible::Property::Label("Project for the thought")]);
-    cap.append(&cap_to);
-    let kept = w::label("", &["kept"]);
-    kept.set_size_request(44, -1);
-    cap.append(&kept);
-    let cap_close = gtk::Button::new();
-    cap_close.set_child(Some(&w::icon(w::icons::CLOSE)));
-    cap_close.add_css_class("flat");
-    cap_close.set_widget_name("capclose");
-    cap_close.set_tooltip_text(Some("Close (Esc)"));
-    cap_close.set_valign(gtk::Align::Center);
-    cap.append(&cap_close);
-    cap.set_visible(false);
-    main.append(&cap);
-
     // The side panel sits beside the table and pushes it, so the selected row stays readable; when
     // that would leave the table too narrow, it slides over the list instead (layout.rs decides).
     let drawer = gtk::Box::builder().orientation(gtk::Orientation::Vertical).accessible_role(gtk::AccessibleRole::Region).build();
@@ -733,9 +728,6 @@ fn build(app: &gtk::Application, opts: Opts) {
             stack,
             views,
             history_entry: history_entry.clone(),
-            cap_entry: cap_entry.clone(),
-            cap_to: cap_to.clone(),
-            kept,
             status,
             drawer,
             drawer_rev,
@@ -795,7 +787,6 @@ fn build(app: &gtk::Application, opts: Opts) {
     if let Some(v) = start.as_deref().and_then(View::from_id) {
         ui.st.borrow_mut().view = v;
         ui.w.stack.set_visible_child_name(v.id());
-        show_capture(&ui, v);
     }
 
     // Signals.
@@ -814,23 +805,6 @@ fn build(app: &gtk::Application, opts: Opts) {
     {
         let ui2 = ui.clone();
         ui.w.add_btn.connect_clicked(move |_| open_capture(&ui2));
-        if let Some(close) = ui.w.cap_entry.parent().and_then(|b| b.last_child()).and_downcast::<gtk::Button>() {
-            let ui2 = ui.clone();
-            close.connect_clicked(move |_| close_capture(&ui2));
-        }
-    }
-    {
-        // Esc in the capture bar closes it (the project picker, when open, takes Esc first).
-        let ui2 = ui.clone();
-        let esc = gtk::EventControllerKey::new();
-        esc.connect_key_pressed(move |_, key, _, _| {
-            if key == gdk::Key::Escape {
-                close_capture(&ui2);
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        });
-        ui.w.cap_entry.add_controller(esc);
     }
     {
         // The main menu: Settings, the keys, and the demo board.
@@ -954,18 +928,6 @@ fn build(app: &gtk::Application, opts: Opts) {
     }
     {
         let ui = ui.clone();
-        cap_entry.connect_activate(move |_| capture(&ui));
-    }
-    {
-        let ui = ui.clone();
-        cap_to.connect_selected_notify(move |_| {
-            if let Ok(mut st) = ui.st.try_borrow_mut() {
-                st.cap_manual = true;
-            }
-        });
-    }
-    {
-        let ui = ui.clone();
         history_entry.connect_changed(move |e| views::search_changed(&ui, e.text().to_string()));
     }
     let keys = gtk::EventControllerKey::new();
@@ -991,7 +953,6 @@ fn build(app: &gtk::Application, opts: Opts) {
     peek::learn_kind(&ui);
     crate::questions::build(&ui);
     crate::behind::build(&ui);
-    crate::capture::build(&ui);
     crate::keynav::build(&ui);
 
     render_all(&ui);
@@ -1301,7 +1262,7 @@ fn apply_show(ui: &Ui, show: &str) {
             let dd = match arg.as_deref() {
                 Some("questions") => find_dropdown(ui.w.views[&View::Questions].root.upcast_ref()),
                 Some("settings-now") => find_dropdown(ui.w.views[&View::Settings].root.upcast_ref()),
-                _ => Some(ui.w.cap_to.clone().upcast()),
+                _ => None,
             };
             if let Some(dd) = dd.and_downcast::<gtk::DropDown>()
                 && let Some(overlay) = ui.window.child().and_downcast::<gtk::Overlay>()
@@ -1743,7 +1704,6 @@ pub fn render_all(ui: &Ui) {
     views::render_view(ui);
     views::render_status(ui);
     crate::behind::render(ui);
-    capture_default(ui);
     if ui.st.borrow().drawer.is_some() && !typing_in(ui, &ui.w.drawer) {
         panel::render(ui);
     }
@@ -1827,16 +1787,6 @@ fn relayout(ui: &Ui, lay: crate::layout::Lay) {
     let short_top = lay.rail != Rail::Full;
     ui.w.cmd_full.set_visible(!short_top);
     ui.w.cmd_icon.set_visible(short_top);
-    // The capture bar keeps its entry and project; its label makes way.
-    if let Some(cap) = ui.w.cap_entry.parent() {
-        let mut c = cap.first_child();
-        while let Some(x) = c {
-            if x.has_css_class("lbl") {
-                x.set_visible(!lay.narrow);
-            }
-            c = x.next_sibling();
-        }
-    }
     crate::questions::relayout(lay.narrow);
     // Pushed details that are open when the window narrows: the keyboard follows them.
     let pushed_now = lay.push && !old.push && ui.st.borrow().drawer.is_some();
@@ -1918,7 +1868,6 @@ pub fn set_view(ui: &Ui, v: View) {
         agents::hidden(ui);
     }
     ui.w.stack.set_visible_child_name(v.id());
-    show_capture(ui, v);
     render_all(ui);
     match v {
         View::Ideas => refresh_ideas(ui),
@@ -2231,20 +2180,17 @@ pub fn stretch(from: (f64, f64), to: (f64, f64), t: f64) -> (f64, f64) {
     (top.min(bottom - 2.0), bottom)
 }
 
-/// Moves the selection block to `row`'s box: it glides from where it was, stretching as it
-/// travels and drawing itself in as it lands, then hands over to the row's own highlight. With
-/// motion off, or the same row redrawn, it just shows on the row.
+/// Puts the selection block on `row`'s box. When the selection moves it glides there from where
+/// it was, stretching as it travels and drawing itself in as it lands; then it stays, as the row's
+/// highlight. With motion off, or the same row redrawn, it is simply there.
 pub fn glide_to(g: &Rc<Glide>, row: Option<&gtk::ListBoxRow>) {
     if let Some(s) = g.stop.borrow_mut().take() {
         s.set(true);
     }
-    let mut c = g.over.child().and_then(|i| i.first_child()).and_then(|l| l.first_child());
-    while let Some(x) = c {
-        x.remove_css_class("glide");
-        c = x.next_sibling();
-    }
     let Some(row) = row.filter(|r| !r.parent().is_some_and(|l| l.has_css_class("setlist"))) else {
-        // Settings' cards show the selected row themselves.
+        // Nothing selected (or Settings, whose cards show their own).
+        g.anim.set(None);
+        *g.target.borrow_mut() = None;
         g.bar.set_visible(false);
         g.key.borrow_mut().clear();
         return;
@@ -2254,42 +2200,32 @@ pub fn glide_to(g: &Rc<Glide>, row: Option<&gtk::ListBoxRow>) {
     let key = row.widget_name().to_string();
     let same = *g.key.borrow() == key;
     *g.key.borrow_mut() = key;
-    let rect = |w: &gtk::Widget, over: &gtk::Overlay| w.compute_bounds(over).map(|b| (f64::from(b.x()), f64::from(b.y()), f64::from(b.width()), f64::from(b.height())));
-    let from = g.at.get();
-    let (g2, t2) = (g.clone(), target.clone());
+    let from = g.at.get().filter(|_| g.bar.is_visible());
+    *g.target.borrow_mut() = Some(target.clone());
+    g.bar.set_visible(true);
     let Some((fx, fy, fw, fh)) = from.filter(|_| !same && crate::motion::on() && row.is_mapped()) else {
-        g.bar.set_visible(false);
-        crate::motion::after_layout(row, move || {
-            if let Some(r) = rect(&t2, &g2.over) {
-                g2.at.set(Some(r));
-            }
-        });
+        g.anim.set(None);
+        g.over.queue_allocate();
         return;
     };
-    let place = |bar: &gtk::Box, x: f64, y: f64, w: f64, h: f64| {
-        bar.set_margin_start(x.round() as i32);
-        bar.set_margin_top(y.round() as i32);
-        bar.set_size_request(w.round().max(4.0) as i32, h.round().max(4.0) as i32);
-    };
-    row.add_css_class("glide");
-    place(&g.bar, fx, fy, fw, fh);
     g.bar.add_css_class("moving");
-    g.bar.set_visible(true);
-    let r2 = row.clone();
+    let g2 = g.clone();
     let stop = crate::motion::animate(row, STRETCH_MS, move |eased| {
-        let Some((tx, ty, tw, th)) = rect(&t2, &g2.over) else { return };
+        let Some(b) = target.compute_bounds(&g2.over) else { return };
+        let (tx, ty, tw, th) = (f64::from(b.x()), f64::from(b.y()), f64::from(b.width()), f64::from(b.height()));
         // `animate` hands over eased progress; the two edges want their own timing, so undo it.
         let t = 1.0 - (1.0 - eased).cbrt();
         let (top, bottom) = stretch((fy, fy + fh), (ty, ty + th), t);
         let x = fx + (tx - fx) * eased;
         let w = fw + (tw - fw) * eased;
-        place(&g2.bar, x, top, w, bottom - top);
-        g2.at.set(Some((x, top, w, bottom - top)));
         if eased >= 1.0 {
+            // Arrived: it rests on the row from now on.
+            g2.anim.set(None);
             g2.bar.remove_css_class("moving");
-            g2.bar.set_visible(false);
-            r2.remove_css_class("glide");
+        } else {
+            g2.anim.set(Some((x, top, w, bottom - top)));
         }
+        g2.over.queue_allocate();
     });
     *g.stop.borrow_mut() = Some(stop);
 }
@@ -2330,132 +2266,11 @@ pub fn go_to(ui: &Ui, id: &str) {
     );
 }
 
-// ---------- capture ----------
+// ---------- new idea ----------
 
-/// The capture bar steps aside in Questions, which has its own input (two text bars would stack),
-/// and in Settings.
-/// The capture bar shows only while you are capturing (like a search bar): a new view closes it.
-fn show_capture(ui: &Ui, _v: View) {
-    close_capture(ui);
-}
-
-/// New idea (+ or c): the capture bar slides up with the keyboard in it.
+/// New idea (+ or c): the Find pop-up on its New idea tab.
 pub fn open_capture(ui: &Ui) {
-    if let Some(bar) = ui.w.cap_entry.parent() {
-        bar.set_visible(true);
-    }
-    crate::capture::begin(ui);
-    ui.w.cap_entry.grab_focus();
-}
-
-/// Esc in the capture bar, or its close button: it goes, and the keyboard goes back to the view.
-pub fn close_capture(ui: &Ui) {
-    if let Some(bar) = ui.w.cap_entry.parent()
-        && bar.is_visible()
-    {
-        bar.set_visible(false);
-        let v = ui.st.borrow().view;
-        ui.w.views[&v].list.grab_focus();
-    }
-}
-
-pub fn capture_default(ui: &Ui) {
-    let (ids, names, want, manual) = {
-        let st = ui.st.borrow();
-        let ps: Vec<&ProjectSummary> = st.ov.as_ref().map(|ov| ov.projects.iter().filter(|p| !p.removed).collect()).unwrap_or_default();
-        let mut ids = vec![None];
-        let mut names = vec!["Unsorted".to_string()];
-        for p in &ps {
-            ids.push(Some(p.id.clone()));
-            names.push(p.name.clone());
-        }
-        let want = match &st.drawer {
-            Some(Drawer::Project(id)) => Some(id.clone()),
-            Some(Drawer::Session(id)) => st.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| &s.id == id).and_then(|s| s.project.clone())),
-            None => st.proj_filter.clone(),
-        };
-        (ids, names, want, st.cap_manual)
-    };
-    let changed = ui.st.borrow().cap_projects != ids;
-    let current = ui.st.borrow().cap_projects.get(ui.w.cap_to.selected() as usize).cloned().flatten();
-    if changed {
-        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        ui.st.borrow_mut().cap_projects = ids.clone();
-        ui.w.cap_to.set_model(Some(&gtk::StringList::new(&refs)));
-        let at = ids.iter().position(|i| *i == current).unwrap_or(0);
-        ui.w.cap_to.set_selected(at as u32);
-        ui.st.borrow_mut().cap_manual = manual;
-    }
-    if !manual {
-        let at = ids.iter().position(|i| *i == want).unwrap_or(0);
-        if ui.w.cap_to.selected() != at as u32 {
-            ui.w.cap_to.set_selected(at as u32);
-            ui.st.borrow_mut().cap_manual = false;
-        }
-    }
-}
-
-fn capture(ui: &Ui) {
-    let text = ui.w.cap_entry.text().trim().to_string();
-    if text.is_empty() {
-        return;
-    }
-    let project = ui.st.borrow().cap_projects.get(ui.w.cap_to.selected() as usize).cloned().flatten();
-    ui.w.cap_entry.set_sensitive(false);
-    bg(
-        ui,
-        move |src| src.add_idea(&text, project.as_deref()),
-        move |ui, r| {
-            ui.w.cap_entry.set_sensitive(true);
-            match r {
-                Ok(idea) => {
-                    ui.w.cap_entry.set_text("");
-                    // The project stays chosen while the keyboard stays here (several thoughts in a row).
-                    crate::capture::kept(idea.project.clone());
-                    kept(
-                        ui,
-                        &match &idea.project_name {
-                            Some(n) => format!("kept · {n}"),
-                            None => "kept".into(),
-                        },
-                        false,
-                    );
-                    if let Some(ideas) = ui.st.borrow_mut().ideas.as_mut() {
-                        ideas.insert(0, idea);
-                    }
-                    refresh(ui);
-                    if ui.st.borrow().view == View::Ideas {
-                        views::render_chips(ui);
-                        views::render_view(ui);
-                    }
-                }
-                Err(e) => kept(ui, &e, true),
-            }
-            ui.w.cap_entry.grab_focus();
-            capture_default(ui);
-        },
-    );
-}
-
-fn kept(ui: &Ui, msg: &str, bad: bool) {
-    let k = &ui.w.kept;
-    k.set_text(msg);
-    if bad {
-        k.add_css_class("err");
-    } else {
-        k.remove_css_class("err");
-    }
-    let ticket = {
-        let mut st = ui.st.borrow_mut();
-        st.kept_gen += 1;
-        st.kept_gen
-    };
-    let ui = ui.clone();
-    glib::timeout_add_local_once(Duration::from_millis(if bad { 5000 } else { 1600 }), move || {
-        if ui.st.borrow().kept_gen == ticket {
-            ui.w.kept.set_text("");
-        }
-    });
+    switcher::open_idea(ui);
 }
 
 pub fn toast(ui: &Ui, msg: &str, bad: bool) {
@@ -2606,10 +2421,6 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagat
         set_rail_open(ui, false);
         focus_list(ui);
         return Stop;
-    }
-    // The capture bar's project picker: arrows, Enter, Esc.
-    if let Some(p) = crate::capture::on_key(ui, key, mods) {
-        return p;
     }
     // Tab, Shift+Tab and F6 move between the window's regions.
     if let Some(p) = crate::keynav::on_key(ui, key, mods) {

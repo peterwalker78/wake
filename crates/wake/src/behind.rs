@@ -27,7 +27,7 @@ window.wake .behind-banner button.btn { background-color: rgba(255,255,255,.08);
 window.wake .behind-banner button.btn.bb-pull { background-color: #FFB547; border-color: #FFB547; color: #2a1a02; }
 .behind-pill { font-family: \"JetBrains Mono\", monospace; font-weight: 700; font-size: 10px; padding: 2px 6px; border-radius: 4px; background-color: alpha(@amber, .16); color: @amber; }
 .behind-pill.alarm { background-color: @rose; color: @on_rose; }
-.behind-line { font-family: \"JetBrains Mono\", monospace; font-size: 11px; color: @amber; }
+.behind-line { font-family: \"JetBrains Mono\", monospace; font-size: 11px; color: @amber; padding-top: 1px; }
 .behind-line.alarm { color: @rose; }
 .behind-block { margin: 2px 16px 10px 16px; padding: 10px 12px; border: 1px solid alpha(@amber, .45); border-radius: 8px; background-color: alpha(@amber, .07); }
 .behind-block.alarm { border-color: @rose; background-color: alpha(@rose, .10); }

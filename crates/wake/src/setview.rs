@@ -108,7 +108,7 @@ pub fn sections(s: &Settings, ais: &[AiChoice]) -> Vec<(&'static str, Vec<Row>)>
         ),
         switch("notify", "Notify when building while behind", "The banner in Wake shows either way.", s.notify_behind),
     ];
-    vec![("Questions", ai_rows), ("Appearance", look), ("When Wake opens", open), ("Git", git)]
+    vec![("Ask", ai_rows), ("Appearance", look), ("When Wake opens", open), ("Git", git)]
 }
 
 fn cap(s: &str) -> String {
@@ -494,7 +494,7 @@ mod tests {
     fn the_sections_and_their_controls() {
         let secs = sections(&Settings::default(), &[choice(Ai::Claude, None, false)]);
         let names: Vec<&str> = secs.iter().map(|s| s.0).collect();
-        assert_eq!(names, ["Questions", "Appearance", "When Wake opens", "Git"], "no sorting, no project colours");
+        assert_eq!(names, ["Ask", "Appearance", "When Wake opens", "Git"], "no sorting, no project colours");
         let kinds: Vec<(&str, Kind)> = secs.iter().flat_map(|s| s.1.iter().map(|r| (r.key.as_str(), r.kind))).collect();
         assert_eq!(
             kinds,

@@ -49,9 +49,9 @@ window.wake button.stat { font-family: "JetBrains Mono", monospace; font-size: 1
 .stat.stalec .n, .stat.stalec { color: @amber; } .stat.stalec .d { background-color: @amber; }
 .stat.ideac .n { color: @violet; } .stat.ideac .d { background-color: @violet; }
 .stat.zero .n { color: @dim; } .stat.zero .d { background-color: @dim; }
-.clock { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 13px; }
+.clock { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 13px; padding-top: 1px; }
 
-.indexing { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @accent; }
+.indexing { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @accent; padding-top: 1px; }
 
 /* rail */
 .rail { border-right: 1px solid @line; background-color: @panel; }
@@ -62,10 +62,10 @@ window.wake .nav button { font-weight: 700; font-size: 13px; }
 window.wake .nav button:hover, window.wake .plist button:hover { background-color: @row; color: @ink; }
 window.wake .nav button.on, window.wake .plist button.on { background-color: @rowhi; color: @ink; }
 /* counts are plain numbers, never boxed like a key cap */
-.nav .n { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11px; color: @muted; }
+.nav .n { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11px; color: @muted; padding-top: 1px; }
 .nav .n.amber { color: @amber; }
 window.wake .plist button { font-size: 12.5px; }
-.plist .pc { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.plist .pc { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; padding-top: 1px; }
 .plist .pz { font-family: "JetBrains Mono", monospace; font-size: 9px; color: @dim; border: 1px solid @line2; border-radius: 3px; padding: 1px 4px; }
 .empty-r { font-size: 12px; color: @dim; padding: 4px 9px; }
 
@@ -85,15 +85,11 @@ window.wake .plist button { font-size: 12.5px; }
 window.wake button.chip { font-size: 11.5px; padding: 5px 10px; border-radius: 999px; border: 1px solid @line2; color: @muted; }
 window.wake button.chip:hover { border-color: @muted; color: @ink; }
 window.wake button.chip.on { background-color: @ink; color: @bg; border-color: @ink; font-weight: 700; }
-.chip .c { font-family: "JetBrains Mono", monospace; font-size: 10.5px; opacity: .75; margin-left: 3px; }
+.chip .c { font-family: "JetBrains Mono", monospace; font-size: 10.5px; opacity: .75; margin-left: 3px; padding-top: 1px; }
 window.wake button.chip.pf { border-color: @accent; color: @accent; }
 .meta { font-size: 12.5px; color: @muted; }
 .meta.below { margin-bottom: 5px; }
 
-/* capture */
-.capture { min-height: 44px; border-top: 1px solid @line; background-color: @panel; padding: 0 14px; }
-.capture .lbl { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 1.5px; color: @violet; }
-.capture entry:focus-within { border-color: @violet; box-shadow: 0 0 0 1px @violet; }
 window.wake dropdown.mini > button { background-color: @bg; color: @muted; border: 1px solid @line2; border-radius: 7px; padding: 5px 8px; font-size: 11.5px; min-width: 130px; }
 window.wake popover contents { background-color: @panel2; color: @ink; border: 1px solid @line2; }
 /* Drop-down lists in Wake's colours: GTK 4.22's theme gives every list its own grey (#2d2d2d) and
@@ -103,8 +99,6 @@ window.wake popover contents { border-radius: 10px; }
 window.wake popover listview, window.wake popover list, window.wake popover scrolledwindow, window.wake popover viewport { background: none; color: inherit; }
 window.wake popover listview > row, window.wake popover modelbutton { border-radius: 7px; color: inherit; }
 window.wake popover listview > row:hover, window.wake popover listview > row:selected, window.wake popover listview > row:selected:hover, window.wake popover modelbutton:hover { background-color: @rowhi; color: inherit; }
-.kept { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11px; color: @mint; }
-.kept.err { color: @rose; }
 
 /* tables */
 .thead { background-color: @panel; border-bottom: 1px solid @line2; }
@@ -113,7 +107,8 @@ window.wake popover listview > row:hover, window.wake popover listview > row:sel
 list.table { background-color: transparent; }
 list.table > row { padding: 0; border-bottom: 1px solid @line; background-color: transparent; outline-offset: -2px; }
 list.table > row:hover { background-color: @row; }
-list.table > row:selected { background-color: @rowhi; box-shadow: inset 2px 0 @accent; color: @ink; }
+/* A selected row is shown by the selection block (below), never by the row itself. */
+list.table > row:selected { background-color: transparent; box-shadow: none; color: @ink; }
 list.table > row.grouprow { border-bottom: none; }
 list.table > row.grouprow:hover { background-color: transparent; }
 .tr .cell { padding: 9px 12px; }
@@ -121,7 +116,7 @@ list.table > row.grouprow:hover { background-color: transparent; }
 .pname { font-weight: 700; }
 .pj .title { font-weight: 700; color: @ink; font-size: 12.5px; }
 .desc { color: @muted; font-size: 12px; }
-.num { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; }
+.num { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; padding-top: 1px; }
 .num.ink { color: @ink; }
 .happ { color: @muted; }
 .snip { font-size: 12.5px; color: @muted; }
@@ -135,7 +130,7 @@ list.table > row.grouprow:hover { background-color: transparent; }
 .state.working { color: @mint; } .state.waiting { color: @amber; } .state.idle { color: @muted; } .state.ended, .state.unknown { color: @dim; }
 .state.tag.working { background-color: alpha(@mint, .12); } .state.tag.waiting, .state.tag.behind { background-color: alpha(@amber, .13); color: @amber; } .state.tag.ended, .state.tag.unknown { background-color: alpha(@dim, .12); }
 .state.tag.behind .d { background-color: @amber; }
-.ev { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.ev { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; padding-top: 1px; }
 .happ.ask { color: @amber; }
 .loc { font-family: "JetBrains Mono", monospace; font-weight: 500; font-size: 10.5px; color: @muted; border: 1px solid @line2; border-radius: 5px; padding: 3px 7px; }
 window.wake button.loc { border: 1px solid @line2; border-radius: 5px; padding: 3px 7px; }
@@ -146,8 +141,8 @@ window.wake .loc.none { border-style: dashed; color: @dim; }
 .pill.amber { background-color: alpha(@amber, .14); color: @amber; }
 .pill.mint { background-color: alpha(@mint, .1); color: @mint; }
 .pill.paused { border: 1px solid @line2; background-color: transparent; }
-.kept-by { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @violet; }
-.gitc { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; }
+.kept-by { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @violet; padding-top: 1px; }
+.gitc { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; padding-top: 1px; }
 
 /* buttons */
 window.wake button.btn { font-weight: 700; font-size: 13px; padding: 7px 14px; border-radius: 8px; border: 1px solid @line2; background-color: @panel2; color: @ink; }
@@ -181,7 +176,7 @@ list.table > row.idea-row:selected .idea { box-shadow: 0 0 0 1px @accent; }
 .idea { border: 1px solid @line; border-radius: 9px; background-color: @panel; padding: 9px 12px; }
 .idea.done .tx { color: @muted; text-decoration-line: line-through; }
 .idea .tx { font-size: 13px; }
-.idea .mt { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.idea .mt { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; padding-top: 1px; }
 .brief { margin: 8px 14px 14px; border: 1px dashed @violet; border-radius: 10px; padding: 12px 14px; background-color: alpha(@violet, .05); }
 .brief .pre { font-family: "JetBrains Mono", monospace; font-size: 12px; background-color: @bg; border: 1px solid @line; border-radius: 7px; padding: 10px 12px; }
 
@@ -195,18 +190,18 @@ window.wake entry.search { font-size: 14px; min-height: 38px; border-radius: 8px
 .memtotal { font-size: 15px; }
 .memstale { font-size: 15px; color: @amber; }
 .memok { color: @mint; font-size: 13px; }
-.memfree { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; }
+.memfree { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; padding-top: 1px; }
 .memfree.low { color: @rose; }
 /* The PID is for the curious: quiet, so the task is what the eye lands on. */
-.pid { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @muted; }
-.tree { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; }
+.pid { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @muted; padding-top: 1px; }
+.tree { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; padding-top: 1px; }
 .why { color: @rose; font-size: 12px; }
 .noreadout { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; border: 1px dashed @line; border-radius: 7px; padding: 8px 9px; }
 .agentrow .cell { padding: 7px 12px; }
 .pgrp { padding: 22px 28px 8px; }
 
 .confirm-list { background-color: @bg; border: 1px solid @line; border-radius: 8px; padding: 8px 10px; }
-.mono { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
+.mono { font-family: "JetBrains Mono", monospace; font-size: 11.5px; padding-top: 1px; }
 
 /* side panel */
 .drawer { background-color: @panel; border-left: 1px solid @line2; }
@@ -215,7 +210,7 @@ window.wake button.x { padding: 2px; }
 .dh .desc { font-style: italic; font-size: 12.5px; }
 .sec { margin-bottom: 7px; }
 .sec.amber { color: @amber; }
-.mint { color: @mint; font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; }
+.mint { color: @mint; font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; padding-top: 1px; }
 .box { border-radius: 9px; padding: 10px 12px; font-size: 13px; border: 1px solid @line2; }
 .box.q { background-color: alpha(@amber, .07); border-color: alpha(@amber, .35); }
 .box.q .h { font-weight: 700; font-size: 14.5px; }
@@ -229,15 +224,15 @@ window.wake button.x { padding: 2px; }
 .box.keptby { background-color: alpha(@violet, .07); border-color: alpha(@violet, .3); color: @violet; font-size: 12px; }
 .box.tight { margin: 0 4px 8px; padding: 8px 10px; }
 .asked { background-color: alpha(@cyan, .05); border: 1px solid alpha(@cyan, .14); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; margin-bottom: 5px; }
-.at { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; }
+.at { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; padding-top: 1px; }
 .did { font-size: 12px; padding: 3px 0; }
-.did .p { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
-.facts { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; }
+.did .p { font-family: "JetBrains Mono", monospace; font-size: 11.5px; padding-top: 1px; }
+.facts { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; padding-top: 1px; }
 window.wake button.srow { padding: 8px 6px; border-bottom: 1px solid @line; border-radius: 0; font-size: 12.5px; }
 window.wake button.srow:hover { background-color: @row; }
-.sub-l { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.sub-l { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; padding-top: 1px; }
 .repo { border: 1px solid @line; border-radius: 8px; padding: 9px 11px; font-size: 12.5px; margin-bottom: 6px; }
-.repo .rn { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11.5px; }
+.repo .rn { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11.5px; padding-top: 1px; }
 .repo .ex { color: @muted; font-size: 12px; }
 .repo .ex.w { color: @amber; } .repo .ex.ok { color: @mint; }
 .none { color: @dim; font-size: 12px; padding: 6px 4px; }
@@ -251,9 +246,9 @@ window.wake button.subbtn:hover { background-color: @row; }
 .sub .h { font-size: 12.5px; }
 .sub .task { font-weight: 700; }
 .sub .ty { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9px; padding: 2px 5px; border-radius: 4px; background-color: @panel2; color: @violet; }
-.sub .dur { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; }
+.sub .dur { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; padding-top: 1px; }
 .sub .one { font-size: 11.5px; color: @muted; padding-left: 16px; }
-.sub .one.live { color: @mint; font-family: "JetBrains Mono", monospace; font-size: 10.5px; }
+.sub .one.live { color: @mint; font-family: "JetBrains Mono", monospace; font-size: 10.5px; padding-top: 1px; }
 .sub .d { min-width: 7px; min-height: 7px; }
 .steps { margin: 2px 9px 9px 25px; border-left: 2px solid @line2; padding-left: 9px; font-size: 11.5px; }
 .steps .ret { color: @mint; }
@@ -274,7 +269,7 @@ window.wake entry.bare, window.wake entry.bare:focus-within { background: none; 
 .prow .q { font-size: 11.5px; color: @amber; padding-left: 18px; }
 .ih { padding: 10px 4px 8px; }
 .ih .b { font-weight: 700; font-size: 13px; }
-.ih .s { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @muted; }
+.ih .s { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @muted; padding-top: 1px; }
 .pal-ft { padding: 8px 14px; border-top: 1px solid @line; font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
 
 /* dialogs */
@@ -336,16 +331,16 @@ window.wake popover.peek-pop contents { padding: 0; background-color: #07090D; b
 .peek-term { font-family: "JetBrains Mono", monospace; font-size: 12px; color: #C9D3DF; padding: 12px 18px; }
 .peek-note { font-size: 12px; color: #FFB547; padding: 6px 18px; }
 .peek-subs { padding: 8px 18px; border-top: 1px solid #1A232E; background-color: #0B0F15; }
-.peek-sub-mark { color: #42E6A4; font-family: "JetBrains Mono", monospace; }
+.peek-sub-mark { color: #42E6A4; font-family: "JetBrains Mono", monospace; padding-top: 1px; }
 .peek-sub-task { font-size: 12px; color: #E7ECF3; }
-.peek-sub-live { font-family: "JetBrains Mono", monospace; font-size: 11px; color: #8995A6; }
+.peek-sub-live { font-family: "JetBrains Mono", monospace; font-size: 11px; color: #8995A6; padding-top: 1px; }
 .peek-foot { padding: 8px 18px 12px; border-top: 1px solid #1A232E; font-size: 11.5px; color: #8995A6; }
 .peek.peek-inside { border: 1px solid #2A3A4C; box-shadow: 0 18px 60px rgba(0,0,0,.6); }
 .peek-scroll, .peek-scroll > viewport { background-color: #07090D; }
 .peek-scroll undershoot.top, .peek-scroll undershoot.bottom, .peek-scroll overshoot.top, .peek-scroll overshoot.bottom { background: none; box-shadow: none; }
 
 /* Calm pass: fewer boxes, weights and colours; more room. Later rules win over the ones above. */
-.quiet-top { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @dim; }
+.quiet-top { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @dim; padding-top: 1px; }
 .pj .title { font-weight: normal; color: @soft; }
 .pill { background-color: transparent; padding: 0; font-weight: normal; color: @muted; }
 .loc, window.wake button.loc { border-color: transparent; padding: 3px 0; }
@@ -382,7 +377,7 @@ window.wake button.foldbtn { padding: 13px 16px; border-radius: 0; }
 window.wake button.foldbtn:hover { background-color: @row; }
 .foldbtn .chev { color: @faint; font-size: 11px; min-width: 12px; }
 .foldbtn .ft { font-size: 14px; color: @ink; }
-.fnote { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; }
+.fnote { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; padding-top: 1px; }
 .fnote.mint { color: @mint; } .fnote.amber { color: @amber; }
 .foldin { padding: 0; }
 .asked { background-color: transparent; border: none; border-left: 2px solid @line; border-radius: 0; padding: 2px 10px; margin-bottom: 6px; }
@@ -390,7 +385,7 @@ window.wake button.foldbtn:hover { background-color: @row; }
 
 /* the keys overlay */
 .keygrp { margin-top: 4px; }
-.keyname { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @accent; }
+.keyname { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @accent; padding-top: 1px; }
 .pill.paused { border: none; padding: 0; }
 .foldbtn .chev { font-size: 13px; color: @dim; }
 window.wake button.subcount { border-color: transparent; padding: 1px 2px; }
@@ -407,13 +402,13 @@ list.qlist > row:hover { background-color: @row; }
 list.qlist > row:selected { background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
 .qrow .qt { font-size: 13px; color: @soft; }
 list.qlist > row:selected .qrow .qt { color: @ink; }
-.qrow .qm { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.qrow .qm { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; padding-top: 1px; }
 .qrow .qtag { color: @violet; }
 .qnone { font-size: 12px; color: @dim; padding: 6px 4px; }
 .qthread { padding: 28px 24px 36px; }
 .qturn { }
 .qq { font-size: 14.5px; font-weight: 700; color: @ink; background-color: @panel2; border-radius: 9px; padding: 10px 14px; }
-.qmeta { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; margin: -4px 0 2px 14px; }
+.qmeta { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; margin: -4px 0 2px 14px; padding-top: 1px; }
 .qa { padding: 0 14px; }
 .qtext { font-size: 14.5px; color: @soft; }
 .qcode { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: @soft; background-color: @codebg; border: 1px solid @line; border-radius: 7px; padding: 9px 12px; }
@@ -484,7 +479,7 @@ list.setlist > row.sethead { padding: 30px 2px 4px; }
 .setttl { font-weight: 700; font-size: 20px; letter-spacing: .3px; color: @ink; }
 .setwhere { font-size: 12px; color: @dim; }
 list.setlist > row.setsecrow { padding: 24px 4px 8px; }
-.setsec { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 10px; letter-spacing: 1.5px; color: @dim; }
+.setsec { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 10px; letter-spacing: 1.5px; color: @dim; padding-top: 1px; }
 list.setlist > row.setnoterow { padding: 14px 0 0; }
 .setnote { padding: 10px 12px; border-radius: 8px; border: 1px solid alpha(@amber, .4); background-color: alpha(@amber, .07); color: @ink; font-size: 12.5px; }
 list.setlist > row.setrow { background-color: @panel; border: 1px solid @line; border-top-width: 0; outline-offset: -2px; }
@@ -540,13 +535,11 @@ window.wake .swatches button.swatch { min-width: 16px; min-height: 16px; border-
 /* The selection bar gliding between rows; the row's own bar waits until it arrives. */
 /* The selection block: the shape of the selected row's box, gliding between rows. It looks
    like a selected row, so it hands over to the row's own highlight without a seam. */
-.selbar { background-color: alpha(@accent, .13); border-radius: 12px; box-shadow: inset 3px 0 @accent, inset 0 0 0 1px alpha(@accent, .45); }
+/* The selection block: it sits on the selected row's box and glides to the next. A light tint, an
+   outline and the accent edge: the row reads clearly through it. */
+.selbar { background-color: alpha(@accent, .07); border-radius: 12px; box-shadow: inset 3px 0 @accent, inset 0 0 0 1px alpha(@accent, .55); }
 /* While it travels: a soft glow, so the stretch reads as light moving rather than a box resizing. */
-.selbar.moving { box-shadow: inset 3px 0 @accent, inset 0 0 0 1px alpha(@accent, .6), 0 6px 22px alpha(@accent, .22); }
-list.table > row.glide:selected, list.table > row.glide:focus:focus-visible:not(:selected) { box-shadow: none; }
-/* While the block travels, the row it is heading for waits to show its own highlight. */
-list.table > row.glide:selected .item, list.table > row.glide:selected > box { background-color: @panel; box-shadow: none; }
-list.table > row.glide:selected .card { border-color: @line2; box-shadow: none; }
+.selbar.moving { background-color: alpha(@accent, .05); box-shadow: inset 3px 0 @accent, inset 0 0 0 1px alpha(@accent, .7); }
 
 /* ---- Why it stopped ---- */
 .why-line { font-size: 12.5px; color: @soft; }
@@ -578,7 +571,7 @@ window.wake button.subbtn { padding: 0; margin: 0; border-radius: 0; background:
 window.wake button.subbtn:hover { background-color: @row; }
 window.wake button.subbtn:focus:focus-visible { outline-style: none; background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
 .subtr .pj .title { font-size: 12.5px; }
-.subtr .desc.nowline { color: @mint; font-family: "JetBrains Mono", monospace; font-size: 10.5px; }
+.subtr .desc.nowline { color: @mint; font-family: "JetBrains Mono", monospace; font-size: 10.5px; padding-top: 1px; }
 .subtr.inner .pj .title { color: @soft; }
 .subtr .chev { color: @dim; font-size: 11px; min-width: 12px; }
 /* Each subagent, the fold and each finished one is a list row of its own (selected, hovered and
@@ -586,35 +579,32 @@ window.wake button.subbtn:focus:focus-visible { outline-style: none; background-
 list.table > row.treerow { border-bottom: none; }
 .treebtn .tt { font-size: 12.5px; color: @ink; }
 .treebtn .tt.dimmer { color: @muted; }
-.treebtn .tnow { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+.treebtn .tnow { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; padding-top: 1px; }
 .treebtn .chev { color: @dim; font-size: 11px; }
 .treebtn .d { min-width: 7px; min-height: 7px; }
 .tsteps { margin: 2px 9px 8px 26px; }
 
 /* ---- Keyboard. One focus indicator at a time: ---- */
 /* An entry shows focus with its own border; the text node inside it is the widget that has the
-   focus, and the outline rule above drew a second, offset box over the entry (the capture bar's
-   "weird second box"). Text areas show focus on their frame. */
+   focus, and the outline rule above drew a second, offset box over the entry. Text areas show
+   focus on their frame. */
 window.wake text:focus:focus-visible, window.wake textview:focus:focus-visible { outline-style: none; }
 /* The selected row keeps its place marker when the keyboard is elsewhere (the panel, the rail), but
    quietly: the accent belongs to whatever has the focus. */
-list.table > row:selected:not(:focus) { box-shadow: inset 2px 0 @line3; }
+
 list.table > row.idea-row:selected:not(:focus) .idea { box-shadow: 0 0 0 1px @line3; }
 list.table > row.idea-row:selected:focus .idea { box-shadow: 0 0 0 1px @accent; }
 list.table > row.idea-row:selected:not(:focus) { box-shadow: none; }
 /* The region the keyboard is in (class "here", set only after keyboard use): its heading in the
    accent and a thin accent edge along its top. Nothing is boxed. */
 window.wake .here { box-shadow: inset 0 2px alpha(@accent, .75); }
-window.wake .rail.here .grp, window.wake .chips.here .ttl, window.wake .capture.here .lbl, window.wake .cappick.here .flabel { color: @accent; }
+window.wake .rail.here .grp, window.wake .chips.here .ttl { color: @accent; }
 window.wake .pane.here .thead .th { color: @accent; }
 window.wake .drawer.here .dh .h2 { color: @accent; }
 /* Rail and chip buttons draw focus inside their own shape, never clipped by the rail. */
 window.wake .rail button:focus:focus-visible, window.wake .chips button:focus:focus-visible { outline-offset: -2px; }
 
 /* ---- Capture: the project picker above the bar ---- */
-.capture entry { min-height: 36px; }
-.cappick { background-color: @panel; border-top: 1px solid @line; padding: 10px 14px 8px; }
-.cappick entry.capfilter { min-height: 28px; min-width: 200px; font-size: 13px; }
 window.wake button.capitem { padding: 5px 10px; border-radius: 7px; color: @muted; }
 window.wake button.capitem:hover { background-color: @row; color: @ink; }
 window.wake button.capitem.on { background-color: @rowhi; color: @ink; box-shadow: inset 2px 0 @accent; font-weight: 700; }
@@ -680,7 +670,7 @@ window.wake button.menuitem.on { color: @accent; font-weight: 700; }
 .caption { font-size: 12px; }
 .caption-heading { font-size: 12px; font-weight: 700; color: @muted; }
 .dim { color: @muted; }
-.count { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.count { font-family: "JetBrains Mono", monospace; font-size: 12px; padding-top: 1px; }
 
 /* the title bar: Find and New idea, the view switcher, Ask and the menu */
 .top { min-height: 50px; padding: 0 8px 0 10px; background-color: @panel; border-bottom: 1px solid @line; }
@@ -704,10 +694,6 @@ window.wake button.tab.on { background-color: @rowhi; color: @ink; }
 .top windowcontrols button:hover { background-color: @row; color: @ink; }
 window.wake .notitle, window.wake .titlebar.notitle { min-height: 0; padding: 0; margin: 0; border: none; background: none; box-shadow: none; }
 
-/* New idea: a bar that shows while you capture */
-.capture { min-height: 52px; }
-.capture .lbl { font-weight: 700; font-size: 13px; color: @ink; }
-.capture entry { min-height: 32px; }
 
 /* page title and section headings */
 list.table > row.herorow, list.table > row.herorow:hover, list.table > row.sectrow, list.table > row.sectrow:hover { border-bottom: none; background-color: transparent; }
@@ -719,7 +705,7 @@ list.table > row.herorow, list.table > row.herorow:hover, list.table > row.sectr
 list.table > row.cardrow { border-bottom: none; padding: 0 24px 12px; }
 list.table > row.cardrow:hover, list.table > row.cardrow:selected { background-color: transparent; box-shadow: none; }
 list.table > row.cardrow:hover .card { border-color: @muted; }
-list.table > row.cardrow:selected .card { border-color: @accent; box-shadow: 0 0 0 1px @accent; }
+
 .askcard { padding: 18px 20px; }
 
 /* boxed lists: rows in one rounded box, a line between them */
@@ -730,7 +716,7 @@ list.table > row.itemrow.first .item { border-top: 1px solid @line2; border-radi
 list.table > row.itemrow.last .item { border-bottom: 1px solid @line2; border-radius: 0 0 12px 12px; }
 list.table > row.itemrow.first.last .item { border-radius: 12px; }
 list.table > row.itemrow:hover .item { background-color: @row; }
-list.table > row.itemrow:selected .item { background-color: alpha(@accent, .13); box-shadow: inset 3px 0 @accent; }
+
 .item .happ { font-size: 13.5px; }
 
 /* grids of cards: Projects and Ideas */
@@ -762,7 +748,7 @@ list.table > row.boxed > box { background-color: @panel; border-left: 1px solid 
 list.table > row.boxedge.edgetop + row.boxed > box { border-top-color: transparent; }
 list.table > row.boxed:hover, list.table > row.boxed:selected { background-color: transparent; box-shadow: none; }
 list.table > row.boxed:hover > box { background-color: @row; }
-list.table > row.boxed:selected > box { background-color: alpha(@accent, .13); box-shadow: inset 3px 0 @accent; }
+
 list.table > row.boxedge { padding: 0 24px; border-bottom: none; background-color: transparent; }
 list.table > row.boxedge > box { min-height: 6px; background-color: @panel; border-left: 1px solid @line2; border-right: 1px solid @line2; }
 list.table > row.boxedge.edgetop > box { border-top: 1px solid @line2; border-radius: 12px 12px 0 0; }
@@ -770,3 +756,13 @@ list.table > row.boxedge.edgebottom > box { border-bottom: 1px solid @line2; bor
 
 /* The details over the list (a medium window): a shadow on the list's side. */
 .pagehead { padding: 12px 16px 10px 10px; border-bottom: 1px solid @line; }
+
+/* Agents: a row being stopped stays where it is, dimmed, until its process has gone. */
+list.table > row.leaving { opacity: .45; }
+
+/* Find and New idea: one pop-up, a tab for each. */
+.paltabs { margin-right: 4px; }
+window.wake button.paltab { font-weight: 700; font-size: 13px; padding: 5px 12px; border-radius: 8px; color: @muted; }
+window.wake button.paltab:hover { background-color: @row; color: @ink; }
+window.wake button.paltab.on { background-color: @rowhi; color: @ink; box-shadow: inset 0 -2px @accent; }
+.idea-peek { padding: 8px 10px; margin: 6px 0 0; border-radius: 8px; background-color: @panel2; }

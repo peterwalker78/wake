@@ -228,6 +228,16 @@ pub fn render(ui: &Ui) {
         (p, sig, false, app::compact(&st) || st.lay.push)
     };
     let p = procs;
+    if ui.st.borrow().agents_folding {
+        return;
+    }
+    // Stopped agents whose process has now gone fold away where they are, and the list is redrawn
+    // once they have, so nothing jumps.
+    let gone: Vec<u32> = ui.st.borrow().agent_leaving.iter().copied().filter(|pid| !p.procs.iter().any(|a| a.pid == *pid)).collect();
+    if !gone.is_empty() && fold_away(ui, &gone) {
+        return;
+    }
+    ui.st.borrow_mut().agent_leaving.retain(|pid| !gone.contains(pid));
     ui.scope.borrow_mut().follow(&followers(&p), &p.dead_notes);
     let Some(had_focus) = views::begin(ui, View::Agents, sig) else {
         app::tick_live(ui);
@@ -302,11 +312,14 @@ pub fn render(ui: &Ui) {
         if group != last_group {
             // Each group is a box: its heading above, its rows inside, rounded top and bottom.
             if boxed {
-                vw.list.append(&box_edge(false));
+                let bottom = box_edge(false);
+                bottom.add_css_class(&group_class(last_group));
+                vw.list.append(&bottom);
                 boxed = false;
             }
             let n = rows_in.iter().filter(|g| **g == group).count();
             let head = views::group_row(group, n, group_words(group).filter(|_| !hidden));
+            head.add_css_class(&group_class(group));
             if group == "In the background" {
                 head.add_css_class("bghead");
                 if let Some(line) = head.child().and_then(|b| b.first_child()).and_downcast::<gtk::Box>() {
@@ -327,17 +340,23 @@ pub fn render(ui: &Ui) {
                 // No box: the group is folded away.
                 continue;
             }
-            vw.list.append(&box_edge(true));
+            let top = box_edge(true);
+            top.add_css_class(&group_class(group));
+            vw.list.append(&top);
             boxed = true;
         }
-        vw.list.append(&proc_row(ui, a, daemon, &p, &cols, hide));
+        let row = proc_row(ui, a, daemon, &p, &cols, hide);
+        row.add_css_class(&group_class(group));
+        vw.list.append(&row);
         // Its open subagents, each a row of its own under it.
         for want in wanted(ui, a) {
             vw.list.append(&build(ui, a, &want, &cols, hide));
         }
     }
     if boxed {
-        vw.list.append(&box_edge(false));
+        let bottom = box_edge(false);
+        bottom.add_css_class(&group_class(last_group));
+        vw.list.append(&bottom);
     }
     if !stale_only && !p.dead_notes.is_empty() {
         vw.list.append(&views::group_row("Notes whose process has gone", p.dead_notes.len(), None));
@@ -548,6 +567,10 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     // A row inside its group's box (style.css: boxed lists).
     row.add_css_class("boxed");
     row.set_widget_name(&a.pid.to_string());
+    if ui.st.borrow().agent_leaving.contains(&a.pid) {
+        row.add_css_class("leaving");
+        row.set_sensitive(false);
+    }
     row.set_child(Some(&r));
     if a.session_id.is_some() {
         row.set_tooltip_text(Some(views::ROW_HINT));
@@ -1578,6 +1601,7 @@ pub fn stop_one(ui: &Ui, pid: u32) {
     }
     dialogs::confirm(ui, &format!("Stop “{}”?", task_of(&a)), &words, &list, "Stop", move |ui| {
         let task = task.clone();
+        mark_leaving(ui, &[pid]);
         app::bg(
             ui,
             move |src| src.stop(pid, ticks, how, false),
@@ -1586,6 +1610,7 @@ pub fn stop_one(ui: &Ui, pid: u32) {
                     app::toast(ui, &stopped_words(&task, pid, how), false);
                     after_five(ui, vec![pid]);
                 } else {
+                    unmark_leaving(ui, &[pid]);
                     say(ui, &r);
                 }
                 app::refresh_procs(ui);
@@ -1620,11 +1645,13 @@ pub fn stop_all_stale(ui: &Ui) {
     let names: Vec<(u32, String)> = stale.iter().map(|a| (a.pid, task_of(a))).collect();
     dialogs::confirm(ui, &title, &body, &list, &format!("Stop {}", stale.len()), move |ui| {
         let (plan, names) = (plan.clone(), names.clone());
+        mark_leaving(ui, &plan.iter().map(|p| p.0).collect::<Vec<_>>());
         app::bg(
             ui,
             move |src| plan.iter().map(|(pid, ticks, how)| (*pid, src.stop(*pid, *ticks, *how, false))).collect::<Vec<_>>(),
             move |ui, results| {
                 let ok: Vec<u32> = results.iter().filter(|(_, r)| r.ok).map(|(p, _)| *p).collect();
+                unmark_leaving(ui, &results.iter().filter(|(_, r)| !r.ok).map(|(p, _)| *p).collect::<Vec<_>>());
                 app::toast(ui, &stopped_all_words(&names, &results), results.iter().any(|(_, r)| !r.ok && !r.message.contains("already ended")));
                 after_five(ui, ok);
                 app::refresh_procs(ui);
@@ -1632,6 +1659,110 @@ pub fn stop_all_stale(ui: &Ui) {
             },
         );
     });
+}
+
+/// Agents asked to stop: their rows stay where they are, dimmed and out of reach, until the
+/// process has gone (then `fold_away`).
+fn mark_leaving(ui: &Ui, pids: &[u32]) {
+    ui.st.borrow_mut().agent_leaving.extend(pids.iter().copied());
+    for &pid in pids {
+        if let Some((row, _)) = find_row(ui, pid) {
+            row.add_css_class("leaving");
+            row.set_sensitive(false);
+        }
+    }
+}
+
+/// A stop that didn't go through: the row comes back.
+fn unmark_leaving(ui: &Ui, pids: &[u32]) {
+    if pids.is_empty() {
+        return;
+    }
+    ui.st.borrow_mut().agent_leaving.retain(|p| !pids.contains(p));
+    for &pid in pids {
+        if let Some((row, _)) = find_row(ui, pid) {
+            row.remove_css_class("leaving");
+            row.set_sensitive(true);
+        }
+    }
+}
+
+/// The class naming every row of a group (its heading, box edges and agents).
+fn group_class(group: &str) -> String {
+    format!("grp-{}", group.to_lowercase().replace(' ', "-"))
+}
+
+/// Folds away the rows of agents whose process has gone (and their subagents; and their group's
+/// heading and box, when nothing else is left in it), then redraws the list. False when there is
+/// nothing on screen to fold (or motion is off): the list is simply redrawn.
+fn fold_away(ui: &Ui, gone: &[u32]) -> bool {
+    if !crate::motion::on() {
+        return false;
+    }
+    let list = ui.w.views[&View::Agents].list.clone();
+    let mut rows: Vec<gtk::ListBoxRow> = Vec::new();
+    for &pid in gone {
+        if let Some((row, _)) = find_row(ui, pid) {
+            // Its group goes too when every agent in it is going.
+            let grp = row.css_classes().into_iter().map(|c| c.to_string()).find(|c| c.starts_with("grp-"));
+            rows.push(row);
+            rows.extend(tree_rows(ui, pid));
+            if let Some(grp) = grp {
+                let mut members = Vec::new();
+                let mut c = list.first_child();
+                while let Some(x) = c {
+                    c = x.next_sibling();
+                    if x.has_css_class(&grp) {
+                        members.push(x);
+                    }
+                }
+                let staying = members.iter().any(|x| x.has_css_class("boxed") && !gone.iter().any(|p| x.widget_name() == p.to_string()));
+                if !staying {
+                    rows.extend(members.into_iter().filter_map(|x| x.downcast::<gtk::ListBoxRow>().ok()));
+                }
+            }
+        }
+    }
+    rows.sort_by_key(|r| r.index());
+    rows.dedup_by_key(|r| r.index());
+    if rows.is_empty() {
+        return false;
+    }
+    ui.st.borrow_mut().agents_folding = true;
+    let left = std::rc::Rc::new(std::cell::Cell::new(rows.len()));
+    for row in rows {
+        // The row's contents in a revealer that slides shut, fading as it goes.
+        let Some(child) = row.child() else {
+            left.set(left.get() - 1);
+            continue;
+        };
+        row.set_child(None::<&gtk::Widget>);
+        let rev = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideUp).transition_duration(crate::motion::DUR + 80).reveal_child(true).child(&child).build();
+        row.set_child(Some(&rev));
+        crate::motion::fade_out(&child, || {});
+        let (ui2, left2, gone2) = (ui.clone(), left.clone(), gone.to_vec());
+        rev.connect_child_revealed_notify(move |r| {
+            if r.is_child_revealed() {
+                return;
+            }
+            left2.set(left2.get().saturating_sub(1));
+            if left2.get() == 0 {
+                {
+                    let mut st = ui2.st.borrow_mut();
+                    st.agents_folding = false;
+                    st.agent_leaving.retain(|p| !gone2.contains(p));
+                    st.drawn.remove(&View::Agents);
+                }
+                render(&ui2);
+            }
+        });
+        rev.set_reveal_child(false);
+    }
+    if left.get() == 0 {
+        ui.st.borrow_mut().agents_folding = false;
+        return false;
+    }
+    true
 }
 
 /// What a stop that went through did, in plain words (core's own message names the signal).

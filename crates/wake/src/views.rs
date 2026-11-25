@@ -486,8 +486,8 @@ fn fill_rail(ui: &Ui, nav: &gtk::Box, plist: &gtk::Box, slim: bool, view: View, 
         {
             inner.append(&w::dot(if answering { "working" } else { "back" }));
             b.set_tooltip_text(Some(&match (answering, unread) {
-                (true, _) => "Questions (key 6): answering".to_string(),
-                (false, n) => format!("Questions (key 6): {} new", fmt::pl(n, "answer", "answers")),
+                (true, _) => "Ask (key 6): answering".to_string(),
+                (false, n) => format!("Ask (key 6): {} new", fmt::pl(n, "answer", "answers")),
             }));
         } else if let Some((n, warn)) = n {
             let l = w::label(&n.to_string(), &["n"]);
@@ -820,7 +820,7 @@ pub fn render_chips(ui: &Ui) {
             chips.add_next(&w::label("searches titles, your prompts, files touched and Claude's recaps", &["meta"]));
         }
         View::Questions => {
-            chips.add_next(&w::label("Questions", &["ttl"]));
+            chips.add_next(&w::label("Ask", &["ttl"]));
             chips.add_next(&w::spacer());
             chips.add_next(&w::label(&format!("answered by your own {}: it searches and reads, never changes anything", crate::setview::current_ai().id()), &["meta"]));
         }

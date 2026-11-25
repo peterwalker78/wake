@@ -9,7 +9,6 @@
 mod agents;
 mod app;
 mod behind;
-mod capture;
 mod cli;
 mod demo;
 mod dialogs;

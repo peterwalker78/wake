@@ -28,7 +28,7 @@ const CSS: &str = "
 .disk-item.inner { margin-left: 16px; }
 .disk-item:last-child { border-bottom: none; }
 .disk-name { font-size: 12.5px; color: @ink; }
-.disk-size { font-family: \"JetBrains Mono\", monospace; font-size: 12px; color: @soft; }
+.disk-size { font-family: \"JetBrains Mono\", monospace; font-size: 12px; color: @soft; padding-top: 1px; }
 .disk-cost { font-size: 11.5px; color: @muted; }
 .disk-safe { color: @mint; } .disk-check { color: @amber; } .disk-keep { color: @dim; }
 .disk-refused { font-size: 11px; color: @amber; }

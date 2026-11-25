@@ -40,7 +40,6 @@ pub fn open_session(ui: &Ui, id: &str, focus: bool) {
         focus_primary(ui);
     }
     load_session(ui, id, false);
-    app::capture_default(ui);
     if !was_open {
         // The table makes room for the panel (its compact columns).
         crate::views::render_view(ui);
@@ -68,7 +67,6 @@ pub fn open_project(ui: &Ui, id: &str, focus: bool) {
         focus_primary(ui);
     }
     load_project(ui, id);
-    app::capture_default(ui);
     if !was_open {
         crate::views::render_view(ui);
     }
@@ -117,7 +115,6 @@ pub fn close(ui: &Ui) {
         st.panel_page = None;
     }
     show(ui, false);
-    app::capture_default(ui);
     crate::views::render_view(ui);
     app::focus_list(ui);
 }

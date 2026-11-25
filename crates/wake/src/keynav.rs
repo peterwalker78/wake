@@ -22,11 +22,10 @@ pub enum Region {
     Filters,
     List,
     Panel,
-    Capture,
     Top,
 }
 
-pub const ORDER: [Region; 6] = [Region::Rail, Region::Filters, Region::List, Region::Panel, Region::Capture, Region::Top];
+pub const ORDER: [Region; 5] = [Region::Rail, Region::Filters, Region::List, Region::Panel, Region::Top];
 
 impl Region {
     /// One Tab stop, arrows inside (a toolbar or a menu of links).
@@ -40,7 +39,6 @@ impl Region {
             Region::Filters => "filters",
             Region::List => "list",
             Region::Panel => "details",
-            Region::Capture => "capture",
             Region::Top => "top bar",
         }
     }
@@ -76,13 +74,16 @@ fn widget(ui: &Ui, r: Region) -> Option<gtk::Widget> {
             Some(ui.w.views[&v].root.clone().upcast())
         }
         Region::Panel => Some(ui.w.drawer.clone().upcast()),
-        Region::Capture => ui.w.cap_entry.parent(),
         Region::Top => {
             // The top bar (the behind banner may sit above it in the column).
             let mut c = ui.w.column.first_child();
             while let Some(x) = c {
                 if x.has_css_class("top") {
                     return Some(x);
+                }
+                // It is the window's title bar, inside the handle that lets it drag the window.
+                if let Some(inner) = x.first_child().filter(|i| x.is::<gtk::WindowHandle>() && i.has_css_class("top")) {
+                    return Some(inner);
                 }
                 c = x.next_sibling();
             }
@@ -164,14 +165,11 @@ fn shown(ui: &Ui, r: Region) -> bool {
 
 /// The region holding `f`.
 pub fn region_of(ui: &Ui, f: &gtk::Widget) -> Option<Region> {
-    if crate::capture::contains(f) {
-        return Some(Region::Capture);
-    }
     if f.is_ancestor(&ui.w.peek_rail) {
         return Some(Region::Rail);
     }
-    // Inner regions first (the list's root sits inside the main column with the chips and capture).
-    for r in [Region::Panel, Region::Capture, Region::Filters, Region::List, Region::Rail, Region::Top] {
+    // Inner regions first (the list's root sits inside the main column with the chips).
+    for r in [Region::Panel, Region::Filters, Region::List, Region::Rail, Region::Top] {
         if let Some(w) = widget(ui, r)
             && (f == &w || f.is_ancestor(&w))
         {
@@ -221,7 +219,6 @@ pub fn home(ui: &Ui, r: Region) {
                 w.child_focus(gtk::DirectionType::TabForward);
             }
         }
-        Region::Capture => crate::capture::begin(ui),
         Region::Top => {
             if let Some(b) = controls(&w).first() {
                 b.grab_focus();
@@ -276,9 +273,6 @@ pub fn tab(ui: &Ui, forward: bool) {
             n.grab_focus();
             return;
         }
-    }
-    if r == Region::Capture {
-        crate::capture::end(ui);
     }
     cycle(ui, forward);
 }
@@ -363,20 +357,13 @@ fn mark(ui: &Ui) {
             vw.root.remove_css_class("here");
         }
     }
-    // While the picker is open it alone carries the mark (one accent edge, not two).
-    let picking = here == Some(Region::Capture) && crate::capture::picker_open();
-    crate::capture::mark(picking);
-    if picking && let Some(bar) = widget(ui, Region::Capture) {
-        bar.remove_css_class("here");
-    }
 }
 
 pub fn build(ui: &Ui) {
     {
         let ui2 = ui.clone();
         ui.window.connect_focus_widget_notify(move |win| {
-            let f = gtk::prelude::GtkWindowExt::focus(win);
-            crate::capture::focus_moved(&ui2, f.as_ref());
+            let _ = gtk::prelude::GtkWindowExt::focus(win);
             mark(&ui2);
         });
     }
@@ -538,11 +525,11 @@ mod tests {
 
     #[test]
     fn hidden_regions_are_skipped_even_the_one_just_left() {
-        let no_panel = [Rail, Filters, List, Capture, Top];
-        assert_eq!(next_region(&no_panel, Some(List), true), Some(Capture));
-        assert_eq!(next_region(&no_panel, Some(Capture), false), Some(List));
+        let no_panel = [Rail, Filters, List, Top];
+        assert_eq!(next_region(&no_panel, Some(List), true), Some(Top));
+        assert_eq!(next_region(&no_panel, Some(Top), false), Some(List));
         // The panel closed while the keyboard was in it.
-        assert_eq!(next_region(&no_panel, Some(Panel), true), Some(Capture));
+        assert_eq!(next_region(&no_panel, Some(Panel), true), Some(Top));
         assert_eq!(next_region(&no_panel, Some(Panel), false), Some(List));
         assert_eq!(next_region(&[], Some(List), true), None);
     }
@@ -550,7 +537,7 @@ mod tests {
     #[test]
     fn only_the_rail_and_the_filters_are_single_stops() {
         assert!(Rail.composite() && Filters.composite());
-        assert!(!List.composite() && !Panel.composite() && !Capture.composite() && !Top.composite());
+        assert!(!List.composite() && !Panel.composite() && !Top.composite());
     }
 
     #[test]

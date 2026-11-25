@@ -77,16 +77,16 @@ bar.
 | Key | |
 |---|---|
 | `1` to `6` | Monitor, Agents, Projects, Ideas, History, Ask |
-| `g` or `Ctrl+K` | find a session by name; `→` looks inside at its subagents |
+| `g` or `Ctrl+K` | Find: a session by name; `→` looks inside at its subagents; `Tab` switches to New idea |
 | `Enter` | the details; `Esc` goes back a page, then closes them |
 | hold `Space` | peek at the session; let go to come back, `Enter` to stay |
 | `o` | go there |
-| `c` | capture an idea |
+| `c` or `+` | New idea: keep a thought, in the project you choose |
 | `p` | pause the project, with a note for next time |
-| `a` | ask a question |
+| `a` | Ask a question |
 | `/` | search everything you asked |
 | `s` / `Shift+S` | in Agents: stop the selected agent / every stale one |
-| `,` | settings |
+| `,` | Settings |
 | `?` | every key |
 
 From a terminal:

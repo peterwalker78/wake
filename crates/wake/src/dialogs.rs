@@ -242,37 +242,46 @@ pub fn keys(ui: &Ui) {
     top.append(&w::label("Esc closes", &["hint"]));
     c.append(&top);
     let peek = crate::peek::hint_word(ui);
-    let groups: [(&str, Vec<(&str, String)>); 6] = [
+    let groups: [(&str, Vec<(&str, String)>); 7] = [
         (
             "Anywhere",
             vec![
-                ("1 – 6", "Monitor, Agents, Projects, Ideas, History, Questions".into()),
-                (",", "settings".into()),
-                ("a", "ask a question".into()),
-                ("g  Ctrl+K", "go to a session by name".into()),
-                ("c", "capture an idea (asks the project first)".into()),
-                ("/", "search everything you asked".into()),
+                ("1 – 6", "Monitor, Agents, Projects, Ideas, History, Ask".into()),
+                (",", "Settings".into()),
+                ("a", "Ask a question".into()),
+                ("g  Ctrl+K", "Find a session by name".into()),
+                ("c", "New idea".into()),
+                ("/", "search History: everything you asked".into()),
                 ("Tab  F6", "next part of the window (Shift: back)".into()),
-                ("Esc", "one step back: dialog, panel, then the list".into()),
-                ("click blank space", "put the panel away".into()),
+                ("Esc", "one step back: a dialog, a page of the details, the details, then the list".into()),
+                ("click blank space", "put the details away".into()),
             ],
         ),
         (
             "On a session",
             vec![
                 ("j k  ↑ ↓", "move".into()),
-                ("Enter  double-click", "details on the right (a click selects)".into()),
+                ("Enter  double-click", "its details (a click selects)".into()),
                 ("hold Space", format!("{peek}; let go to come back, Enter to stay")),
                 ("o", "go to it".into()),
                 ("p", "pause its project".into()),
                 ("m", "set its project (when Wake guessed wrong)".into()),
                 ("Shift+P", "pull its project when it's behind (asks first)".into()),
-                ("click a column", "sort by it; again to reverse, again for Wake's order".into()),
+            ],
+        ),
+        (
+            "Find and New idea",
+            vec![
+                ("↑ ↓", "choose a session; in New idea, the project to keep it in".into()),
+                ("Enter", "go to the session; in New idea, keep it".into()),
+                ("→ ←", "look inside a session at its subagents, and back".into()),
+                ("Tab", "switch between Find and New idea".into()),
             ],
         ),
         (
             "Agents",
             vec![
+                ("click a column", "sort by it; again to reverse, again for Wake's order".into()),
                 ("→ ←", "show or hide its subagents; on a subagent, its steps (← back to the session)".into()),
                 ("Enter", "on a subagent, its steps; on \"N finished\", the finished ones".into()),
                 ("s", "stop the selected agent".into()),
@@ -281,7 +290,7 @@ pub fn keys(ui: &Ui) {
         ),
         ("Ideas", vec![("x", "tick for a brief".into()), ("s", "start an agent on them (asks first)".into()), ("d", "done".into()), ("Enter", "sort into a project".into())]),
         (
-            "Questions",
+            "Ask",
             vec![
                 ("Enter", "ask (Shift+Enter: a new line)".into()),
                 ("n", "a new thread".into()),
@@ -311,9 +320,9 @@ pub fn keys(ui: &Ui) {
             r.append(&w::wrap(&what, &["plain"]));
             g.append(&r);
         }
-        // Anywhere, Agents, Ideas and Settings on the left; sessions and Questions on the right.
-        let (col, row) = [(0, 0), (1, 0), (0, 1), (0, 2), (1, 1), (0, 3)][i];
-        grid.attach(&g, col, row, 1, if i == 4 { 2 } else { 1 });
+        // Anywhere, Agents, Ideas and Settings on the left; sessions, Find and Ask on the right.
+        let (col, row) = [(0, 0), (1, 0), (1, 1), (0, 1), (0, 2), (1, 2), (0, 3)][i];
+        grid.attach(&g, col, row, 1, if i == 5 { 2 } else { 1 });
     }
     c.append(&grid);
     let ui2 = ui.clone();

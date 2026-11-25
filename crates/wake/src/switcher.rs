@@ -1,6 +1,11 @@
-//! The switcher (Ctrl+K or g): filter sessions as you type, Enter goes there, → looks inside at
-//! the subagents, → again opens one's steps and what it handed back, ← comes back out. "Back to
-//! where you were" heads the list.
+//! Find and New idea, one pop-up with a tab for each.
+//!
+//! Find (Ctrl+K or g): filter sessions as you type, Enter goes there, → looks inside at the
+//! subagents, → again opens one's steps and what it handed back, ← comes back out. "Back to where
+//! you were" heads the list.
+//!
+//! New idea (c, or +): type what you noticed; ↑↓ choose the project to keep it in (the one you
+//! are looking at is chosen already), and its ideas so far show beside; Enter keeps it.
 
 use gtk4::{self as gtk, gdk, glib, prelude::*};
 use wake_core::*;
@@ -15,12 +20,21 @@ pub fn widgets() -> (gtk::Box, gtk::Entry, gtk::Box, gtk::Box, gtk::ScrolledWind
     scrim.set_visible(false);
     let pal = gtk::Box::builder().orientation(gtk::Orientation::Vertical).accessible_role(gtk::AccessibleRole::Dialog).build();
     pal.add_css_class("pal");
-    pal.update_property(&[gtk::accessible::Property::Label("Go to a session")]);
+    pal.update_property(&[gtk::accessible::Property::Label("Find a session, or a new idea")]);
 
     let top = w::hbox(12, &["pal-in"]);
-    top.append(&w::label("GO TO", &["mark"]));
-    let entry = gtk::Entry::builder().placeholder_text("Type a project, a title or a tab…").hexpand(true).build();
-    entry.update_property(&[gtk::accessible::Property::Label("Filter sessions")]);
+    // Its two tabs (Tab switches between them).
+    let tabs = w::hbox(2, &["paltabs"]);
+    for (name, label) in [("pal-find", "Find"), ("pal-idea", "New idea")] {
+        let b = gtk::Button::with_label(label);
+        b.add_css_class("paltab");
+        b.set_widget_name(name);
+        b.set_focusable(false);
+        tabs.append(&b);
+    }
+    top.append(&tabs);
+    let entry = gtk::Entry::builder().placeholder_text(FIND_HINT).hexpand(true).build();
+    entry.update_property(&[gtk::accessible::Property::Label("Find a session")]);
     entry.add_css_class("bare");
     top.append(&entry);
     pal.append(&top);
@@ -35,16 +49,9 @@ pub fn widgets() -> (gtk::Box, gtk::Entry, gtk::Box, gtk::Box, gtk::ScrolledWind
     let inside_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&inside).min_content_height(420).hexpand(true).build();
     cols.append(&inside_scroll);
     pal.append(&cols);
-    // The keys: in a narrow window the less needed ones drop out.
+    // The keys (each tab's own, drawn by `footer`): in a narrow window the less needed drop out.
     let ft = crate::layout::Squeeze::new(16, &["pal-ft"]);
-    for (prio, (keys, word)) in [(&["↑", "↓"][..], "choose"), (&["Enter"], "go to"), (&["→"], "look inside"), (&["←"], "back"), (&["Esc"], "close")].into_iter().enumerate() {
-        let b = w::hbox(4, &[]);
-        for k in keys {
-            b.append(&w::kbd(k));
-        }
-        b.append(&w::label(word, &[]));
-        ft.add(&b, [2, 0, 3, 4, 1][prio]);
-    }
+    ft.set_widget_name("pal-ft");
     pal.append(&ft);
     // 900 px wide when there is room, else the window's width less a margin each side.
     let fit = w::Fit::new(&pal, 0, Some(900)).upcast();
@@ -132,15 +139,78 @@ pub fn selected_session(ui: &Ui) -> Option<String> {
     it.get(i).map(|x| x.session().id.clone())
 }
 
+const FIND_HINT: &str = "Find a session: type a project, a title or a tab…";
+const IDEA_HINT: &str = "New idea: what did you notice? Enter keeps it";
+
+/// Find: the pop-up on its Find tab.
 pub fn open(ui: &Ui) {
+    open_tab(ui, false);
+}
+
+/// New idea: the pop-up on its New idea tab.
+pub fn open_idea(ui: &Ui) {
+    open_tab(ui, true);
+}
+
+/// Switches tab: what was typed goes (a search is no idea), the keyboard stays in the box.
+fn set_tab(ui: &Ui, idea: bool) {
+    {
+        let mut st = ui.st.borrow_mut();
+        if st.sw.idea == idea {
+            return;
+        }
+        st.sw = app::Sw { open: true, idea, ..Default::default() };
+    }
+    ui.w.sw_entry.set_text("");
+    show_tab(ui);
+    render(ui);
+    ui.w.sw_entry.grab_focus();
+}
+
+/// The tab buttons, the box's hint and the keys, for the tab that is showing.
+fn show_tab(ui: &Ui) {
+    let idea = ui.st.borrow().sw.idea;
+    let root: gtk::Widget = ui.w.switcher.clone().upcast();
+    for (name, on) in [("pal-find", !idea), ("pal-idea", idea)] {
+        if let Some(b) = panel::find_named(&root, name) {
+            if on {
+                b.add_css_class("on");
+            } else {
+                b.remove_css_class("on");
+            }
+        }
+    }
+    ui.w.sw_entry.set_placeholder_text(Some(if idea { IDEA_HINT } else { FIND_HINT }));
+    ui.w.sw_entry.update_property(&[gtk::accessible::Property::Label(if idea { "New idea" } else { "Find a session" })]);
+    if let Some(ft) = panel::find_named(&root, "pal-ft").and_downcast::<crate::layout::Squeeze>() {
+        ft.clear();
+        let keys: &[(&[&str], &str, i32)] = if idea {
+            &[(&["↑", "↓"], "choose the project", 2), (&["Enter"], "keep it", 0), (&["Tab"], "Find", 3), (&["Esc"], "close", 1)]
+        } else {
+            &[(&["↑", "↓"], "choose", 2), (&["Enter"], "go to", 0), (&["→"], "look inside", 4), (&["←"], "back", 5), (&["Tab"], "New idea", 3), (&["Esc"], "close", 1)]
+        };
+        for (ks, word, prio) in keys {
+            let b = w::hbox(4, &[]);
+            for k in *ks {
+                b.append(&w::kbd(k));
+            }
+            b.append(&w::label(word, &[]));
+            ft.add(&b, *prio);
+        }
+    }
+}
+
+fn open_tab(ui: &Ui, idea: bool) {
     if ui.st.borrow().sw.open {
+        set_tab(ui, idea);
         ui.w.sw_entry.grab_focus();
         return;
     }
     // Esc puts the keyboard back where it was (the panel, the rail...), not always on the list.
     RETURN_TO.with(|r| *r.borrow_mut() = gtk::prelude::GtkWindowExt::focus(&ui.window));
-    ui.st.borrow_mut().sw = app::Sw { open: true, ..Default::default() };
+    ui.st.borrow_mut().sw = app::Sw { open: true, idea, ..Default::default() };
     ui.w.sw_entry.set_text("");
+    show_tab(ui);
     ui.w.switcher.set_visible(true);
     // It fades and grows in a little; the keyboard is already in it.
     crate::motion::pop(&ui.w.switcher);
@@ -162,12 +232,22 @@ pub fn open(ui: &Ui) {
                     return;
                 }
                 st.sw.q = e.text().to_string();
+                if st.sw.idea {
+                    // An idea being typed: nothing to filter.
+                    return;
+                }
                 st.sw.sel_id = None;
                 st.sw.in_subs = false;
                 st.sw.expanded = None;
             }
             render(&ui2);
         });
+        for (name, idea) in [("pal-find", false), ("pal-idea", true)] {
+            if let Some(b) = panel::find_named(ui.w.switcher.upcast_ref(), name).and_downcast::<gtk::Button>() {
+                let ui2 = ui.clone();
+                b.connect_clicked(move |_| set_tab(&ui2, idea));
+            }
+        }
         let click = gtk::GestureClick::new();
         let ui2 = ui.clone();
         click.connect_pressed(move |g, _, x, y| {
@@ -216,6 +296,12 @@ pub fn show_subs_of(ui: &Ui, id: Option<String>) {
 
 /// The rows, every one-line label ready to shorten, so a narrow switcher cuts nothing off.
 pub fn render(ui: &Ui) {
+    if ui.st.borrow().sw.idea {
+        render_idea(ui);
+        w::shrinkable(ui.w.sw_list.upcast_ref());
+        w::shrinkable(ui.w.sw_inside.upcast_ref());
+        return;
+    }
     render_rows(ui);
     w::shrinkable(ui.w.sw_list.upcast_ref());
     columns(ui);
@@ -262,7 +348,7 @@ fn render_rows(ui: &Ui) {
             _ => "Not open · Enter reopens",
         };
         if group != last_group {
-            list.append(&w::label(&group.to_uppercase(), &["pgrp"]));
+            list.append(&w::label(group, &["pgrp"]));
             last_group = group;
         }
         let row = w::vbox(2, &["prow"]);
@@ -443,6 +529,14 @@ fn choose(ui: &Ui) {
 
 pub fn on_key(ui: &Ui, key: gdk::Key) -> glib::Propagation {
     use glib::Propagation::{Proceed, Stop};
+    let idea = ui.st.borrow().sw.idea;
+    if matches!(key, gdk::Key::Tab | gdk::Key::ISO_Left_Tab) {
+        set_tab(ui, !idea);
+        return Stop;
+    }
+    if idea {
+        return idea_key(ui, key);
+    }
     let in_subs = ui.st.borrow().sw.in_subs;
     match key {
         gdk::Key::Down | gdk::Key::Up => {
@@ -525,7 +619,144 @@ pub fn on_key(ui: &Ui, key: gdk::Key) -> glib::Propagation {
             }
             Stop
         }
-        gdk::Key::Tab | gdk::Key::ISO_Left_Tab => Stop,
         _ => Proceed,
     }
+}
+
+// ---------- New idea ----------
+
+/// The projects an idea can be kept in: unsorted first, then as the Projects view lists them.
+fn idea_projects(ui: &Ui) -> Vec<(Option<String>, String, String)> {
+    let st = ui.st.borrow();
+    let mut ps: Vec<&ProjectSummary> = st.ov.as_ref().map(|ov| ov.projects.iter().filter(|p| !p.removed).collect()).unwrap_or_default();
+    ps.sort_by(|a, b| crate::views::by_project(a, b));
+    let mut out = vec![(None, "Unsorted".to_string(), "quiet".to_string())];
+    out.extend(ps.into_iter().map(|p| (Some(p.id.clone()), p.name.clone(), format!("pc-{}", crate::setview::colour_of(p)))));
+    out
+}
+
+/// The project you are looking at, if any: the open details', the selected row's, the filter's.
+fn guess_project(ui: &Ui) -> Option<String> {
+    let st = ui.st.borrow();
+    let ov = st.ov.as_ref()?;
+    let of_session = |sid: &str| ov.sessions.iter().find(|s| s.id == sid).and_then(|s| s.project.clone());
+    match &st.drawer {
+        Some(app::Drawer::Project(id)) => return Some(id.clone()),
+        Some(app::Drawer::Session(id)) => return of_session(id),
+        None => {}
+    }
+    match st.view {
+        app::View::Monitor | app::View::History => st.sel.as_deref().and_then(of_session),
+        app::View::Projects => st.sel.clone(),
+        app::View::Agents => crate::agents::selected_proc(&st).and_then(|p| p.session_id.clone()).and_then(|sid| of_session(&sid)),
+        _ => None,
+    }
+    .or_else(|| st.proj_filter.clone())
+}
+
+/// The chosen project's place in `idea_projects`.
+fn idea_sel(ui: &Ui, ps: &[(Option<String>, String, String)]) -> usize {
+    let chosen = ui.st.borrow().sw.proj.clone().unwrap_or_else(|| guess_project(ui));
+    ps.iter().position(|p| p.0 == chosen).unwrap_or(0)
+}
+
+fn render_idea(ui: &Ui) {
+    if !ui.st.borrow().sw.open {
+        return;
+    }
+    let ps = idea_projects(ui);
+    let i = idea_sel(ui, &ps);
+    let list = &ui.w.sw_list;
+    w::clear(list);
+    list.append(&w::label("Keep it in", &["pgrp"]));
+    for (n, (id, name, dot)) in ps.iter().enumerate() {
+        let row = w::vbox(2, &["prow"]);
+        if n == i {
+            row.add_css_class("sel");
+        }
+        let line = w::hbox(10, &[]);
+        line.append(&w::dot(dot));
+        let l = w::clip(name, &["t"]);
+        line.append(&l);
+        row.append(&line);
+        let click = gtk::GestureClick::new();
+        let (ui2, id) = (ui.clone(), id.clone());
+        click.connect_released(move |_, _, _, _| {
+            ui2.st.borrow_mut().sw.proj = Some(id.clone());
+            render(&ui2);
+            ui2.w.sw_entry.grab_focus();
+        });
+        row.add_controller(click);
+        list.append(&row);
+    }
+    // Beside: what is already noted there, newest first.
+    let el = &ui.w.sw_inside;
+    w::clear(el);
+    let (id, name, _) = &ps[i];
+    let ih = w::vbox(3, &["ih"]);
+    ih.append(&w::wrap(&format!("Ideas in {name}"), &["b"]));
+    ih.append(&w::wrap("Enter keeps what you typed here; you can sort it later in Ideas.", &["s"]));
+    el.append(&ih);
+    let ideas: Vec<Idea> = ui.st.borrow().ideas.iter().flatten().filter(|x| x.state == "inbox" && &x.project == id).take(8).cloned().collect();
+    if ideas.is_empty() {
+        el.append(&w::wrap("None yet.", &["none", "pad4"]));
+    }
+    for x in ideas {
+        let note = w::vbox(2, &["idea-peek"]);
+        note.append(&w::wrap(&x.text, &[]));
+        note.append(&w::label(&fmt::short_when(Some(&x.at)), &["s"]));
+        el.append(&note);
+    }
+}
+
+fn idea_key(ui: &Ui, key: gdk::Key) -> glib::Propagation {
+    use glib::Propagation::{Proceed, Stop};
+    match key {
+        gdk::Key::Down | gdk::Key::Up => {
+            let ps = idea_projects(ui);
+            let i = idea_sel(ui, &ps) as i32 + if key == gdk::Key::Down { 1 } else { -1 };
+            let next = i.clamp(0, ps.len() as i32 - 1) as usize;
+            ui.st.borrow_mut().sw.proj = Some(ps[next].0.clone());
+            render(ui);
+            Stop
+        }
+        gdk::Key::Return | gdk::Key::KP_Enter => {
+            keep_idea(ui);
+            Stop
+        }
+        gdk::Key::Escape => {
+            close(ui);
+            Stop
+        }
+        _ => Proceed,
+    }
+}
+
+/// Keeps the typed idea in the chosen project, says so, and closes.
+fn keep_idea(ui: &Ui) {
+    let text = ui.w.sw_entry.text().trim().to_string();
+    if text.is_empty() {
+        return;
+    }
+    let ps = idea_projects(ui);
+    let (project, name, _) = ps[idea_sel(ui, &ps)].clone();
+    close(ui);
+    app::bg(
+        ui,
+        move |src| src.add_idea(&text, project.as_deref()),
+        move |ui, r| match r {
+            Ok(idea) => {
+                app::toast(ui, &if idea.project.is_some() { format!("Kept in {name}.") } else { "Kept, unsorted.".to_string() }, false);
+                if let Some(ideas) = ui.st.borrow_mut().ideas.as_mut() {
+                    ideas.insert(0, idea);
+                }
+                app::refresh(ui);
+                if ui.st.borrow().view == app::View::Ideas {
+                    crate::views::render_chips(ui);
+                    crate::views::render_view(ui);
+                }
+            }
+            Err(e) => app::toast(ui, &e, true),
+        },
+    );
 }

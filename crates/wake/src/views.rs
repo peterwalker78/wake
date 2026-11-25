@@ -350,7 +350,9 @@ pub fn render_top(ui: &Ui) {
                 name.set_ellipsize(gtk::pango::EllipsizeMode::End);
                 inner.append(&name);
             }
-            if !(icons_only || bottom) && let Some(b) = badge {
+            if !(icons_only || bottom)
+                && let Some(b) = badge
+            {
                 inner.append(&b);
             }
             b.set_child(Some(&inner));
@@ -1104,12 +1106,7 @@ fn monitor(ui: &Ui) {
             return w::empty(big, small);
         }
         let b = w::empty(big, "");
-        let l = w::wrap(
-            &format!(
-                "{small}\n\nWake lists every Claude Code and Codex session on this computer: which is working, which is waiting for you, and where it runs."
-            ),
-            &[],
-        );
+        let l = w::wrap(&format!("{small}\n\nWake lists every Claude Code and Codex session on this computer: which is working, which is waiting for you, and where it runs."), &[]);
         l.set_xalign(0.0);
         // A block about as wide as a paragraph, centred like the other empty states.
         b.append(&w::Fit::new(&l, 0, Some(520)).upcast());

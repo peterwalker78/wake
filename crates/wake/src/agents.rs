@@ -247,7 +247,8 @@ pub fn render(ui: &Ui) {
     let sub_words = |st: &app::AppState| {
         let p = st.procs.as_ref()?;
         let (n, b) = stale_summary(p);
-        let stale = if n == 0 { "Nothing looks stale".to_string() } else { format!("{n} {} stale and {} {}", if n == 1 { "looks" } else { "look" }, if n == 1 { "holds" } else { "hold" }, fmt::bytes(b)) };
+        let stale =
+            if n == 0 { "Nothing looks stale".to_string() } else { format!("{n} {} stale and {} {}", if n == 1 { "looks" } else { "look" }, if n == 1 { "holds" } else { "hold" }, fmt::bytes(b)) };
         Some(match st.mem_available {
             Some(m) => format!("{stale} · {} of memory free on this machine", fmt::bytes(m)),
             None => stale,

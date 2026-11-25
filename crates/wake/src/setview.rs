@@ -498,15 +498,7 @@ mod tests {
         let kinds: Vec<(&str, Kind)> = secs.iter().flat_map(|s| s.1.iter().map(|r| (r.key.as_str(), r.kind))).collect();
         assert_eq!(
             kinds,
-            [
-                ("ai", Kind::Segments),
-                ("theme", Kind::Segments),
-                ("accent", Kind::Swatches),
-                ("motion", Kind::Switch),
-                ("start", Kind::Dropdown),
-                ("remote", Kind::Segments),
-                ("notify", Kind::Switch)
-            ]
+            [("ai", Kind::Segments), ("theme", Kind::Segments), ("accent", Kind::Swatches), ("motion", Kind::Switch), ("start", Kind::Dropdown), ("remote", Kind::Segments), ("notify", Kind::Switch)]
         );
         for (_, rows) in &secs {
             for r in rows {

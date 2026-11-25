@@ -204,8 +204,8 @@ window.wake entry.search { font-size: 14px; min-height: 38px; border-radius: 8px
 .why { color: @rose; font-size: 12px; }
 .noreadout { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; border: 1px dashed @line; border-radius: 7px; padding: 8px 9px; }
 .agentrow .cell { padding: 7px 12px; }
-.pgrp { font-weight: 700; font-size: 14px; color: @ink; padding: 20px 16px 6px; }
-.pgrpsub { font-size: 12px; color: @dim; padding: 0 14px 6px; }
+.pgrp { padding: 22px 14px 8px; }
+
 .confirm-list { background-color: @bg; border: 1px solid @line; border-radius: 8px; padding: 8px 10px; }
 .mono { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
 
@@ -739,3 +739,8 @@ list.table > row.gridrow, list.table > row.gridrow:hover { border-bottom: none; 
 .note.done .notetx { text-decoration-line: line-through; color: @muted; }
 window.wake dropdown.notedd > button { min-width: 0; background-color: transparent; border-color: transparent; font-size: 12px; }
 window.wake dropdown.notedd > button:hover { border-color: @line2; }
+
+/* Agents: the page title over the table, sharing its left edge */
+.agentstitle { padding: 24px 14px 12px; }
+.agentacts { margin-right: 14px; }
+.warnline { color: @amber; }

@@ -145,9 +145,12 @@ pub fn ordered_by<'a>(p: &'a ProcOverview, stale_only: bool, by: &Sort) -> Vec<(
     let folded = folded(p);
     let top: Vec<&AgentProc> = p.procs.iter().filter(|a| !folded.contains(&a.pid)).filter(|a| !stale_only || is_stale(a)).collect();
     let mut out = Vec::new();
-    for (kind, group) in [(ProcKind::Daemon, "Claude's daemon"), (ProcKind::Session, "Sessions"), (ProcKind::PtyHost, "Terminal hosts"), (ProcKind::Spare, "Spares"), (ProcKind::Stray, "Strays")] {
-        let mut these: Vec<&AgentProc> = top.iter().copied().filter(|a| a.kind == kind).collect();
-        these.sort_by_key(|a| (a.stale_reason.is_some(), a.start_ticks.unwrap_or(u64::MAX), a.pid));
+    // What to act on first: what looks stale, then sessions by what they are doing, then Claude's
+    // own background processes, then what Wake can't place. Within a group, as they started (memory
+    // never reorders them, so nothing moves under the pointer).
+    for group in GROUPS {
+        let mut these: Vec<&AgentProc> = top.iter().copied().filter(|a| group_of(a) == group).collect();
+        these.sort_by_key(|a| (a.start_ticks.unwrap_or(u64::MAX), a.pid));
         if let Some((k, rev)) = by {
             sort::agents(&mut these, k, *rev);
         }
@@ -162,6 +165,23 @@ pub fn ordered_by<'a>(p: &'a ProcOverview, stale_only: bool, by: &Sort) -> Vec<(
         }
     }
     out
+}
+
+/// The groups, in the order they are shown.
+const GROUPS: [&str; 6] = ["Look stale", "Working", "Waiting for you", "Idle", "In the background", "Not matched"];
+
+/// Which group an agent process is in (subagents go under their session, never in a group).
+fn group_of(a: &AgentProc) -> &'static str {
+    if is_stale(a) {
+        return "Look stale";
+    }
+    match (a.kind, a.state) {
+        (ProcKind::Session, State::Working) => "Working",
+        (ProcKind::Session, State::Waiting) => "Waiting for you",
+        (ProcKind::Session, _) => "Idle",
+        (ProcKind::Stray, _) => "Not matched",
+        _ => "In the background",
+    }
 }
 
 /// The session behind a row, from the overview: its subagent counts.
@@ -189,14 +209,6 @@ fn signature(st: &app::AppState, p: &ProcOverview) -> String {
     format!("{}{}{}{low:?}{:?}{}{rows:?}{by:?}{mem:?}", st.stale_only, st.full_readouts, app::compact(st), p.dead_notes, st.lay.tight)
 }
 
-/// A label that wraps to whatever width it is given and never asks for more.
-fn wraps(l: &gtk::Label) {
-    l.set_wrap(true);
-    l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    l.set_max_width_chars(1);
-    l.set_natural_wrap_mode(gtk::NaturalWrapMode::Inherit);
-}
-
 pub fn render(ui: &Ui) {
     let (procs, sig, stale_only, full, compact) = {
         let st = ui.st.borrow();
@@ -208,7 +220,8 @@ pub fn render(ui: &Ui) {
             return;
         };
         let sig = signature(&st, &p);
-        (p, sig, st.stale_only, st.full_readouts, app::compact(&st))
+        // Every agent shows: the stale ones are the first group (the old "Looks stale" filter is gone).
+        (p, sig, false, st.full_readouts, app::compact(&st))
     };
     let p = procs;
     ui.scope.borrow_mut().follow(&followers(&p), &p.dead_notes);
@@ -221,45 +234,47 @@ pub fn render(ui: &Ui) {
     ui.readouts.borrow_mut().clear();
     // The top line: what agents hold, and how much of it looks stale (kept current in place).
     w::clear(&vw.top);
-    // A narrow list stacks the three, each whole, as a phone's summary does.
-    let stack = app::cards(&ui.st.borrow());
-    let line = if stack { w::vbox(2, &["memline"]) } else { w::hbox(14, &["memline"]) };
-    let total = w::label(&format!("Agents are using {}", fmt::bytes(p.total_rss_bytes)), &["memtotal"]);
+    // The page title, as every screen's: what agents hold, then how much looks stale and what is free.
+    let line = w::vbox(4, &["pagetitle", "agentstitle"]);
+    let total = w::wrap(&format!("Agents are using {}", fmt::bytes(p.total_rss_bytes)), &["title-1"]);
+    total.set_xalign(0.0);
     live_text(ui, View::Agents, &total, |st| st.procs.as_ref().map(|p| format!("Agents are using {}", fmt::bytes(p.total_rss_bytes))));
     line.append(&total);
-    let stale_words = |p: &ProcOverview| {
+    let sub_words = |st: &app::AppState| {
+        let p = st.procs.as_ref()?;
         let (n, b) = stale_summary(p);
-        if n == 0 { "nothing looks stale".to_string() } else { format!("{n} {} stale and {} {}", if n == 1 { "looks" } else { "look" }, if n == 1 { "holds" } else { "hold" }, fmt::bytes(b)) }
+        let stale = if n == 0 { "Nothing looks stale".to_string() } else { format!("{n} {} stale and {} {}", if n == 1 { "looks" } else { "look" }, if n == 1 { "holds" } else { "hold" }, fmt::bytes(b)) };
+        Some(match st.mem_available {
+            Some(m) => format!("{stale} · {} of memory free on this machine", fmt::bytes(m)),
+            None => stale,
+        })
     };
-    let stale = w::label(&stale_words(&p), &[if stale_summary(&p).0 > 0 { "memstale" } else { "memok" }]);
-    // In a narrow window these shorten rather than widen the window.
-    if stack {
-        wraps(&stale);
-    } else {
-        stale.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let sub = w::wrap(&sub_words(&ui.st.borrow()).unwrap_or_default(), &["dim"]);
+    sub.set_xalign(0.0);
+    if stale_summary(&p).0 > 0 || ui.st.borrow().mem_available.is_some_and(|m| m < 3 << 30) {
+        sub.add_css_class("warnline");
     }
-    stale.set_tooltip_text(Some("Stale: idle for hours with no window, or a spare nobody used. Stopping frees the memory; the conversation is kept."));
-    live_text(ui, View::Agents, &stale, move |st| st.procs.as_ref().map(stale_words));
-    line.append(&stale);
-    if !stack {
-        line.append(&w::spacer());
+    sub.set_tooltip_text(Some("Stale: idle for hours with no window, or a spare nobody used. Stopping frees the memory; the conversation is kept."));
+    live_text(ui, View::Agents, &sub, sub_words);
+    line.append(&sub);
+    // The title line: the title, and at its end the page's two actions.
+    let head = w::hbox(8, &[]);
+    line.set_hexpand(true);
+    head.append(&line);
+    let acts = w::hbox(8, &["agentacts"]);
+    acts.set_valign(gtk::Align::Center);
+    let full_now = ui.st.borrow().full_readouts;
+    let ui2 = ui.clone();
+    let b = w::button(if full_now { "Small waves" } else { "Full readouts" }, Some("v"), &[], move || toggle_readouts(&ui2));
+    b.set_tooltip_text(Some(if full_now { "Show a small wave per agent (v)" } else { "Show each agent's readout as your screensaver draws it (v)" }));
+    acts.append(&b);
+    let n_stale = stale_summary(&p).0;
+    if n_stale > 0 {
+        let ui2 = ui.clone();
+        acts.append(&w::button(&format!("Stop all stale ({n_stale})"), Some("Shift+S"), &["danger"], move || stop_all_stale(&ui2)));
     }
-    let mem = ui.st.borrow().mem_available;
-    if let Some(m) = mem {
-        let l = w::label(&format!("{} of memory free on this machine", fmt::bytes(m)), &["memfree"]);
-        if stack {
-            wraps(&l);
-        } else {
-            l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        }
-        if m < 3 << 30 {
-            l.add_css_class("low");
-            l.set_tooltip_text(Some("Memory is running low. Stopping stale agents gives theirs back."));
-        }
-        live_text(ui, View::Agents, &l, |st| st.mem_available.map(|m| format!("{} of memory free on this machine", fmt::bytes(m))));
-        line.append(&l);
-    }
-    vw.top.append(&line);
+    head.append(&acts);
+    vw.top.append(&head);
     let hide = hidden_cols(compact, ui.st.borrow().lay.tight, p.procs.iter().any(|a| where_words(a).is_some()), p.procs.iter().any(|a| a.stale_reason.is_some()) || !p.dead_notes.is_empty());
     let cols = cols(full, hide);
     vw.head.append(&views::sort_head(ui, View::Agents, &cols, &sort_keys(hide)));
@@ -272,10 +287,13 @@ pub fn render(ui: &Ui) {
         ));
     }
     let daemon = p.procs.iter().find(|a| a.kind == ProcKind::Daemon).map(|a| a.pid);
+    // Each group's count, of its top-level rows (subagents sit under their session).
+    let rows_in: Vec<&str> = rows.iter().filter(|(_, a)| a.kind != ProcKind::Subagent).map(|(g, _)| *g).collect();
     let mut last_group = "";
     for (group, a) in rows {
         if group != last_group {
-            vw.list.append(&views::group_row(group, group_words(group)));
+            let n = rows_in.iter().filter(|g| **g == group).count();
+            vw.list.append(&views::group_row(group, n, group_words(group)));
             last_group = group;
         }
         vw.list.append(&proc_row(ui, a, daemon, &p, &cols, full, hide));
@@ -285,7 +303,7 @@ pub fn render(ui: &Ui) {
         }
     }
     if !stale_only && !p.dead_notes.is_empty() {
-        vw.list.append(&views::group_row("Notes whose process has gone", None));
+        vw.list.append(&views::group_row("Notes whose process has gone", p.dead_notes.len(), None));
         for &pid in &p.dead_notes {
             vw.list.append(&dead_row(ui, pid, &cols, full, hide));
         }
@@ -311,16 +329,16 @@ pub fn render(ui: &Ui) {
 /// What a group of agent processes is, under its heading, for someone who hasn't met it before.
 fn group_words(group: &str) -> Option<&'static str> {
     match group {
-        "Claude's daemon" => Some("Runs your background sessions. Wake never stops it."),
-        "Terminal hosts" => Some("Each keeps a background session's terminal alive."),
-        "Spares" => Some("Claude starts one early so the next session opens fast. Unused ones are safe to stop."),
-        "Strays" => Some("Agent processes Wake can't match to a session or window. Check before stopping."),
+        "Look stale" => Some("Idle for hours with nothing attached, or a spare nobody used. Stopping one frees its memory; the conversation is kept."),
+        "In the background" => Some("Claude's daemon (it runs your background sessions; Wake never stops it), terminal hosts and spare sessions."),
+        "Not matched" => Some("Agent processes Wake can't match to a session or window. Check before stopping."),
         _ => None,
     }
 }
 
 fn wave_cell(ui: &Ui, a: &AgentProc, full: bool) -> gtk::Widget {
-    match &a.note {
+    // A wave only while it works: an idle agent's flat line says nothing its state doesn't.
+    match a.note.as_ref().filter(|_| a.state == State::Working || full) {
         Some(n) => {
             let what = format!("PID {}, {}", a.pid, if n.idle { "idle" } else { "working" });
             let area = if full { scope::readout(&ui.scope, a.pid, scope::rows(&n.helpers).len(), &what) } else { scope::mini(&ui.scope, a.pid, &what) };
@@ -1702,9 +1720,10 @@ mod tests {
     #[test]
     fn rows_keep_their_order_when_memory_changes() {
         let mut p = ProcOverview { procs: vec![a(30, ProcKind::Session, 100, 300, None), a(20, ProcKind::Session, 900, 200, None), a(10, ProcKind::Daemon, 50, 100, None)], ..Default::default() };
-        assert_eq!(pids(&p, false), [10, 20, 30]);
+        // Sessions by state, as they started; Claude's daemon in the background group after them.
+        assert_eq!(pids(&p, false), [20, 30, 10]);
         p.procs[0].rss_bytes = 5000 << 20;
-        assert_eq!(pids(&p, false), [10, 20, 30], "memory never reorders");
+        assert_eq!(pids(&p, false), [20, 30, 10], "memory never reorders");
     }
 
     #[test]
@@ -1817,7 +1836,7 @@ mod tests {
         s1.ppid = 10;
         let s2 = a(13, ProcKind::Subagent, 100, 30, None);
         let p = ProcOverview { procs: vec![a(20, ProcKind::Session, 100, 5, None), parent, host, s1, s2], ..Default::default() };
-        assert_eq!(pids(&p, false), [20, 10, 13, 12], "subagents right after their session, as they started");
+        assert_eq!(pids(&p, false), [10, 13, 12, 20], "the stale session first, its subagents right after it as they started");
         assert_eq!(pids(&p, true), [10]);
         assert_eq!(stale_summary(&p), (1, 700 << 20));
         let mut x = a(14, ProcKind::Subagent, 1, 1, Some("x"));

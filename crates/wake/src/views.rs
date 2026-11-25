@@ -666,7 +666,8 @@ pub fn render_chips(ui: &Ui) {
     let hide = {
         let st = ui.st.borrow();
         // History's search box says what it searches.
-        st.view == View::Settings || st.view == View::History || (st.view == View::Monitor && st.proj_filter.is_none())
+        // Agents has its two actions on its title line.
+        st.view == View::Settings || st.view == View::History || st.view == View::Agents || (st.view == View::Monitor && st.proj_filter.is_none())
     };
     ui.w.chips.set_visible(!hide);
     let sig = chips_sig(&ui.st.borrow());
@@ -737,17 +738,8 @@ pub fn render_chips(ui: &Ui) {
             }
         }
         View::Agents => {
-            chips.add_next(&w::label("Agents", &["ttl"]));
-            // The counts are the rows each chip shows.
-            let (n, stale) = st.procs.as_ref().map_or((0, 0), |p| (agents::row_count(p, false), agents::row_count(p, true)));
-            for (only, l, count) in [(false, "Everything", n), (true, "Looks stale", stale)] {
-                let ui = ui.clone();
-                chips.add_next(&chip(l, Some(count), st.stale_only == only, move || {
-                    ui.st.borrow_mut().stale_only = only;
-                    agents::render(&ui);
-                    render_chips(&ui);
-                }));
-            }
+            // No filter: what looks stale is the first group. The row keeps the two actions.
+            let stale = st.procs.as_ref().map_or(0, |p| agents::row_count(p, true));
             chips.add_next(&w::spacer());
             let ui2 = ui.clone();
             let full = st.full_readouts;
@@ -998,22 +990,26 @@ pub const ROW_HINT: &str = "Double-click for details · Enter";
 
 /// A heading row in a table (a day in History, a group in Agents): never selected or focused.
 /// A heading in a list, with an optional dim line under it saying what the group is.
-pub fn group_row(title: &str, sub: Option<&str>) -> gtk::ListBoxRow {
+pub fn group_row(title: &str, n: usize, sub: Option<&str>) -> gtk::ListBoxRow {
     let r = gtk::ListBoxRow::new();
     r.set_selectable(false);
     r.set_activatable(false);
     r.set_focusable(false);
     r.add_css_class("grouprow");
-    let head = w::label(title, &["pgrp", "heading"]);
-    match sub {
-        Some(sub) => {
-            let b = w::vbox(0, &[]);
-            b.append(&head);
-            b.append(&w::wrap(sub, &["pgrpsub"]));
-            r.set_child(Some(&b));
-        }
-        None => r.set_child(Some(&head)),
+    // The same heading as every section: its name, how many, and what the group is.
+    let b = w::vbox(2, &["pgrp"]);
+    let head = w::hbox(8, &[]);
+    head.append(&w::label(title, &["heading"]));
+    if n > 0 {
+        head.append(&w::label(&n.to_string(), &["dim", "count"]));
     }
+    b.append(&head);
+    if let Some(sub) = sub {
+        let l = w::wrap(sub, &["dim", "caption"]);
+        l.set_xalign(0.0);
+        b.append(&l);
+    }
+    r.set_child(Some(&b));
     r
 }
 

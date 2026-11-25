@@ -1395,9 +1395,12 @@ fn monitor(ui: &Ui) {
     };
     let stable: Vec<String> = rows.iter().map(stable_key).collect();
     let colours: Vec<String> = ui.st.borrow().ov.as_ref().map(|o| o.projects.iter().map(crate::setview::colour_of).collect()).unwrap_or_default();
-    let sig = format!("{filter:?}{pf:?}{compact}{stable:?}{}{:?}{colours:?}{}", crate::behind::sig(ui), prefs::sort_of(View::Monitor), loc_sig(ui));
+    let tally = monitor_tally(ui);
+    let waves: Vec<u32> = rows.iter().filter_map(|s| wave_pid(ui, s)).collect();
+    let sig = format!("{filter:?}{pf:?}{compact}{stable:?}{}{colours:?}{}{tally:?}{waves:?}", crate::behind::sig(ui), loc_sig(ui));
     let Some(had_focus) = begin(ui, View::Monitor, sig) else { return };
     let vw = &ui.w.views[&View::Monitor];
+    w::clear(&vw.top);
     // An empty board also says what it is for, for someone who hasn't seen it full.
     let empty = |big: &str, small: &str, about: bool| {
         if !about {
@@ -1443,11 +1446,249 @@ fn monitor(ui: &Ui) {
         vw.empty.append(&b);
         return;
     }
-    vw.head.append(&table_head(ui, View::Monitor, &session_cols("Now", compact), &session_keys(compact)));
-    for s in &rows {
-        vw.list.append(&session_row(ui, View::Monitor, s, now_cell(s), compact));
-    }
+    // The headline scrolls away with the board, so a long board keeps the room.
+    let head = gtk::ListBoxRow::new();
+    head.set_selectable(false);
+    head.set_activatable(false);
+    head.set_focusable(false);
+    head.add_css_class("grouprow");
+    head.add_css_class("herorow");
+    head.set_child(Some(&hero(tally)));
+    vw.list.append(&head);
+    agents::follow_notes(ui);
+    ui.readouts.borrow_mut().clear();
+    board(ui, &rows, compact);
     finish(ui, View::Monitor, had_focus);
+    agents::ensure_ticking(ui);
+}
+
+// ---------- Monitor: the board ----------
+//
+// Not a table: what needs you as cards, with the question in large type and the way there under
+// it; then what is working, each with its live wave; then everything else, one quiet line each.
+
+/// Waiting, working and the rest, among the sessions the project filter lets through.
+fn monitor_tally(ui: &Ui) -> (usize, usize, usize) {
+    let st = ui.st.borrow();
+    let Some(ov) = &st.ov else { return (0, 0, 0) };
+    let mine: Vec<&SessionSummary> = ov.sessions.iter().filter(|s| st.proj_filter.is_none() || s.project == st.proj_filter).collect();
+    let n = |f: &dyn Fn(&SessionSummary) -> bool| mine.iter().filter(|s| f(s)).count();
+    (n(&|s| s.state == State::Waiting), n(&|s| s.state == State::Working), n(&|s| s.state == State::Idle))
+}
+
+/// The headline over the board: how many need you, in large type, and the rest in a line.
+fn hero((waiting, working, idle): (usize, usize, usize)) -> gtk::Box {
+    let b = w::vbox(2, &["hero"]);
+    let (big, class) = match waiting {
+        0 => ("Nothing needs you right now".to_string(), "calm"),
+        1 => ("1 session needs you".to_string(), "needs"),
+        n => (format!("{n} sessions need you"), "needs"),
+    };
+    let h = w::wrap(&big, &["hero-big", class]);
+    h.set_xalign(0.0);
+    b.append(&h);
+    let mut rest = Vec::new();
+    if working > 0 {
+        rest.push(format!("{working} working"));
+    }
+    if idle > 0 {
+        rest.push(format!("{idle} idle"));
+    }
+    let sub = if rest.is_empty() { "No agent is busy.".to_string() } else { format!("{}.", rest.join(" · ")) };
+    let l = w::wrap(&sub, &["hero-sub"]);
+    l.set_xalign(0.0);
+    b.append(&l);
+    b
+}
+
+/// The board's rows, in three groups; a group with nothing in it isn't shown.
+fn board(ui: &Ui, rows: &[SessionSummary], compact: bool) {
+    let vw = &ui.w.views[&View::Monitor];
+    let waiting: Vec<&SessionSummary> = rows.iter().filter(|s| s.state == State::Waiting).collect();
+    let working: Vec<&SessionSummary> = rows.iter().filter(|s| s.state == State::Working).collect();
+    let rest: Vec<&SessionSummary> = rows.iter().filter(|s| !matches!(s.state, State::Waiting | State::Working)).collect();
+    let narrow = compact || app::cards(&ui.st.borrow());
+    if !waiting.is_empty() {
+        vw.list.append(&section_row("Needs you", waiting.len(), "needs"));
+        for s in waiting {
+            vw.list.append(&ask_card(ui, s));
+        }
+    }
+    if !working.is_empty() {
+        vw.list.append(&section_row("Working", working.len(), "work"));
+        for s in working {
+            vw.list.append(&work_row(ui, s, narrow));
+        }
+    }
+    if !rest.is_empty() {
+        vw.list.append(&section_row("Earlier", rest.len(), "earlier"));
+        for s in rest {
+            vw.list.append(&quiet_row(ui, s));
+        }
+    }
+}
+
+/// A group's heading: its name and how many, never selected.
+fn section_row(title: &str, n: usize, class: &str) -> gtk::ListBoxRow {
+    let r = gtk::ListBoxRow::new();
+    r.set_selectable(false);
+    r.set_activatable(false);
+    r.set_focusable(false);
+    r.add_css_class("grouprow");
+    r.add_css_class("sectrow");
+    let b = w::hbox(8, &["sect", class]);
+    b.append(&w::label(title, &["sect-t"]));
+    b.append(&w::label(&n.to_string(), &["sect-n"]));
+    r.set_child(Some(&b));
+    r
+}
+
+/// The project and session on one line: the project's colour, its name, the session's title.
+fn who_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
+    let top = w::hbox(8, &[]);
+    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
+        top.append(&tag);
+    }
+    let name = w::label(&crate::disk::project_words(ui, s), &["pname"]);
+    top.append(&name);
+    let t = w::clip(&s.title, &["btitle"]);
+    t.set_hexpand(true);
+    w::shrinkable(t.upcast_ref());
+    top.append(&t);
+    if let Some(m) = crate::behind::pill(ui, s.project.as_deref()) {
+        top.append(&m);
+    }
+    top
+}
+
+/// "just now", "2 h ago", kept current in place.
+fn age_label(ui: &Ui, s: &SessionSummary) -> gtk::Label {
+    let last = w::label(&fmt::ago(s.last_at.as_deref()), &["num", "age"]);
+    last.set_xalign(1.0);
+    last.set_valign(gtk::Align::Start);
+    let id = s.id.clone();
+    live_text(ui, View::Monitor, &last, move |st| session_in(st, &id).map(|s| fmt::ago(s.last_at.as_deref())));
+    last
+}
+
+/// A session waiting for you: who, the question in large type, and the way there.
+fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
+    let card = w::vbox(10, &["askcard"]);
+    let top = who_line(ui, s);
+    top.append(&age_label(ui, s));
+    card.append(&top);
+    let asks = crate::why::asks_question(s);
+    let lead = w::label(if asks { "ASKS YOU" } else { "WANTS A DECISION" }, &["ask-lead"]);
+    lead.set_xalign(0.0);
+    card.append(&lead);
+    let q = s.question.clone().or_else(|| s.away_summary.as_deref().map(fmt::recap)).unwrap_or_else(|| "It is waiting for you.".into());
+    let ql = w::wrap(&fmt::clip(&q, 600), &["ask-q"]);
+    ql.set_xalign(0.0);
+    ql.set_lines(4);
+    ql.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    ql.set_tooltip_text(Some(&q));
+    card.append(&ql);
+    let acts = w::hbox(8, &["ask-acts"]);
+    let (loc, _, can_go, tip) = app::loc_for(ui, s);
+    let id = s.id.clone();
+    let ui2 = ui.clone();
+    let go = w::button(&panel::go_words(s, &loc, can_go), Some("o"), &["primary", "sm"], move || app::go_to(&ui2, &id));
+    go.set_sensitive(can_go);
+    if !tip.is_empty() {
+        go.set_tooltip_text(Some(&tip));
+    }
+    acts.append(&go);
+    let id = s.id.clone();
+    let ui2 = ui.clone();
+    acts.append(&w::button("Details", Some("Enter"), &["ghost", "sm"], move || panel::open_session(&ui2, &id, true)));
+    card.append(&acts);
+    let r = list_row(&s.id, &card);
+    r.add_css_class("cardrow-ask");
+    r
+}
+
+/// The process whose note draws a working session's wave, once the processes are read.
+fn wave_pid(ui: &Ui, s: &SessionSummary) -> Option<u32> {
+    if s.state != State::Working {
+        return None;
+    }
+    let st = ui.st.borrow();
+    st.procs.as_ref()?.procs.iter().find(|a| a.session_id.as_deref() == Some(&s.id) && a.note.is_some()).map(|a| a.pid)
+}
+
+/// A working session: its live wave (from agent-notify's note), who, and what it is on.
+fn work_row(ui: &Ui, s: &SessionSummary, narrow: bool) -> gtk::ListBoxRow {
+    let row = w::hbox(16, &["workrow"]);
+    if !narrow {
+        let wave = w::hbox(0, &["wave"]);
+        wave.set_valign(gtk::Align::Center);
+        match wave_pid(ui, s) {
+            Some(pid) => {
+                wave.set_size_request(crate::scope::MINI_W, -1);
+                let area = crate::scope::mini(&ui.scope, pid, &format!("{}, working", s.title));
+                ui.readouts.borrow_mut().push(area.clone());
+                wave.append(&area);
+            }
+            None => {
+                let d = w::dot("working");
+                if crate::motion::on() {
+                    d.add_css_class("pulse");
+                }
+                wave.append(&d);
+            }
+        }
+        row.append(&wave);
+    }
+    let mid = w::vbox(4, &[]);
+    mid.set_hexpand(true);
+    mid.append(&who_line(ui, s));
+    let now = now_cell(s);
+    w::shrinkable(&now);
+    mid.append(&now);
+    row.append(&mid);
+    let right = w::vbox(6, &[]);
+    right.set_halign(gtk::Align::End);
+    right.append(&age_label(ui, s));
+    if !narrow {
+        let l = loc_cell(ui, s);
+        l.set_halign(gtk::Align::End);
+        right.append(&l);
+    }
+    row.append(&right);
+    let r = list_row(&s.id, &row);
+    r.add_css_class("workrow-r");
+    r
+}
+
+/// Anything else, one quiet line: its state, who, why it stopped, when.
+fn quiet_row(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
+    let row = w::hbox(10, &["quietrow"]);
+    let (class, word) = w::state_word(s.state);
+    let st = w::label(short_state(s.state), &["state", class, "qstate"]);
+    st.set_xalign(0.0);
+    st.set_tooltip_text(Some(&format!("{word}: {}", s.evidence)));
+    row.append(&st);
+    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
+        row.append(&tag);
+    }
+    row.append(&w::label(&crate::disk::project_words(ui, s), &["pname", "qname"]));
+    // Its whole title when there is room (the why takes the spare room after it), shortened when not.
+    let t = w::label(&s.title, &["btitle"]);
+    t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    t.set_tooltip_text(Some(&s.title));
+    row.append(&t);
+    let (m, tip, _) = now_text(s);
+    let why = w::clip("", &["happ", "qwhy"]);
+    why.set_xalign(0.0);
+    why.set_markup(&m);
+    why.set_tooltip_text((!tip.is_empty()).then_some(tip.as_str()));
+    why.set_hexpand(true);
+    w::shrinkable(why.upcast_ref());
+    row.append(&why);
+    row.append(&age_label(ui, s));
+    let r = list_row(&s.id, &row);
+    r.add_css_class("quietrow-r");
+    r
 }
 
 /// A project's git loose ends in plain words (Pango markup). "not on GitHub" only when its remote

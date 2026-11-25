@@ -92,7 +92,7 @@ window.wake button.chip.pf { border-color: @accent; color: @accent; }
 .meta.below { margin-bottom: 5px; }
 
 /* capture */
-.capture { min-height: 54px; border-top: 1px solid @line; background-color: @panel; padding: 0 14px; }
+.capture { min-height: 44px; border-top: 1px solid @line; background-color: @panel; padding: 0 14px; }
 .capture .lbl { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 1.5px; color: @violet; }
 .capture entry:focus-within { border-color: @violet; box-shadow: 0 0 0 1px @violet; }
 window.wake dropdown.mini > button { background-color: @bg; color: @muted; border: 1px solid @line2; border-radius: 7px; padding: 5px 8px; font-size: 11.5px; min-width: 130px; }
@@ -648,3 +648,48 @@ window.wake button.menuitem.on { color: @accent; font-weight: 700; }
 /* The slim rail's full form, slid out over the content (layout.rs): a soft shadow on its right. */
 .rail.peek-rail { border-right: 1px solid @line2; }
 .peekedge { background-image: linear-gradient(to right, alpha(@shadow, .4), alpha(@shadow, 0)); }
+
+/* Monitor: the board. A headline, then cards for what needs you, live rows for what is working,
+   and one quiet line for everything else. */
+.hero { padding: 22px 30px 6px; }
+.hero-big { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 27px; letter-spacing: .2px; }
+.hero-big.needs { color: @amber; }
+.hero-big.calm { color: @mint; }
+.hero-sub { color: @muted; font-size: 13.5px; }
+list.table > row.sectrow { border-bottom: none; }
+.sect { padding: 20px 30px 8px; }
+.sect-t { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 13.5px; letter-spacing: .4px; }
+.sect-n { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; }
+.sect.needs .sect-t { color: @amber; }
+.sect.work .sect-t { color: @mint; }
+.sect.earlier .sect-t { color: @muted; }
+list.table > row.cardrow-ask, list.table > row.workrow-r, list.table > row.quietrow-r { border-bottom: none; padding: 0 20px; }
+list.table > row.cardrow-ask { padding: 3px 20px 9px; }
+list.table > row.cardrow-ask:hover, list.table > row.cardrow-ask:selected,
+list.table > row.workrow-r:hover, list.table > row.workrow-r:selected,
+list.table > row.quietrow-r:hover, list.table > row.quietrow-r:selected { background-color: transparent; box-shadow: none; }
+.askcard { padding: 16px 20px 16px 22px; border-radius: 12px; border: 1px solid alpha(@amber, .32); background-color: alpha(@amber, .055); box-shadow: inset 4px 0 @amber; }
+list.table > row.cardrow-ask:hover .askcard { background-color: alpha(@amber, .09); }
+list.table > row.cardrow-ask:selected .askcard { border-color: @accent; box-shadow: inset 4px 0 @amber, 0 0 0 1px @accent; }
+.ask-lead { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 1.5px; color: @amber; }
+.ask-q { font-size: 19px; color: @ink; }
+.ask-acts { margin-top: 4px; }
+.btitle { color: @muted; font-size: 12.5px; }
+.workrow { padding: 13px 10px; border-radius: 10px; }
+.quietrow { padding: 8px 10px; border-radius: 8px; }
+list.table > row.workrow-r:hover .workrow, list.table > row.quietrow-r:hover .quietrow { background-color: @row; }
+list.table > row.workrow-r:selected .workrow, list.table > row.quietrow-r:selected .quietrow { background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
+.workrow .happ { font-size: 13.5px; }
+.quietrow .pname { color: @muted; }
+.qwhy { font-size: 12.5px; color: @dim; }
+.wave { min-height: 30px; }
+@keyframes wakepulse { 0% { opacity: 1; } 50% { opacity: .3; } 100% { opacity: 1; } }
+.d.pulse { animation: wakepulse 1.8s ease-in-out infinite; min-width: 9px; min-height: 9px; }
+.capture entry { min-height: 30px; }
+.top windowcontrols button { padding: 4px; margin-left: 4px; border-radius: 50%; color: @muted; }
+.top windowcontrols button:hover { background-color: @row; color: @ink; }
+/* Wake's top bar is the title bar: GTK's own one is an empty, zero-height box. */
+window.wake .notitle, window.wake .titlebar.notitle { min-height: 0; padding: 0; margin: 0; border: none; background: none; box-shadow: none; }
+.qstate { min-width: 74px; font-weight: 500; }
+window.wake button.cmd { margin: 7px 0; padding: 5px 10px; }
+list.table > row.herorow, list.table > row.herorow:hover { border-bottom: none; background-color: transparent; }

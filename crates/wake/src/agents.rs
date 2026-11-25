@@ -111,6 +111,14 @@ pub fn row_count(p: &ProcOverview, stale_only: bool) -> usize {
     ordered(p, stale_only).len() + if stale_only { 0 } else { p.dead_notes.len() }
 }
 
+/// Points the waves at the agents that have a note now (Monitor draws them too).
+pub fn follow_notes(ui: &Ui) {
+    let st = ui.st.borrow();
+    if let Some(p) = &st.procs {
+        ui.scope.borrow_mut().follow(&followers(p), &p.dead_notes);
+    }
+}
+
 /// The agents that have a note, as the readouts follow them.
 fn followers(p: &ProcOverview) -> Vec<scope::Agent> {
     p.procs
@@ -1376,11 +1384,13 @@ pub fn hidden(ui: &Ui) {
     ui.scope.borrow_mut().hidden();
 }
 
-fn ensure_ticking(ui: &Ui) {
-    if ui.tick.borrow().is_some() || ui.st.borrow().view != View::Agents {
+/// Keeps the waves moving while a view that shows them (Agents, Monitor) is on screen.
+pub fn ensure_ticking(ui: &Ui) {
+    let v = ui.st.borrow().view;
+    if ui.tick.borrow().is_some() || !matches!(v, View::Agents | View::Monitor) {
         return;
     }
-    let root = ui.w.views[&View::Agents].root.clone();
+    let root = ui.w.views[&v].root.clone();
     let ui2 = ui.clone();
     let id = root.add_tick_callback(move |_, clock| {
         let now = clock.frame_time() as f64 / 1_000_000.0;

@@ -1037,7 +1037,7 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
 
 /// What the way-there button says, from `loc_for`'s place: "Go to tab 3" (with one Konsole),
 /// "Go to Konsole 2 · tab 1" (with several), "Open in a new window", "Resume in a new window".
-fn go_words(s: &SessionSummary, loc: &str, can_go: bool) -> String {
+pub fn go_words(s: &SessionSummary, loc: &str, can_go: bool) -> String {
     if s.location.is_some() {
         format!("Go to {}", loc.strip_prefix("Konsole · ").unwrap_or(loc))
     } else if !can_go {

@@ -530,6 +530,15 @@ fn build(app: &gtk::Application, opts: Opts) {
     top.add(&badge, 4);
     let clock = w::label(&crate::fmt::clock(), &["clock"]);
     top.add(&clock, 3);
+    // One bar, not two: Wake's top bar is the title bar. It drags and double-clicks like one, and
+    // ends with the desktop's own window buttons (on Slipstream, close only).
+    let controls = gtk::WindowControls::new(gtk::PackType::End);
+    controls.set_valign(gtk::Align::Center);
+    top.add(&controls, 0);
+    let handle = gtk::WindowHandle::new();
+    handle.set_child(Some(&top));
+    // An empty title bar: GTK still gives the window its shadow and resize edges.
+    window.set_titlebar(Some(&w::hbox(0, &["notitle"])));
 
     // Rail, and its full form that slides out over the content while it is slim.
     let rail_box = || {
@@ -626,7 +635,7 @@ fn build(app: &gtk::Application, opts: Opts) {
     let status = w::hbox(16, &["statusbar"]);
 
     let column = w::vbox(0, &[]);
-    column.append(&top);
+    column.append(&handle);
     // The body's minimum width is that of its narrowest layout, whatever is open, so opening the
     // panel never changes the window's minimum size (Slipstream, like any tiling compositor,
     // scales down a window whose minimum outgrows its tile).
@@ -1612,6 +1621,10 @@ pub fn refresh_procs(ui: &Ui) {
             views::render_top(ui);
             views::render_rail(ui);
             panel::tick_procs(ui);
+            // Monitor's working rows draw each agent's wave once its note is known.
+            if ui.st.borrow().view == View::Monitor {
+                views::render_view(ui);
+            }
             if ui.st.borrow().view == View::Agents {
                 views::render_chips(ui);
                 views::render_status(ui);
@@ -1846,7 +1859,8 @@ pub fn set_view(ui: &Ui, v: View) {
         st.adding = false;
         st.drawn.remove(&v);
     }
-    if was == View::Agents {
+    // The waves only move on the view that shows them.
+    if matches!(was, View::Agents | View::Monitor) {
         agents::hidden(ui);
     }
     ui.w.stack.set_visible_child_name(v.id());

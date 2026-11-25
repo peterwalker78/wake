@@ -495,6 +495,8 @@ mod tests {
             removed: false,
             added: String::new(),
             color: None,
+            group: None,
+            importance: None,
             extra: Default::default(),
         };
         let (repos, failed) = project_git(&proj, true);

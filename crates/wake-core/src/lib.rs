@@ -155,6 +155,14 @@ pub trait Source: Send + Sync {
     fn set_next(&self, _id: &str, _next: &str) -> Result<ProjectSummary, String> {
         Err("The next step can't be changed here.".into())
     }
+    /// Put a project in a group (None: no group). Writes projects.json. Added 2026-11-25.
+    fn set_project_group(&self, _id: &str, _group: Option<&str>) -> Result<ProjectSummary, String> {
+        Err("Groups can't be changed here.".into())
+    }
+    /// Set a project's importance: "high", "low", or None for normal. Writes projects.json.
+    fn set_project_importance(&self, _id: &str, _importance: Option<&str>) -> Result<ProjectSummary, String> {
+        Err("Importance can't be changed here.".into())
+    }
 
     // ---- Disk, resources, attribution (added 2026-11-20; default bodies so other implementors still compile) ----
     // The numbers themselves come in `Overview::disk`, `Overview::resources` and `Overview::attribution`.

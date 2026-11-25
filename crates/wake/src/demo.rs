@@ -63,6 +63,17 @@ fn project(id: &str, desc: &str, next: &str, why: &str, last: i64, ahead: u32, d
         color: Some(wake_core::store::default_colour(id).to_string()),
         // waypoint's remote couldn't be asked, so it isn't called in step.
         remote_problem: (id == "waypoint").then(|| "Wake couldn't ask GitLab (offline).".into()),
+        // Two made-up groups, and one project that matters most and one that can wait.
+        group: match id {
+            "Gradebook" | "fernlight" => Some("Work".into()),
+            "Skyhook" | "tideline-desktop" => Some("Side projects".into()),
+            _ => None,
+        },
+        importance: match id {
+            "Gradebook" => Some("high".into()),
+            "waypoint" => Some("low".into()),
+            _ => None,
+        },
     }
 }
 
@@ -904,6 +915,20 @@ impl Source for DemoSource {
         let mut st = self.state.lock().unwrap();
         let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
         p.next = next.into();
+        Ok(p.clone())
+    }
+
+    fn set_project_group(&self, id: &str, group: Option<&str>) -> Result<ProjectSummary, String> {
+        let mut st = self.state.lock().unwrap();
+        let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
+        p.group = group.map(str::trim).filter(|g| !g.is_empty()).map(String::from);
+        Ok(p.clone())
+    }
+
+    fn set_project_importance(&self, id: &str, importance: Option<&str>) -> Result<ProjectSummary, String> {
+        let mut st = self.state.lock().unwrap();
+        let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
+        p.importance = importance.map(String::from);
         Ok(p.clone())
     }
 

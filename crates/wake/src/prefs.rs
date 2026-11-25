@@ -78,6 +78,16 @@ pub fn change(ui: &Ui, f: impl FnOnce(&mut Settings)) {
     });
 }
 
+/// Projects as "grid" or "list".
+pub fn projects_layout() -> String {
+    S.with(|c| c.borrow().projects_layout.clone())
+}
+
+/// Projects grouped by "groups" (the person's own), "activity", or "none".
+pub fn projects_group() -> String {
+    S.with(|c| c.borrow().projects_group.clone())
+}
+
 /// A view's remembered sort.
 pub fn sort_of(view: View) -> Sort {
     S.with(|c| c.borrow().sorts.get(view.id()).and_then(|s| sort::parse(s)))

@@ -180,6 +180,7 @@ fn show_tab(ui: &Ui) {
             }
         }
     }
+    mark_pair(ui, Some(idea));
     ui.w.sw_entry.set_placeholder_text(Some(if idea { IDEA_HINT } else { FIND_HINT }));
     ui.w.sw_entry.update_property(&[gtk::accessible::Property::Label(if idea { "New idea" } else { "Find a session" })]);
     if let Some(ft) = panel::find_named(&root, "pal-ft").and_downcast::<crate::layout::Squeeze>() {
@@ -262,7 +263,23 @@ fn open_tab(ui: &Ui, idea: bool) {
     render(ui);
 }
 
+/// The title bar's Find and New idea buttons: the one whose tab is open shows as pressed.
+fn mark_pair(ui: &Ui, tab: Option<bool>) {
+    let mut c = ui.w.pair.first_child();
+    let mut idea = false;
+    while let Some(b) = c {
+        if tab == Some(idea) {
+            b.add_css_class("on");
+        } else {
+            b.remove_css_class("on");
+        }
+        idea = true;
+        c = b.next_sibling();
+    }
+}
+
 pub fn close(ui: &Ui) {
+    mark_pair(ui, None);
     ui.st.borrow_mut().sw.open = false;
     ui.w.switcher.set_visible(false);
     ui.w.column.set_sensitive(true);

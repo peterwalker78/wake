@@ -1923,42 +1923,92 @@ pub fn follow_sel(ui: &Ui, v: View, key: String) {
     });
 }
 
-/// A view drawn as a grid of cards (Projects): the grid, in the list's one row.
-pub fn grid_of(ui: &Ui, view: View) -> Option<gtk::FlowBox> {
+/// A view drawn as grids of cards (Projects, Ideas): its grids, one per section, in order.
+pub fn grids_of(ui: &Ui, view: View) -> Vec<gtk::FlowBox> {
+    let mut out = Vec::new();
     let mut c = ui.w.views[&view].list.first_child();
     while let Some(x) = c {
-        if x.has_css_class("gridrow") {
-            return x.downcast::<gtk::ListBoxRow>().ok()?.child()?.downcast::<gtk::FlowBox>().ok();
-        }
         c = x.next_sibling();
+        if x.has_css_class("gridrow")
+            && let Some(g) = x.downcast::<gtk::ListBoxRow>().ok().and_then(|r| r.child()).and_then(|g| g.downcast::<gtk::FlowBox>().ok())
+        {
+            out.push(g);
+        }
     }
-    None
+    out
+}
+
+/// The first of them (Ideas has one).
+pub fn grid_of(ui: &Ui, view: View) -> Option<gtk::FlowBox> {
+    grids_of(ui, view).into_iter().next()
 }
 
 fn grid_cards(g: &gtk::FlowBox) -> Vec<gtk::FlowBoxChild> {
     (0..).map_while(|i| g.child_at_index(i)).collect()
 }
 
-/// j/k and the arrows in a grid: the next or previous card, in reading order.
-fn grid_step(ui: &Ui, g: &gtk::FlowBox, d: i32) {
-    let cards = grid_cards(g);
+/// One card selected across all the grids: picking one in a grid clears the others.
+pub fn grid_picked(ui: &Ui, view: View, g: &gtk::FlowBox) {
+    for other in grids_of(ui, view).iter().filter(|o| *o != g) {
+        other.unselect_all();
+    }
+}
+
+/// Moving in the grids. Across (←/→): the next or previous card in reading order, from one grid
+/// into the next. Up and down (↑/↓, j/k): the card in the row above or below, nearest in line,
+/// from one grid into the next, as in a file manager.
+fn grid_step(ui: &Ui, view: View, d: i32, by_row: bool) {
+    let grids = grids_of(ui, view);
+    let cards: Vec<gtk::FlowBoxChild> = grids.iter().flat_map(grid_cards).collect();
     if cards.is_empty() {
         return;
     }
     let sel = ui.st.borrow().sel.clone();
-    let i = match cards.iter().position(|c| Some(c.widget_name().as_str()) == sel.as_deref()) {
+    let at = cards.iter().position(|c| Some(c.widget_name().as_str()) == sel.as_deref());
+    let i = match at {
         None if d > 0 => 0,
         None => cards.len() - 1,
-        Some(i) => (i as i32 + d).clamp(0, cards.len() as i32 - 1) as usize,
+        Some(i) if !by_row => (i as i32 + d).clamp(0, cards.len() as i32 - 1) as usize,
+        Some(i) => {
+            let list = ui.w.views[&view].list.clone();
+            let b = |c: &gtk::FlowBoxChild| c.compute_bounds(&list).map(|r| (f64::from(r.x() + r.width() / 2.0), f64::from(r.y()), f64::from(r.height())));
+            let Some((cx, cy, ch)) = b(&cards[i]) else { return };
+            cards
+                .iter()
+                .enumerate()
+                .filter_map(|(n, c)| b(c).map(|(x, y, _)| (n, x, y)))
+                .filter(|(_, _, y)| if d > 0 { *y > cy + ch / 2.0 } else { *y < cy - ch / 2.0 })
+                .min_by(|a, b| {
+                    let (dya, dyb) = ((a.2 - cy).abs(), (b.2 - cy).abs());
+                    dya.total_cmp(&dyb).then((a.1 - cx).abs().total_cmp(&(b.1 - cx).abs()))
+                })
+                .map_or(i, |(n, _, _)| n)
+        }
     };
     let key = cards[i].widget_name().to_string();
     ui.st.borrow_mut().sel = Some(key.clone());
-    g.select_child(&cards[i]);
+    for g in &grids {
+        g.unselect_all();
+    }
+    if let Some(g) = cards[i].parent().and_downcast::<gtk::FlowBox>() {
+        g.select_child(&cards[i]);
+    }
     cards[i].grab_focus();
+    crate::motion::scroll_into_view(&ui.w.views[&view].scroll, &cards[i]);
     let open = matches!(ui.st.borrow().drawer, Some(Drawer::Project(_)));
-    if open {
+    if open && view == View::Projects {
         panel::open_project(ui, &key, false);
     }
+}
+
+/// ←/→ in a view of cards: the previous or next card. False elsewhere (the arrows are GTK's).
+pub fn grid_across(ui: &Ui, d: i32) -> bool {
+    let view = ui.st.borrow().view;
+    if grids_of(ui, view).is_empty() {
+        return false;
+    }
+    grid_step(ui, view, d, false);
+    true
 }
 
 pub fn move_sel(ui: &Ui, d: i32) {
@@ -1966,8 +2016,8 @@ pub fn move_sel(ui: &Ui, d: i32) {
         setview::keyboard(ui, true);
     }
     let view = ui.st.borrow().view;
-    if let Some(g) = grid_of(ui, view) {
-        grid_step(ui, &g, d);
+    if !grids_of(ui, view).is_empty() {
+        grid_step(ui, view, d, true);
         return;
     }
     let rows = rows(ui);
@@ -2005,11 +2055,14 @@ pub fn restore_sel(ui: &Ui, view: View, had_focus: bool) {
     let sel = ui.st.borrow().sel.clone();
     let list = &ui.w.views[&view].list;
     let Some(sel) = sel else { return };
-    if let Some(g) = grid_of(ui, view) {
-        if let Some(c) = grid_cards(&g).into_iter().find(|c| c.widget_name() == sel) {
-            g.select_child(&c);
-            if had_focus {
-                c.grab_focus();
+    let grids = grids_of(ui, view);
+    if !grids.is_empty() {
+        for g in &grids {
+            if let Some(c) = grid_cards(g).into_iter().find(|c| c.widget_name() == sel) {
+                g.select_child(&c);
+                if had_focus {
+                    c.grab_focus();
+                }
             }
         }
         return;
@@ -2312,6 +2365,8 @@ fn focus_in_text(ui: &Ui) -> Option<gtk::Widget> {
 /// shortcut can be tested without a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cmd {
+    /// ←/→ among cards (Projects, Ideas): the previous or next card.
+    Across(i32),
     Switcher,
     View(View),
     Down,
@@ -2348,6 +2403,7 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
     let agents = view == View::Agents;
     let ideas = view == View::Ideas;
     let settings = view == View::Settings;
+    let cards = matches!(view, View::Projects | View::Ideas);
     if key == K::S && shift {
         return agents.then_some(Cmd::StopAllStale);
     }
@@ -2376,6 +2432,8 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
         K::s if ideas => Cmd::StartAgent,
         K::Right | K::l if agents || settings => Cmd::Expand,
         K::Left | K::h if agents || settings => Cmd::Collapse,
+        K::Right | K::l if cards => Cmd::Across(1),
+        K::Left | K::h if cards => Cmd::Across(-1),
         K::Escape => Cmd::Escape,
         _ => return None,
     })
@@ -2576,6 +2634,7 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
         Cmd::Expand | Cmd::Collapse if view == View::Settings => return setview::step(ui, if cmd == Cmd::Expand { 1 } else { -1 }),
         Cmd::Expand | Cmd::Collapse if view == View::Agents => return agents::key(ui, if cmd == Cmd::Expand { agents::TreeKey::Right } else { agents::TreeKey::Left }),
         Cmd::Expand | Cmd::Collapse => return false,
+        Cmd::Across(d) => return grid_across(ui, d),
         Cmd::Escape => {
             let (drawer, brief, pf) = {
                 let st = ui.st.borrow();

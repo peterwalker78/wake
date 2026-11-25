@@ -24,6 +24,10 @@ pub const DENSITIES: [&str; 2] = ["reduced", "detailed"];
 /// "full": panels slide, sections open and rows fade (each 150–220 ms); "reduced": nothing moves.
 /// The desktop's own "reduce animation" setting is honoured either way.
 pub const MOTIONS: [&str; 2] = ["full", "reduced"];
+/// Projects as a grid of cards or a list. Added 2026-11-25.
+pub const PROJECT_LAYOUTS: [&str; 2] = ["grid", "list"];
+/// Projects grouped by the person's own groups, by activity (automatic), or not at all.
+pub const PROJECT_GROUPINGS: [&str; 3] = ["groups", "activity", "none"];
 /// How often to ask the remotes, in minutes; 0 is never.
 pub const REMOTE_MINUTES: [u32; 4] = [0, 5, 10, 30];
 
@@ -48,6 +52,10 @@ pub struct Settings {
     pub notify_behind: bool,
     /// Per view id: "column" or "column reversed". A view not listed uses Wake's own order.
     pub sorts: BTreeMap<String, String>,
+    /// Projects: "grid" or "list" (added 2026-11-25).
+    pub projects_layout: String,
+    /// Projects: "groups", "activity" or "none" (added 2026-11-25).
+    pub projects_group: String,
     /// The file as read, so keys Wake doesn't know survive a save.
     raw: Table,
 }
@@ -64,6 +72,8 @@ impl Default for Settings {
             remote_minutes: 10,
             notify_behind: true,
             sorts: BTreeMap::new(),
+            projects_layout: "grid".into(),
+            projects_group: "groups".into(),
             raw: Table::new(),
         }
     }
@@ -127,6 +137,8 @@ impl Settings {
             remote_minutes: get("git", "check_every_minutes").and_then(|v| v.as_integer()).and_then(|n| u32::try_from(n).ok()).filter(|n| REMOTE_MINUTES.contains(n)).unwrap_or(d.remote_minutes),
             notify_behind: get("git", "notify_when_behind").and_then(|v| v.as_bool()).unwrap_or(d.notify_behind),
             sorts,
+            projects_layout: word("projects", "layout", &PROJECT_LAYOUTS, &d.projects_layout),
+            projects_group: word("projects", "group_by", &PROJECT_GROUPINGS, &d.projects_group),
             raw: t,
         }
     }
@@ -156,6 +168,7 @@ impl Settings {
                 ("start_view", Value::String(self.start_view.clone())),
             ],
         );
+        section("projects", vec![("layout", Value::String(self.projects_layout.clone())), ("group_by", Value::String(self.projects_group.clone()))]);
         section("git", vec![("check_every_minutes", Value::Integer(i64::from(self.remote_minutes))), ("notify_when_behind", Value::Boolean(self.notify_behind))]);
         // The sort table is Wake's entirely: a view back on Wake's order has no line.
         t.insert("sort".into(), Value::Table(self.sorts.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect()));
@@ -253,6 +266,8 @@ mod tests {
         s.remote_minutes = 0;
         s.notify_behind = false;
         s.sorts.insert("monitor".into(), "last reversed".into());
+        s.projects_layout = "list".into();
+        s.projects_group = "activity".into();
         save(&dir, &s).unwrap();
         let mode = fs::metadata(dir.join(FILE)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
@@ -261,6 +276,7 @@ mod tests {
         assert!(note.is_none());
         assert_eq!((back.ai.as_str(), back.theme.as_str(), back.density.as_str(), back.remote_minutes, back.notify_behind), ("codex", "light", "detailed", 0, false));
         assert_eq!(back.motion, "reduced");
+        assert_eq!((back.projects_layout.as_str(), back.projects_group.as_str()), ("list", "activity"));
         assert_eq!(back.sorts.get("monitor").map(String::as_str), Some("last reversed"));
         assert_eq!(back.core().remote_every, None);
         assert_eq!(back.core().question_ai, Ai::Codex);

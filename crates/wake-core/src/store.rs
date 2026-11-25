@@ -355,6 +355,9 @@ pub fn default_colour(name: &str) -> &'static str {
     COLOUR_NAMES[(h % COLOUR_NAMES.len() as u32) as usize]
 }
 
+/// A project's importance, besides normal (None).
+pub const IMPORTANCE: [&str; 2] = ["high", "low"];
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectRec {
     pub id: String,
@@ -375,6 +378,12 @@ pub struct ProjectRec {
     /// Added 2026-11-20: older files have no such field, and it is left out while unset.
     #[serde(default, deserialize_with = "null_default", skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// The group the person put it in, if any. Added 2026-11-25; left out while unset.
+    #[serde(default, deserialize_with = "null_default", skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// "high" or "low"; None is normal. Added 2026-11-25; left out while unset.
+    #[serde(default, deserialize_with = "null_default", skip_serializing_if = "Option::is_none")]
+    pub importance: Option<String>,
     /// Anything else a later version wrote, kept as is.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -538,7 +547,20 @@ impl Store {
                     id.push_str("-2");
                 }
                 used.push(id.clone());
-                ProjectRec { id, name, roots, desc: String::new(), next: String::new(), why: String::new(), removed: false, added: at.clone(), color: None, extra: Map::new() }
+                ProjectRec {
+                    id,
+                    name,
+                    roots,
+                    desc: String::new(),
+                    next: String::new(),
+                    why: String::new(),
+                    removed: false,
+                    added: at.clone(),
+                    color: None,
+                    group: None,
+                    importance: None,
+                    extra: Map::new(),
+                }
             })
             .collect()
     }
@@ -579,7 +601,20 @@ impl Store {
             while projects.iter().any(|p| p.id == id) {
                 id.push_str("-2");
             }
-            projects.push(ProjectRec { id, name, roots: vec![rs], desc: String::new(), next: String::new(), why: String::new(), removed: false, added: at.clone(), color: None, extra: Map::new() });
+            projects.push(ProjectRec {
+                id,
+                name,
+                roots: vec![rs],
+                desc: String::new(),
+                next: String::new(),
+                why: String::new(),
+                removed: false,
+                added: at.clone(),
+                color: None,
+                group: None,
+                importance: None,
+                extra: Map::new(),
+            });
         }
     }
 
@@ -699,7 +734,20 @@ impl Store {
         while projects.iter().any(|p| p.id == id) {
             id.push_str("-2");
         }
-        let proj = ProjectRec { id, name, roots: vec![ps], desc: String::new(), next: String::new(), why: String::new(), removed: false, added: util::now_iso(), color: None, extra: Map::new() };
+        let proj = ProjectRec {
+            id,
+            name,
+            roots: vec![ps],
+            desc: String::new(),
+            next: String::new(),
+            why: String::new(),
+            removed: false,
+            added: util::now_iso(),
+            color: None,
+            group: None,
+            importance: None,
+            extra: Map::new(),
+        };
         projects.push(proj.clone());
         self.save_projects_locked(&projects)?;
         Ok(proj)
@@ -715,6 +763,32 @@ impl Store {
         let mut projects = self.load_projects_locked();
         let p = projects.iter_mut().find(|p| p.id == id).ok_or_else(|| StoreError("No project with that id.".into()))?;
         p.color = color.map(String::from);
+        let out = p.clone();
+        self.save_projects_locked(&projects)?;
+        Ok(out)
+    }
+
+    /// Put a project in a group (a short name of the person's own), or take it out with None.
+    pub fn set_project_group(&self, id: &str, group: Option<&str>) -> SResult<ProjectRec> {
+        let group = group.map(str::trim).filter(|g| !g.is_empty()).map(|g| g.chars().take(40).collect::<String>());
+        let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut projects = self.load_projects_locked();
+        let p = projects.iter_mut().find(|p| p.id == id).ok_or_else(|| StoreError("No project with that id.".into()))?;
+        p.group = group;
+        let out = p.clone();
+        self.save_projects_locked(&projects)?;
+        Ok(out)
+    }
+
+    /// Set how much a project matters: "high", "low", or None for normal.
+    pub fn set_project_importance(&self, id: &str, importance: Option<&str>) -> SResult<ProjectRec> {
+        if let Some(i) = importance.filter(|i| !IMPORTANCE.contains(i)) {
+            return Err(StoreError(format!("Wake doesn't know the importance {i}.")));
+        }
+        let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut projects = self.load_projects_locked();
+        let p = projects.iter_mut().find(|p| p.id == id).ok_or_else(|| StoreError("No project with that id.".into()))?;
+        p.importance = importance.map(String::from);
         let out = p.clone();
         self.save_projects_locked(&projects)?;
         Ok(out)
@@ -1198,6 +1272,22 @@ mod tests {
         let p = s.load_projects().into_iter().find(|p| p.id == id).unwrap();
         assert_eq!(p.next, "ship it");
         assert!(s.set_project_next("nope", "x").is_err());
+    }
+
+    #[test]
+    fn groups_and_importance_are_kept_on_the_project() {
+        let env = Env::new();
+        let s = env.store();
+        let id = s.load_projects()[0].id.clone();
+        assert_eq!(s.set_project_group(&id, Some("  Work ")).unwrap().group.as_deref(), Some("Work"));
+        assert_eq!(s.set_project_importance(&id, Some("high")).unwrap().importance.as_deref(), Some("high"));
+        let p = s.load_projects().into_iter().find(|p| p.id == id).unwrap();
+        assert_eq!((p.group.as_deref(), p.importance.as_deref()), (Some("Work"), Some("high")));
+        // Blank takes it out of its group; normal is no importance at all; unknown words are refused.
+        assert_eq!(s.set_project_group(&id, Some("  ")).unwrap().group, None);
+        assert_eq!(s.set_project_importance(&id, None).unwrap().importance, None);
+        assert!(s.set_project_importance(&id, Some("urgent")).is_err());
+        assert!(s.set_project_group("nope", Some("x")).is_err());
     }
 
     #[test]

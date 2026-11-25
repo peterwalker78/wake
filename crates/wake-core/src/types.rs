@@ -190,6 +190,12 @@ pub struct ProjectSummary {
     /// "Wake couldn't ask GitHub (offline)." (so "in step" isn't claimed). Added 2026-11-20.
     #[serde(default)]
     pub remote_problem: Option<String>,
+    /// The group the person put it in ("School", "Games"), if any. Added 2026-11-25.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// "high" or "low" when the person set it; None is normal. Added 2026-11-25.
+    #[serde(default)]
+    pub importance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

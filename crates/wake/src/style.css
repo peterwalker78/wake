@@ -259,9 +259,10 @@ window.wake button.subbtn:hover { background-color: @row; }
 window.wake entry.bare, window.wake entry.bare:focus-within { background: none; border: none; box-shadow: none; font-size: 15px; padding: 0; }
 .swlist-scroll { border-right: 1px solid @line; }
 .swinside { padding: 0 10px 8px; }
-.prow { padding: 7px 14px; }
+/* The pop-up's rows, in Find and New idea alike: the selected one wears the selection block. */
+.prow { padding: 7px 12px; margin: 1px 8px; border-radius: 10px; }
 .prow:hover { background-color: @row; }
-.prow.sel { background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
+.prow.sel { background-color: alpha(@accent, .07); box-shadow: inset 3px 0 @accent, inset 0 0 0 1px alpha(@accent, .55); }
 .prow .t { font-size: 13px; }
 .prow .st { margin-left: 6px; font-size: 10.5px; font-weight: 500; }
 .prow .q { font-size: 11.5px; color: @amber; padding-left: 18px; }
@@ -769,3 +770,13 @@ window.wake .pair > button.pairbtn:last-child { border-radius: 0 8px 8px 0; }
 window.wake .pair > button.pairbtn:hover { background-color: @row; border-color: @muted; }
 window.wake .pair > button.pairbtn:focus:focus-visible { outline-style: none; border-color: @accent; box-shadow: 0 0 0 1px @accent; }
 .pair button image { color: @muted; }
+window.wake .pair > button.pairbtn.on { background-color: alpha(@accent, .12); border-color: @accent; color: @ink; }
+window.wake .pair > button.pairbtn.on image { color: @accent; }
+
+/* Projects: importance, the layout switch and Organise. */
+.state.tag.imp-high { color: @rose; background-color: alpha(@rose, .12); } .d.imp-high { background-color: @rose; }
+.state.tag.imp-low { color: @dim; background-color: alpha(@dim, .1); } .d.imp-low { background-color: @dim; }
+.pgrid.ingroup { padding: 4px 24px 6px; }
+window.wake .layoutswitch > button.pairbtn { padding: 5px 9px; }
+window.wake button.organise, window.wake menubutton.organise > button { font-weight: 700; font-size: 12.5px; padding: 5px 12px; border-radius: 8px; border: 1px solid @line2; background-color: @panel2; color: @ink; }
+.menuhead { padding: 6px 10px 2px; }

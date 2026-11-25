@@ -806,6 +806,8 @@ pub fn render_chips(ui: &Ui) {
             }
             chips.add_next(&w::spacer());
             chips.add(&w::label(PURPOSE_PROJECTS, &["meta"]), PURPOSE_PRIO);
+            chips.add_next(&organise_menu(ui));
+            chips.add_next(&layout_switch(ui));
             chips.add_next(&crate::disk::details_button(ui));
             let ui = ui.clone();
             chips.add_next(&w::button("+ Track a folder", None, &["sm"], move || {
@@ -1416,7 +1418,8 @@ fn projects(ui: &Ui) {
     for p in &mut sig_list {
         p.last_at = None;
     }
-    let sig = format!("{adding}{compact}{}{}{:?}", serde_json::to_string(&sig_list).unwrap_or_default(), crate::behind::sig(ui), prefs::sort_of(View::Projects));
+    let (layout, grouping) = (prefs::projects_layout(), prefs::projects_group());
+    let sig = format!("{adding}{compact}{}{}{:?}{layout}{grouping}", serde_json::to_string(&sig_list).unwrap_or_default(), crate::behind::sig(ui), prefs::sort_of(View::Projects));
     let Some(had_focus) = begin(ui, View::Projects, sig) else { return };
     let vw = &ui.w.views[&View::Projects];
     w::clear(&vw.top);
@@ -1483,12 +1486,214 @@ fn projects(ui: &Ui) {
     }
     // A grid of cards, one per project, in its colour: the next step first, then what is open and
     // what is loose in git. Arrows, Enter, p and the panel work on it as on any list.
-    let grid = card_grid(ui, "pgrid", 4);
-    for p in &list {
-        grid.insert(&project_card(ui, p), -1);
+    // In sections (the person's groups, or by activity), each a grid of cards or a boxed list.
+    let sections = project_sections(&list, &grouping);
+    let headed = sections.len() > 1 || sections.first().is_some_and(|s| !s.0.is_empty());
+    for (title, items) in &sections {
+        if headed {
+            vw.list.append(&section_row(title, items.len()));
+        }
+        if layout == "list" {
+            let n = items.len();
+            for (i, p) in items.iter().enumerate() {
+                vw.list.append(&project_item(ui, p, (i == 0, i + 1 == n)));
+            }
+        } else {
+            let grid = card_grid(ui, "pgrid", 4);
+            if headed {
+                grid.add_css_class("ingroup");
+            }
+            for p in items {
+                grid.insert(&project_card(ui, p), -1);
+            }
+            vw.list.append(&grid_row(&grid));
+        }
     }
-    vw.list.append(&grid_row(&grid));
     finish(ui, View::Projects, had_focus);
+}
+
+/// The projects in sections: by the person's own groups (then those in none), by activity
+/// (worked out: needs you, at work, paused, this week, older), or one section with no heading.
+fn project_sections<'a>(list: &'a [ProjectSummary], grouping: &str) -> Vec<(String, Vec<&'a ProjectSummary>)> {
+    match grouping {
+        "groups" if list.iter().any(|p| p.group.is_some()) => {
+            let mut names: Vec<&str> = list.iter().filter_map(|p| p.group.as_deref()).collect();
+            names.sort_by_key(|n| n.to_lowercase());
+            names.dedup();
+            let mut out: Vec<(String, Vec<&ProjectSummary>)> = names.iter().map(|n| (n.to_string(), list.iter().filter(|p| p.group.as_deref() == Some(n)).collect())).collect();
+            let rest: Vec<&ProjectSummary> = list.iter().filter(|p| p.group.is_none()).collect();
+            if !rest.is_empty() {
+                out.push(("Not in a group".into(), rest));
+            }
+            out
+        }
+        "activity" => {
+            let week = glib::DateTime::now_local().ok().and_then(|n| n.add_days(-7).ok());
+            let recent = |p: &ProjectSummary| p.last_at.as_deref().and_then(fmt::parse).and_then(|t| t.to_local().ok()).zip(week.clone()).is_some_and(|(t, w)| t > w);
+            let kind = |p: &ProjectSummary| {
+                if p.live.waiting > 0 {
+                    0
+                } else if p.live.working > 0 {
+                    1
+                } else if p.paused.is_some() {
+                    2
+                } else if recent(p) {
+                    3
+                } else {
+                    4
+                }
+            };
+            ["Needs you", "At work", "Paused", "This week", "Older"]
+                .into_iter()
+                .enumerate()
+                .map(|(k, t)| (t.to_string(), list.iter().filter(|p| kind(p) == k).collect::<Vec<_>>()))
+                .filter(|(_, v)| !v.is_empty())
+                .collect()
+        }
+        _ => vec![(String::new(), list.iter().collect())],
+    }
+}
+
+/// A project's importance as a tag, when it isn't normal.
+fn importance_tag(p: &ProjectSummary) -> Option<gtk::Box> {
+    match p.importance.as_deref() {
+        Some("high") => Some(w::state_tag("High", "imp-high")),
+        Some("low") => Some(w::state_tag("Low", "imp-low")),
+        _ => None,
+    }
+}
+
+/// One project as a row of a boxed list: its colour and name, its importance, the next step (or
+/// where it was left), and at the end its open sessions and when it was last touched.
+fn project_item(ui: &Ui, p: &ProjectSummary, edge: (bool, bool)) -> gtk::ListBoxRow {
+    let row = w::hbox(14, &["item"]);
+    let mid = w::vbox(4, &[]);
+    mid.set_hexpand(true);
+    let top = w::hbox(8, &[]);
+    let dot = w::dot(&format!("pc-{}", crate::setview::colour_of(p)));
+    dot.add_css_class("tag");
+    top.append(&dot);
+    top.append(&w::label(&p.name, &["pname"]));
+    if let Some(t) = importance_tag(p) {
+        top.append(&t);
+    }
+    if let Some(pause) = &p.paused {
+        let pill = w::label(&format!("paused {}", fmt::short_when(Some(&pause.at))), &["pill", "paused"]);
+        pill.set_tooltip_text(Some(&pause.note));
+        top.append(&pill);
+    }
+    mid.append(&top);
+    let second = if !p.next.is_empty() {
+        p.next.clone()
+    } else if let Some(pause) = p.paused.as_ref().filter(|x| !x.note.is_empty()) {
+        format!("paused with a note: {}", pause.note)
+    } else {
+        p.last_summary.as_deref().map(fmt::recap).filter(|s| !s.is_empty()).map(|s| format!("last time: {s}")).unwrap_or_else(|| "No next step written yet.".into())
+    };
+    let l = w::clip(&second, &["dim"]);
+    l.set_xalign(0.0);
+    mid.append(&l);
+    row.append(&mid);
+    let end = w::hbox(6, &[]);
+    end.set_valign(gtk::Align::Center);
+    if p.live.waiting > 0 {
+        end.append(&w::state_tag(&format!("{} waiting", p.live.waiting), "waiting"));
+    }
+    if p.live.working > 0 {
+        end.append(&w::state_tag(&format!("{} working", p.live.working), "working"));
+    }
+    if let Some(b) = crate::behind::row_line(ui, &p.id) {
+        let t = w::state_tag(&b.text(), "behind");
+        t.set_tooltip_text(b.tooltip_text().as_deref());
+        end.append(&t);
+    }
+    let last = w::label(&fmt::ago(p.last_at.as_deref()), &["num", "dim"]);
+    let id = p.id.clone();
+    live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
+    end.append(&last);
+    row.append(&end);
+    let r = list_row(&p.id, &row);
+    r.add_css_class("itemrow");
+    if edge.0 {
+        r.add_css_class("first");
+    }
+    if edge.1 {
+        r.add_css_class("last");
+    }
+    if p.removed {
+        r.add_css_class("gone");
+    }
+    r
+}
+
+/// Grid or list, as two joined buttons (the choice is remembered).
+fn layout_switch(ui: &Ui) -> gtk::Box {
+    let now = prefs::projects_layout();
+    let b = w::hbox(0, &["pair", "layoutswitch"]);
+    for (id, icon, tip) in [("grid", &["view-grid-symbolic"][..], "Show as cards"), ("list", &["view-list-symbolic"][..], "Show as a list")] {
+        let btn = gtk::Button::new();
+        btn.set_child(Some(&w::icon(icon)));
+        btn.add_css_class("pairbtn");
+        if now == id {
+            btn.add_css_class("on");
+        }
+        btn.set_tooltip_text(Some(tip));
+        btn.update_property(&[gtk::accessible::Property::Label(tip)]);
+        let ui = ui.clone();
+        btn.connect_clicked(move |_| {
+            prefs::change(&ui, |s| s.projects_layout = id.into());
+            ui.st.borrow_mut().chips_drawn.clear();
+            render_chips(&ui);
+            render_view(&ui);
+        });
+        b.append(&btn);
+    }
+    b
+}
+
+/// Organise: how the projects are grouped, and in what order.
+fn organise_menu(ui: &Ui) -> gtk::MenuButton {
+    let mb = gtk::MenuButton::new();
+    mb.set_label("Organise");
+    mb.add_css_class("organise");
+    mb.set_tooltip_text(Some("Group and sort the projects"));
+    let pop = gtk::Popover::new();
+    let items = w::vbox(2, &["moremenu"]);
+    let grouping = prefs::projects_group();
+    let sort = prefs::sort_of(View::Projects);
+    items.append(&w::label("Group by", &["caption-heading", "menuhead"]));
+    for (id, label) in [("groups", "Your groups"), ("activity", "Activity (automatic)"), ("none", "No groups")] {
+        let b = gtk::Button::with_label(&format!("{} {label}", if grouping == id { "✓" } else { "  " }));
+        b.add_css_class("menuitem");
+        let (ui, pop) = (ui.clone(), pop.clone());
+        b.connect_clicked(move |_| {
+            pop.popdown();
+            prefs::change(&ui, |s| s.projects_group = id.into());
+            ui.st.borrow_mut().chips_drawn.clear();
+            render_chips(&ui);
+            render_view(&ui);
+        });
+        items.append(&b);
+    }
+    items.append(&w::label("Sort by", &["caption-heading", "menuhead"]));
+    for (key, label) in [(None, "What needs you"), (Some("importance"), "Importance"), (Some("last"), "Last touched"), (Some("project"), "Name")] {
+        let on = sort.as_ref().map(|(k, _)| k.as_str()) == key;
+        let b = gtk::Button::with_label(&format!("{} {label}", if on { "✓" } else { "  " }));
+        b.add_css_class("menuitem");
+        let (ui, pop) = (ui.clone(), pop.clone());
+        b.connect_clicked(move |_| {
+            pop.popdown();
+            prefs::set_sort(&ui, View::Projects, &key.map(|k| (k.to_string(), false)));
+            ui.st.borrow_mut().drawn.remove(&View::Projects);
+            ui.st.borrow_mut().chips_drawn.clear();
+            render_chips(&ui);
+            render_view(&ui);
+        });
+        items.append(&b);
+    }
+    pop.set_child(Some(&items));
+    mb.set_popover(Some(&pop));
+    mb
 }
 
 /// A grid of cards that keeps the list's ways: selecting one is selecting it (`sel`), and a double
@@ -1516,6 +1721,7 @@ fn card_grid(ui: &Ui, class: &str, max: u32) -> gtk::FlowBox {
                     }
                     Err(_) => return,
                 };
+                app::grid_picked(&ui, view, g);
                 app::follow_sel(&ui, view, key);
             }
         });
@@ -1554,6 +1760,9 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
     head.append(&dot);
     let name = w::clip(&p.name, &["title-3"]);
     head.append(&name);
+    if let Some(t) = importance_tag(p) {
+        head.append(&t);
+    }
     if let Some(pause) = &p.paused {
         let pill = w::label(&format!("paused {}", fmt::short_when(Some(&pause.at))), &["pill", "paused"]);
         pill.set_tooltip_text(Some(&pause.note));
@@ -2143,6 +2352,8 @@ mod tests {
             git_checked: true,
             color: None,
             remote_problem: None,
+            group: None,
+            importance: None,
         }
     }
 

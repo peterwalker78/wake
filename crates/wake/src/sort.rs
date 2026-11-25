@@ -45,6 +45,7 @@ pub fn words(key: &str, rev: bool) -> &'static str {
         "disk" => ("biggest first", "smallest first"),
         "open" => ("most open first", "fewest open first"),
         "git" => ("most loose ends first", "fewest loose ends first"),
+        "importance" => ("most important first", "least important first"),
         _ => ("in order", "reversed"),
     };
     if rev { b } else { a }
@@ -96,6 +97,7 @@ pub fn projects(rows: &mut [ProjectSummary], key: &str, rev: bool, base: fn(&Pro
                 n(b).cmp(&n(a))
             }
             "last" => b.last_at.cmp(&a.last_at),
+            "importance" => importance_rank(a).cmp(&importance_rank(b)),
             _ => Ordering::Equal,
         }
     };
@@ -103,6 +105,15 @@ pub fn projects(rows: &mut [ProjectSummary], key: &str, rev: bool, base: fn(&Pro
         let o = by(a, b);
         a.removed.cmp(&b.removed).then_with(|| if rev { o.reverse() } else { o }).then_with(|| base(a, b))
     });
+}
+
+/// High first, then normal, then low.
+pub fn importance_rank(p: &ProjectSummary) -> u8 {
+    match p.importance.as_deref() {
+        Some("high") => 0,
+        Some("low") => 2,
+        _ => 1,
+    }
 }
 
 /// Agent processes within one group by `key` ("pid", "task", "state", "memory").
@@ -209,6 +220,8 @@ mod tests {
             git_checked: true,
             color: None,
             remote_problem: None,
+            group: None,
+            importance: None,
         }
     }
 

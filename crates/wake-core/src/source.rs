@@ -589,6 +589,8 @@ impl Inner {
             git_checked: gitinfo::cached_totals(p).is_some(),
             color: Some(p.color.as_deref().and_then(store::colour_name).unwrap_or_else(|| store::default_colour(&p.name)).to_string()),
             remote_problem: self.remote_problem(p),
+            group: p.group.clone(),
+            importance: p.importance.clone(),
         }
     }
 
@@ -1244,6 +1246,16 @@ impl Source for Live {
 
     fn set_next(&self, id: &str, next: &str) -> Result<ProjectSummary, String> {
         let p = self.inner.store.set_project_next(id, next).map_err(|e| e.0)?;
+        Ok(self.project_summary_now(&p))
+    }
+
+    fn set_project_group(&self, id: &str, group: Option<&str>) -> Result<ProjectSummary, String> {
+        let p = self.inner.store.set_project_group(id, group).map_err(|e| e.0)?;
+        Ok(self.project_summary_now(&p))
+    }
+
+    fn set_project_importance(&self, id: &str, importance: Option<&str>) -> Result<ProjectSummary, String> {
+        let p = self.inner.store.set_project_importance(id, importance).map_err(|e| e.0)?;
         Ok(self.project_summary_now(&p))
     }
 

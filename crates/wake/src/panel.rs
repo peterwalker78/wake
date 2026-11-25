@@ -1238,6 +1238,85 @@ fn local_only(r: &RepoState) -> bool {
     r.remote_host.is_none()
 }
 
+/// A change to a project, run off the UI thread; it hands back the project as it is now.
+type ProjectChange = Box<dyn FnOnce(&dyn wake_core::Source) -> Result<ProjectSummary, String> + Send>;
+
+/// ⋯ beside Pause: how much the project matters, and which group it is in.
+fn project_menu(ui: &Ui, p: &ProjectSummary) -> gtk::MenuButton {
+    let mb = gtk::MenuButton::new();
+    mb.set_child(Some(&w::icon(w::icons::MORE)));
+    mb.add_css_class("flat");
+    mb.set_widget_name("project-more");
+    mb.set_tooltip_text(Some("Importance and group"));
+    mb.set_valign(gtk::Align::Center);
+    let pop = gtk::Popover::new();
+    let items = w::vbox(2, &["moremenu"]);
+    // Says what changed, and draws the project again.
+    let apply = |ui: &Ui, id: String, work: ProjectChange, said: String| {
+        app::bg(ui, work, move |ui, r| match r {
+            Ok(_) => {
+                app::toast(ui, &said, false);
+                app::refresh(ui);
+                load_project(ui, &id);
+            }
+            Err(e) => app::toast(ui, &e, true),
+        });
+    };
+    items.append(&w::label("Importance", &["caption-heading", "menuhead"]));
+    for (val, label) in [(Some("high"), "High"), (None, "Normal"), (Some("low"), "Low")] {
+        let on = p.importance.as_deref() == val;
+        let b = gtk::Button::with_label(&format!("{} {label}", if on { "✓" } else { "  " }));
+        b.add_css_class("menuitem");
+        let (ui2, pop2, id, name) = (ui.clone(), pop.clone(), p.id.clone(), p.name.clone());
+        b.connect_clicked(move |_| {
+            pop2.popdown();
+            let id2 = id.clone();
+            apply(&ui2, id.clone(), Box::new(move |src| src.set_project_importance(&id2, val)), format!("{name}: {} importance.", label.to_lowercase()));
+        });
+        items.append(&b);
+    }
+    items.append(&w::label("Group", &["caption-heading", "menuhead"]));
+    // A new group by name, or one already in use, or none.
+    let entry = gtk::Entry::builder().placeholder_text("A new group, then Enter").max_length(40).build();
+    entry.set_widget_name("group-entry");
+    {
+        let (ui2, pop2, id, name) = (ui.clone(), pop.clone(), p.id.clone(), p.name.clone());
+        entry.connect_activate(move |e| {
+            let g = e.text().trim().to_string();
+            if g.is_empty() {
+                return;
+            }
+            pop2.popdown();
+            let (id2, g2) = (id.clone(), g.clone());
+            apply(&ui2, id.clone(), Box::new(move |src| src.set_project_group(&id2, Some(&g2))), format!("{name} is in {g}."));
+        });
+    }
+    items.append(&entry);
+    let mut groups: Vec<String> = ui.st.borrow().ov.as_ref().map(|ov| ov.projects.iter().filter_map(|x| x.group.clone()).collect()).unwrap_or_default();
+    groups.sort_by_key(|g| g.to_lowercase());
+    groups.dedup();
+    for g in groups.into_iter().map(Some).chain([None]) {
+        let on = p.group == g;
+        let label = g.clone().unwrap_or_else(|| "No group".into());
+        let b = gtk::Button::with_label(&format!("{} {label}", if on { "✓" } else { "  " }));
+        b.add_css_class("menuitem");
+        let (ui2, pop2, id, name) = (ui.clone(), pop.clone(), p.id.clone(), p.name.clone());
+        b.connect_clicked(move |_| {
+            pop2.popdown();
+            let (id2, g2) = (id.clone(), g.clone());
+            let said = match &g {
+                Some(g) => format!("{name} is in {g}."),
+                None => format!("{name} is in no group."),
+            };
+            apply(&ui2, id.clone(), Box::new(move |src| src.set_project_group(&id2, g2.as_deref())), said);
+        });
+        items.append(&b);
+    }
+    pop.set_child(Some(&items));
+    mb.set_popover(Some(&pop));
+    mb
+}
+
 fn project(ui: &Ui, id: &str) {
     let (detail, summary, edit_next, confirm_remove) = {
         let st = ui.st.borrow();
@@ -1314,6 +1393,8 @@ fn project(ui: &Ui, id: &str) {
             b.set_tooltip_text(Some(&format!("Resume its last session, “{}” ({}): in a new Konsole window.", last.title, fmt::ago(last.last_at.as_deref()))));
             act.append(&b);
         }
+        act.append(&w::spacer());
+        act.append(&project_menu(ui, &p));
     }
     if page.is_none() {
         put_top(ui, &act);

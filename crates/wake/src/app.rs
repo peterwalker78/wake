@@ -164,6 +164,8 @@ pub struct AppState {
     pub projects: HashMap<String, ProjectDetail>,
     pub subs: HashMap<(String, String), SubagentDetail>,
     pub sub_open: HashSet<String>,
+    /// Agents: Claude's own background processes (daemon, terminal hosts, unused spares) shown.
+    pub show_background: bool,
     /// The section of the details shown as a page of its own ("asked", "files"...), else the summary.
     pub panel_page: Option<&'static str>,
     pub edit_next: bool,
@@ -192,9 +194,6 @@ pub struct AppState {
     pub toast_gen: u64,
     pub kept_gen: u64,
     /// Agents: the screensaver's full readouts instead of the small waves (`v`).
-    pub full_readouts: bool,
-    /// Detailed (full readouts in Agents) or reduced (small waves): Settings' default, `z` for now.
-    pub detailed: bool,
     /// Agents: rows opened to show their subagents, and subagents opened to show their steps.
     pub agent_open: HashSet<u32>,
     pub agent_sub_open: HashSet<String>,
@@ -238,6 +237,7 @@ impl Default for AppState {
             subs: HashMap::new(),
             sub_open: HashSet::new(),
             panel_page: None,
+            show_background: false,
             edit_next: false,
             confirm_remove: false,
             idea_tab: IdeaTab::Sort,
@@ -260,8 +260,6 @@ impl Default for AppState {
             cap_manual: false,
             toast_gen: 0,
             kept_gen: 0,
-            full_readouts: false,
-            detailed: false,
             agent_open: HashSet::new(),
             agent_sub_open: HashSet::new(),
             agent_done_open: HashSet::new(),
@@ -289,13 +287,13 @@ pub struct ViewW {
     pub glide: Rc<Glide>,
 }
 
-/// The accent bar at the selected row's left edge, gliding to the next row when the selection
-/// moves (the row's own bar shows again once it arrives).
+/// The selection block: a highlight the shape of the selected row's box, gliding to the next row
+/// when the selection moves (the row's own highlight shows again once it arrives).
 pub struct Glide {
     pub over: gtk::Overlay,
     pub bar: gtk::Box,
-    /// Where the bar last was (y, height), and which row it was on.
-    pub at: std::cell::Cell<Option<(f64, f64)>>,
+    /// Where the block last was (x, y, width, height), and which row it was on.
+    pub at: std::cell::Cell<Option<(f64, f64, f64, f64)>>,
     pub key: RefCell<String>,
     pub stop: RefCell<Option<Rc<std::cell::Cell<bool>>>>,
 }
@@ -772,12 +770,6 @@ fn build(app: &gtk::Application, opts: Opts) {
         let ui2 = ui.clone();
         ui.w.body.connect_changed(move |lay| relayout(&ui2, lay));
     }
-    {
-        let detailed = prefs::detailed();
-        let mut st = ui.st.borrow_mut();
-        st.detailed = detailed;
-        st.full_readouts = detailed;
-    }
     let mut core = prefs::get().core();
     // A screenshot never sends a desktop notification, and asks the remotes only for the
     // behind-the-remote shots, which show what they said.
@@ -1197,7 +1189,6 @@ fn apply_show(ui: &Ui, show: &str) {
         "questions" => crate::questions::show(ui, arg),
         "behind" | "behind-pull" | "behind-wait" => crate::behind::show(ui, what, arg),
         "disk" | "disk-machine" | "disk-clear" | "disk-remove" | "set-project" => crate::disk::show(ui, what, arg), // disk.rs hook
-        "readouts" => agents::toggle_readouts(ui),
         // Projects with "Track a folder" open.
         "track" => {
             set_view(ui, View::Projects);
@@ -1882,26 +1873,6 @@ pub fn redraw_all(ui: &Ui) {
     }
 }
 
-/// Detailed or reduced: full readouts or small waves in Agents. `say` tells
-/// the person (for `z`, which only lasts until Wake closes).
-pub fn set_detailed(ui: &Ui, on: bool, say: bool) {
-    {
-        let mut st = ui.st.borrow_mut();
-        st.detailed = on;
-        st.full_readouts = on;
-        st.drawn.remove(&View::Agents);
-        st.panel_drawn = None;
-        st.chips_drawn.clear();
-    }
-    render_all(ui);
-    if ui.st.borrow().view == View::Agents {
-        agents::render(ui);
-    }
-    if say {
-        toast(ui, if on { "More detail for now: full readouts in Agents. z again for less." } else { "Less detail for now: small waves in Agents. z again for more." }, false);
-    }
-}
-
 /// Wake's window buttons follow this desktop's: under Slipstream, close only.
 pub fn slipstream_desktop(xdg_current_desktop: &str) -> bool {
     xdg_current_desktop.split(':').any(|d| d.eq_ignore_ascii_case("slipstream"))
@@ -2004,6 +1975,13 @@ pub fn follow_sel(ui: &Ui, v: View, key: String) {
         match v {
             View::Monitor | View::History => panel::open_session(&ui, &key, false),
             View::Projects => panel::open_project(&ui, &key, false),
+            // An agent's row: its session's details, when it has a session.
+            View::Agents => {
+                let sid = agents::selected_proc(&ui.st.borrow()).and_then(|p| p.session_id.clone());
+                if let Some(sid) = sid.filter(|s| ui.st.borrow().drawer != Some(Drawer::Session(s.clone()))) {
+                    panel::open_session(&ui, &sid, false);
+                }
+            }
             _ => {}
         }
     });
@@ -2253,9 +2231,9 @@ pub fn stretch(from: (f64, f64), to: (f64, f64), t: f64) -> (f64, f64) {
     (top.min(bottom - 2.0), bottom)
 }
 
-/// Moves the selection bar to `row`: it glides from where it was (150–220 ms, easing out); the
-/// row's own bar shows again when it gets there. With motion off, or the same row redrawn, it
-/// just is there.
+/// Moves the selection block to `row`'s box: it glides from where it was, stretching as it
+/// travels and drawing itself in as it lands, then hands over to the row's own highlight. With
+/// motion off, or the same row redrawn, it just shows on the row.
 pub fn glide_to(g: &Rc<Glide>, row: Option<&gtk::ListBoxRow>) {
     if let Some(s) = g.stop.borrow_mut().take() {
         s.set(true);
@@ -2271,34 +2249,42 @@ pub fn glide_to(g: &Rc<Glide>, row: Option<&gtk::ListBoxRow>) {
         g.key.borrow_mut().clear();
         return;
     };
+    // The row's own box (a card, a boxed row) where it has one: the block takes its shape.
+    let target: gtk::Widget = row.child().unwrap_or_else(|| row.clone().upcast());
     let key = row.widget_name().to_string();
     let same = *g.key.borrow() == key;
     *g.key.borrow_mut() = key;
+    let rect = |w: &gtk::Widget, over: &gtk::Overlay| w.compute_bounds(over).map(|b| (f64::from(b.x()), f64::from(b.y()), f64::from(b.width()), f64::from(b.height())));
     let from = g.at.get();
-    let (g2, r2) = (g.clone(), row.clone());
-    let Some((fy, fh)) = from.filter(|_| !same && crate::motion::on() && row.is_mapped()) else {
+    let (g2, t2) = (g.clone(), target.clone());
+    let Some((fx, fy, fw, fh)) = from.filter(|_| !same && crate::motion::on() && row.is_mapped()) else {
         g.bar.set_visible(false);
         crate::motion::after_layout(row, move || {
-            if let Some(b) = r2.compute_bounds(&g2.over) {
-                g2.at.set(Some((f64::from(b.y()), f64::from(b.height()))));
+            if let Some(r) = rect(&t2, &g2.over) {
+                g2.at.set(Some(r));
             }
         });
         return;
     };
+    let place = |bar: &gtk::Box, x: f64, y: f64, w: f64, h: f64| {
+        bar.set_margin_start(x.round() as i32);
+        bar.set_margin_top(y.round() as i32);
+        bar.set_size_request(w.round().max(4.0) as i32, h.round().max(4.0) as i32);
+    };
     row.add_css_class("glide");
-    g.bar.set_margin_top(fy as i32);
-    g.bar.set_size_request(2, fh as i32);
+    place(&g.bar, fx, fy, fw, fh);
     g.bar.add_css_class("moving");
     g.bar.set_visible(true);
+    let r2 = row.clone();
     let stop = crate::motion::animate(row, STRETCH_MS, move |eased| {
-        let Some(b) = r2.compute_bounds(&g2.over) else { return };
-        let (ty, th) = (f64::from(b.y()), f64::from(b.height()));
+        let Some((tx, ty, tw, th)) = rect(&t2, &g2.over) else { return };
         // `animate` hands over eased progress; the two edges want their own timing, so undo it.
         let t = 1.0 - (1.0 - eased).cbrt();
         let (top, bottom) = stretch((fy, fy + fh), (ty, ty + th), t);
-        g2.bar.set_margin_top(top.round() as i32);
-        g2.bar.set_size_request(2, (bottom - top).round().max(2.0) as i32);
-        g2.at.set(Some((top, bottom - top)));
+        let x = fx + (tx - fx) * eased;
+        let w = fw + (tw - fw) * eased;
+        place(&g2.bar, x, top, w, bottom - top);
+        g2.at.set(Some((x, top, w, bottom - top)));
         if eased >= 1.0 {
             g2.bar.remove_css_class("moving");
             g2.bar.set_visible(false);
@@ -2537,7 +2523,6 @@ pub enum Cmd {
     Done,
     Stop,
     StopAllStale,
-    Readouts,
     Expand,
     Collapse,
     Escape,
@@ -2545,8 +2530,6 @@ pub enum Cmd {
     Keys,
     /// `a`: ask a question (the Questions view, the keyboard in its input).
     Ask,
-    /// `z`: detailed or reduced, for now.
-    Density,
     /// Ideas, `s`: start an agent on the ticked ideas (or the selected one).
     StartAgent,
 }
@@ -2576,7 +2559,6 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
         K::_5 | K::KP_5 => Cmd::View(View::History),
         K::_6 | K::KP_6 => Cmd::View(View::Questions),
         K::comma => Cmd::View(View::Settings),
-        K::z => Cmd::Density,
         K::a => Cmd::Ask,
         K::j | K::Down => Cmd::Down,
         K::k | K::Up => Cmd::Up,
@@ -2590,7 +2572,6 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
         K::d if ideas => Cmd::Done,
         K::s | K::Delete if agents => Cmd::Stop,
         K::s if ideas => Cmd::StartAgent,
-        K::v if agents => Cmd::Readouts,
         K::Right | K::l if agents || settings => Cmd::Expand,
         K::Left | K::h if agents || settings => Cmd::Collapse,
         K::Escape => Cmd::Escape,
@@ -2794,11 +2775,6 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
         }
         Cmd::StopAllStale => agents::stop_all_stale(ui),
         Cmd::StartAgent => crate::start::open(ui, None),
-        Cmd::Readouts => agents::toggle_readouts(ui),
-        Cmd::Density => {
-            let on = !ui.st.borrow().detailed;
-            set_detailed(ui, on, true);
-        }
         Cmd::Expand | Cmd::Collapse if view == View::Settings => return setview::step(ui, if cmd == Cmd::Expand { 1 } else { -1 }),
         Cmd::Expand | Cmd::Collapse if view == View::Agents => return agents::key(ui, if cmd == Cmd::Expand { agents::TreeKey::Right } else { agents::TreeKey::Left }),
         Cmd::Expand | Cmd::Collapse => return false,
@@ -2884,8 +2860,6 @@ mod tests {
         assert_eq!(command_for(K::o, false, View::History, false), Some(Cmd::GoTo));
         assert_eq!(command_for(K::g, false, View::Ideas, false), Some(Cmd::Switcher));
         assert_eq!(command_for(K::comma, false, View::Agents, false), Some(Cmd::View(View::Settings)));
-        assert_eq!(command_for(K::z, false, View::Monitor, false), Some(Cmd::Density));
-        assert_eq!(command_for(K::Z, false, View::Monitor, false), Some(Cmd::Density), "Caps Lock z too");
     }
 
     #[test]
@@ -2914,10 +2888,6 @@ mod tests {
         assert_eq!(command_for(K::space, false, View::Settings, false), Some(Cmd::Open), "Space flips a switch");
         assert_eq!(command_for(K::space, false, View::Monitor, false), None);
         assert_eq!(command_for(K::Right, false, View::Monitor, false), None, "arrows elsewhere are GTK's");
-        // z was free: no view uses it for anything else.
-        for v in View::ALL {
-            assert_eq!(command_for(K::z, false, v, false), Some(Cmd::Density));
-        }
     }
 
     #[test]
@@ -2937,7 +2907,6 @@ mod tests {
         assert_eq!(command_for(K::S, true, View::Monitor, false), None);
         assert_eq!(command_for(K::s, false, View::Monitor, false), None);
         assert_eq!(command_for(K::Right, false, View::Agents, false), Some(Cmd::Expand));
-        assert_eq!(command_for(K::v, false, View::Agents, false), Some(Cmd::Readouts));
     }
 
     #[test]

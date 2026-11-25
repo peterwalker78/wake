@@ -248,7 +248,6 @@ pub fn keys(ui: &Ui) {
             vec![
                 ("1 – 6", "Monitor, Agents, Projects, Ideas, History, Questions".into()),
                 (",", "settings".into()),
-                ("z", "more or less detail, for now".into()),
                 ("a", "ask a question".into()),
                 ("g  Ctrl+K", "go to a session by name".into()),
                 ("c", "capture an idea (asks the project first)".into()),
@@ -278,7 +277,6 @@ pub fn keys(ui: &Ui) {
                 ("Enter", "on a subagent, its steps; on \"N finished\", the finished ones".into()),
                 ("s", "stop the selected agent".into()),
                 ("Shift+S", "stop every stale agent".into()),
-                ("v", "small waves or full readouts".into()),
             ],
         ),
         ("Ideas", vec![("x", "tick for a brief".into()), ("s", "start an agent on them (asks first)".into()), ("d", "done".into()), ("Enter", "sort into a project".into())]),

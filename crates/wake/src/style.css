@@ -538,10 +538,15 @@ window.wake .swatches button.swatch { min-width: 16px; min-height: 16px; border-
 .pal.pa, .modal.pa, .toast.pa { animation: wake-pop-a 180ms ease-out; }
 .pal.pb, .modal.pb, .toast.pb { animation: wake-pop-b 180ms ease-out; }
 /* The selection bar gliding between rows; the row's own bar waits until it arrives. */
-.selbar { background-color: @accent; min-width: 2px; border-radius: 1px; }
+/* The selection block: the shape of the selected row's box, gliding between rows. It looks
+   like a selected row, so it hands over to the row's own highlight without a seam. */
+.selbar { background-color: alpha(@accent, .13); border-radius: 12px; box-shadow: inset 3px 0 @accent, inset 0 0 0 1px alpha(@accent, .45); }
 /* While it travels: a soft glow, so the stretch reads as light moving rather than a box resizing. */
-.selbar.moving { box-shadow: 0 0 6px alpha(@accent, .55); }
+.selbar.moving { box-shadow: inset 3px 0 @accent, inset 0 0 0 1px alpha(@accent, .6), 0 6px 22px alpha(@accent, .22); }
 list.table > row.glide:selected, list.table > row.glide:focus:focus-visible:not(:selected) { box-shadow: none; }
+/* While the block travels, the row it is heading for waits to show its own highlight. */
+list.table > row.glide:selected .item, list.table > row.glide:selected > box { background-color: @panel; box-shadow: none; }
+list.table > row.glide:selected .card { border-color: @line2; box-shadow: none; }
 
 /* ---- Why it stopped ---- */
 .why-line { font-size: 12.5px; color: @soft; }
@@ -725,7 +730,7 @@ list.table > row.itemrow.first .item { border-top: 1px solid @line2; border-radi
 list.table > row.itemrow.last .item { border-bottom: 1px solid @line2; border-radius: 0 0 12px 12px; }
 list.table > row.itemrow.first.last .item { border-radius: 12px; }
 list.table > row.itemrow:hover .item { background-color: @row; }
-list.table > row.itemrow:selected .item { background-color: @rowhi; box-shadow: inset 3px 0 @accent; }
+list.table > row.itemrow:selected .item { background-color: alpha(@accent, .13); box-shadow: inset 3px 0 @accent; }
 .item .happ { font-size: 13.5px; }
 
 /* grids of cards: Projects and Ideas */
@@ -757,7 +762,7 @@ list.table > row.boxed > box { background-color: @panel; border-left: 1px solid 
 list.table > row.boxedge.edgetop + row.boxed > box { border-top-color: transparent; }
 list.table > row.boxed:hover, list.table > row.boxed:selected { background-color: transparent; box-shadow: none; }
 list.table > row.boxed:hover > box { background-color: @row; }
-list.table > row.boxed:selected > box { background-color: @rowhi; box-shadow: inset 3px 0 @accent; }
+list.table > row.boxed:selected > box { background-color: alpha(@accent, .13); box-shadow: inset 3px 0 @accent; }
 list.table > row.boxedge { padding: 0 24px; border-bottom: none; background-color: transparent; }
 list.table > row.boxedge > box { min-height: 6px; background-color: @panel; border-left: 1px solid @line2; border-right: 1px solid @line2; }
 list.table > row.boxedge.edgetop > box { border-top: 1px solid @line2; border-radius: 12px 12px 0 0; }

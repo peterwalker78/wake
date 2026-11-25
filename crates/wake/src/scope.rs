@@ -263,18 +263,29 @@ impl Model {
     }
 }
 
-/// A readout for `pid` with `rows` helper rows, drawn from `model`.
-pub fn readout(model: &Shared, pid: u32, rows: usize, label: &str) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::builder().content_width(WIDTH).content_height(height(rows)).accessible_role(gtk::AccessibleRole::Img).build();
+/// The readout as Wake's Agents shows it: the screensaver's whole readout (backing, name, PID,
+/// trace, helper rows) at seven tenths of its size, so it sits in a row.
+pub const COMPACT_W: i32 = WIDTH * 7 / 10;
+const COMPACT: f64 = 0.7;
+
+/// How tall the smaller readout listing `rows` helper rows is.
+pub fn compact_height(rows: usize) -> i32 {
+    (f64::from(height(rows)) * COMPACT).ceil() as i32
+}
+
+pub fn compact(model: &Shared, pid: u32, rows: usize, label: &str) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder().content_width(COMPACT_W).content_height(compact_height(rows)).accessible_role(gtk::AccessibleRole::Img).build();
     area.update_property(&[gtk::accessible::Property::Label(label)]);
-    area.set_valign(gtk::Align::Start);
+    area.set_valign(gtk::Align::Center);
     area.add_css_class("readout");
     let model = model.clone();
-    area.set_draw_func(move |area, cr, w, h| {
+    area.set_draw_func(move |area, cr, _, _| {
         let scale = area.native().and_then(|n| n.surface()).map_or(area.scale_factor() as f64, |s| s.scale());
         let Ok(model) = model.try_borrow() else { return };
         if let Some(trace) = model.traces.get(&pid) {
-            let _ = draw(cr, area, &model, trace, (w, h), scale);
+            // The same drawing at its own size, scaled down (and snapped at the scaled pixel).
+            cr.scale(COMPACT, COMPACT);
+            let _ = draw(cr, area, &model, trace, (WIDTH, height(rows)), scale * COMPACT);
         }
     });
     area

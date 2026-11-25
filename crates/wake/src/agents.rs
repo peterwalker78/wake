@@ -1,12 +1,13 @@
 //! The Agents view: which PID is which task, what its subagents are doing, and stopping the stale
 //! ones.
 //!
-//! One row per agent process, as a tree (Claude's daemon, then sessions with their pty host or
-//! attach client folded in, spares, strays, then notes whose process has gone). Each row has a
-//! small wave drawn exactly as the screensaver's readout (`scope.rs`); `v` swaps in the full
-//! readouts. A row with subagents opens (→, or its count) to list them, as the switcher does, and
-//! each opens again for its steps. Rows keep their order (kind, then stale last, then start time),
-//! and memory, CPU and idle time change in place, so nothing moves while you read.
+//! One row per agent process, grouped by what to do about it (stale first, then sessions by state,
+//! then Claude's background processes, then what Wake can't place), each group a box. A working
+//! agent's row carries the screensaver's whole readout (`scope.rs`) at seven tenths of its size:
+//! its name, PID, trace and helper rows. A row with subagents opens (→, or its count) to list
+//! them, as the switcher does, and each opens again for its steps. Rows keep their order within a
+//! group (as they started), and memory, CPU and idle time change in place, so nothing moves while
+//! you read.
 //!
 //! Every stop goes through `Source::stop` with the process's start time, after a confirmation
 //! naming the task, where Cancel has the keyboard. Force only after a polite stop has had five
@@ -27,8 +28,7 @@ use crate::{
 
 type Col = (&'static str, i32, bool, bool);
 
-/// The columns: the wave (small or full), PID, task, state, memory, where, why stale, stop. With
-/// the side panel open, the wave, Where and Why stale make way.
+/// The columns: the readout, PID, task, state, memory, where, why stale, stop.
 /// Which columns make way: with the side panel open, the wave, Where and Why stale; and Where or
 /// Why stale whenever no row has anything to say in it.
 fn hidden_cols(compact: bool, tight: bool, any_where: bool, any_stale: bool) -> u8 {
@@ -40,6 +40,10 @@ fn hidden_cols(compact: bool, tight: bool, any_where: bool, any_stale: bool) -> 
     // stale rows still show it: their Stop is red, and the reason is in the details).
     if tight {
         m |= 1 << 5 | 1 << 6;
+    }
+    // Narrower still with its readouts, the PID goes too (it is in the details, and the tooltip).
+    if tight && !compact {
+        m |= 1 << 1;
     }
     if !any_where {
         m |= 1 << 5;
@@ -56,18 +60,17 @@ fn sort_keys(hide: u8) -> Vec<Option<&'static str>> {
     all.into_iter().enumerate().filter(|(i, _)| hide & (1 << i) == 0).map(|(_, k)| k).collect()
 }
 
-fn cols(full: bool, hide: u8) -> Vec<Col> {
+fn cols(hide: u8) -> Vec<Col> {
     // Compact (the waves gone), the titles are one word each, so they fit their narrower columns.
     let short = hide & 1 != 0;
     let all: [Col; 8] = [
-        ("", (if full { scope::WIDTH } else { scope::MINI_W }) | w::FIXED, false, false),
+        ("", scope::COMPACT_W | w::FIXED, false, false),
         ("PID", 64, false, false),
-        // The full readouts take 170 px more, so the other columns start narrower then.
-        (if short { "Task" } else { "Task · project" }, if full { 160 } else { 220 }, true, false),
+        (if short { "Task" } else { "Task · project" }, 180, true, false),
         (if short { "State" } else { "State · idle" }, 126, false, false),
         (if short { "Mem" } else { "Memory" }, 84, false, false),
-        ("Where", if full { 110 } else { 120 }, false, false),
-        ("Why stale", if full { 130 } else { 150 }, false, false),
+        ("Where", 110, false, false),
+        ("Why stale", 140, false, false),
         ("", 56, false, false),
     ];
     all.into_iter().enumerate().filter(|(i, _)| hide & (1 << i) == 0).map(|(_, c)| c).collect()
@@ -206,11 +209,11 @@ fn signature(st: &app::AppState, p: &ProcOverview) -> String {
     // Sorted by memory, the order follows memory: then memory (to the nearest 100 MB) redraws too.
     let by = prefs::sort_of(View::Agents);
     let mem: Vec<u64> = if by.as_ref().is_some_and(|(k, _)| k == "memory") { p.procs.iter().map(|a| a.rss_bytes / (100 << 20)).collect() } else { vec![] };
-    format!("{}{}{}{low:?}{:?}{}{rows:?}{by:?}{mem:?}", st.stale_only, st.full_readouts, app::compact(st), p.dead_notes, st.lay.tight)
+    format!("{}{}{low:?}{:?}{}{rows:?}{by:?}{mem:?}{}", st.stale_only, app::compact(st), p.dead_notes, st.lay.tight, st.show_background)
 }
 
 pub fn render(ui: &Ui) {
-    let (procs, sig, stale_only, full, compact) = {
+    let (procs, sig, stale_only, compact) = {
         let st = ui.st.borrow();
         let Some(p) = st.procs.clone() else {
             drop(st);
@@ -221,7 +224,8 @@ pub fn render(ui: &Ui) {
         };
         let sig = signature(&st, &p);
         // Every agent shows: the stale ones are the first group (the old "Looks stale" filter is gone).
-        (p, sig, false, st.full_readouts, app::compact(&st))
+        // Phone-narrow, the readouts make way as they do beside the details.
+        (p, sig, false, app::compact(&st) || st.lay.push)
     };
     let p = procs;
     ui.scope.borrow_mut().follow(&followers(&p), &p.dead_notes);
@@ -263,11 +267,6 @@ pub fn render(ui: &Ui) {
     head.append(&line);
     let acts = w::hbox(8, &["agentacts"]);
     acts.set_valign(gtk::Align::Center);
-    let full_now = ui.st.borrow().full_readouts;
-    let ui2 = ui.clone();
-    let b = w::button(if full_now { "Small waves" } else { "Full readouts" }, Some("v"), &[], move || toggle_readouts(&ui2));
-    b.set_tooltip_text(Some(if full_now { "Show a small wave per agent (v)" } else { "Show each agent's readout as your screensaver draws it (v)" }));
-    acts.append(&b);
     let n_stale = stale_summary(&p).0;
     if n_stale > 0 {
         let ui2 = ui.clone();
@@ -276,7 +275,7 @@ pub fn render(ui: &Ui) {
     head.append(&acts);
     vw.top.append(&head);
     let hide = hidden_cols(compact, ui.st.borrow().lay.tight, p.procs.iter().any(|a| where_words(a).is_some()), p.procs.iter().any(|a| a.stale_reason.is_some()) || !p.dead_notes.is_empty());
-    let cols = cols(full, hide);
+    let cols = cols(hide);
     vw.head.append(&views::sort_head(ui, View::Agents, &cols, &sort_keys(hide)));
 
     let rows = ordered_by(&p, stale_only, &prefs::sort_of(View::Agents));
@@ -289,32 +288,61 @@ pub fn render(ui: &Ui) {
     let daemon = p.procs.iter().find(|a| a.kind == ProcKind::Daemon).map(|a| a.pid);
     // Each group's count, of its top-level rows (subagents sit under their session).
     let rows_in: Vec<&str> = rows.iter().filter(|(_, a)| a.kind != ProcKind::Subagent).map(|(g, _)| *g).collect();
+    // Claude's own background processes are hidden until asked for: their heading says how many.
+    let show_bg = ui.st.borrow().show_background;
     let mut last_group = "";
+    // Whether a group's box is open (a folded group has none to close).
+    let mut boxed = false;
     for (group, a) in rows {
+        let hidden = group == "In the background" && !show_bg;
+        if hidden && group == last_group {
+            continue;
+        }
         if group != last_group {
             // Each group is a box: its heading above, its rows inside, rounded top and bottom.
-            if !last_group.is_empty() {
+            if boxed {
                 vw.list.append(&box_edge(false));
+                boxed = false;
             }
             let n = rows_in.iter().filter(|g| **g == group).count();
-            vw.list.append(&views::group_row(group, n, group_words(group)));
-            vw.list.append(&box_edge(true));
+            let head = views::group_row(group, n, group_words(group).filter(|_| !hidden));
+            if group == "In the background" {
+                head.add_css_class("bghead");
+                if let Some(line) = head.child().and_then(|b| b.first_child()).and_downcast::<gtk::Box>() {
+                    line.append(&w::spacer());
+                    let ui2 = ui.clone();
+                    let b = w::button(if hidden { "Show them" } else { "Hide them" }, None, &["sm"], move || {
+                        let on = !ui2.st.borrow().show_background;
+                        ui2.st.borrow_mut().show_background = on;
+                        render(&ui2);
+                    });
+                    b.set_tooltip_text(Some("Claude's daemon, terminal hosts and unused spare sessions: they run on their own, and Wake never stops the daemon."));
+                    line.append(&b);
+                }
+            }
+            vw.list.append(&head);
             last_group = group;
+            if hidden {
+                // No box: the group is folded away.
+                continue;
+            }
+            vw.list.append(&box_edge(true));
+            boxed = true;
         }
-        vw.list.append(&proc_row(ui, a, daemon, &p, &cols, full, hide));
+        vw.list.append(&proc_row(ui, a, daemon, &p, &cols, hide));
         // Its open subagents, each a row of its own under it.
         for want in wanted(ui, a) {
             vw.list.append(&build(ui, a, &want, &cols, hide));
         }
     }
-    if !last_group.is_empty() {
+    if boxed {
         vw.list.append(&box_edge(false));
     }
     if !stale_only && !p.dead_notes.is_empty() {
         vw.list.append(&views::group_row("Notes whose process has gone", p.dead_notes.len(), None));
         vw.list.append(&box_edge(true));
         for &pid in &p.dead_notes {
-            vw.list.append(&dead_row(ui, pid, &cols, full, hide));
+            vw.list.append(&dead_row(ui, pid, &cols, hide));
         }
         vw.list.append(&box_edge(false));
     }
@@ -359,12 +387,12 @@ fn group_words(group: &str) -> Option<&'static str> {
     }
 }
 
-fn wave_cell(ui: &Ui, a: &AgentProc, full: bool) -> gtk::Widget {
-    // A wave only while it works: an idle agent's flat line says nothing its state doesn't.
-    match a.note.as_ref().filter(|_| a.state == State::Working || full) {
+fn wave_cell(ui: &Ui, a: &AgentProc) -> gtk::Widget {
+    // A readout only while it works: an idle agent's flat line says nothing its state doesn't.
+    match a.note.as_ref().filter(|_| a.state == State::Working) {
         Some(n) => {
             let what = format!("PID {}, {}", a.pid, if n.idle { "idle" } else { "working" });
-            let area = if full { scope::readout(&ui.scope, a.pid, scope::rows(&n.helpers).len(), &what) } else { scope::mini(&ui.scope, a.pid, &what) };
+            let area = scope::compact(&ui.scope, a.pid, scope::rows(&n.helpers).len(), &what);
             ui.readouts.borrow_mut().push(area.clone());
             area.upcast()
         }
@@ -383,7 +411,7 @@ fn where_words(a: &AgentProc) -> Option<String> {
     a.location.as_ref().map(app::tab_label)
 }
 
-fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols: &[Col], full: bool, hide: u8) -> gtk::ListBoxRow {
+fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols: &[Col], hide: u8) -> gtk::ListBoxRow {
     let pid = w::vbox(2, &[]);
     pid.append(&w::clip(&a.pid.to_string(), &["pid"]));
     if a.kind == ProcKind::Subagent {
@@ -511,7 +539,7 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
         b.set_halign(gtk::Align::Start);
         b.upcast()
     };
-    let r = w::row(cells(vec![wave_cell(ui, a, full), pid.upcast(), task.upcast(), state.upcast(), mem.upcast(), where_.upcast(), why, act], cols, hide), &["tr", "agentrow"]);
+    let r = w::row(cells(vec![wave_cell(ui, a), pid.upcast(), task.upcast(), state.upcast(), mem.upcast(), where_.upcast(), why, act], cols, hide), &["tr", "agentrow"]);
     if is_stale(a) {
         r.add_css_class("stale");
     }
@@ -547,9 +575,9 @@ fn cpu_words(a: &AgentProc) -> String {
     a.cpu_percent.map_or("CPU —".into(), |c| format!("CPU {c:.0}%"))
 }
 
-fn dead_row(ui: &Ui, pid: u32, cols: &[Col], full: bool, hide: u8) -> gtk::ListBoxRow {
+fn dead_row(ui: &Ui, pid: u32, cols: &[Col], hide: u8) -> gtk::ListBoxRow {
     let wave: gtk::Widget = {
-        let area = if full { scope::readout(&ui.scope, pid, 0, &format!("PID {pid}, gone")) } else { scope::mini(&ui.scope, pid, &format!("PID {pid}, gone")) };
+        let area = scope::compact(&ui.scope, pid, 0, &format!("PID {pid}, gone"));
         ui.readouts.borrow_mut().push(area.clone());
         area.upcast()
     };
@@ -677,7 +705,9 @@ pub fn key(ui: &Ui, k: TreeKey) -> bool {
     };
     match (act(&row, k, open), &row) {
         (Act::Panel, _) => {
-            if let Some(id) = app::selected_session(ui) {
+            // The row's own session, never the one the panel already shows.
+            let id = selected_proc(&ui.st.borrow()).and_then(|p| p.session_id.clone());
+            if let Some(id) = id {
                 panel::open_session(ui, &id, true);
             }
         }
@@ -713,10 +743,10 @@ thread_local! {
 /// The columns and hidden-column mask the list is drawn with now (the tree must match them).
 fn layout(ui: &Ui) -> (Vec<Col>, u8) {
     let st = ui.st.borrow();
-    let (full, compact) = (st.full_readouts, app::compact(&st));
+    let compact = app::compact(&st) || st.lay.push;
     let p = st.procs.clone().unwrap_or_default();
     let hide = hidden_cols(compact, st.lay.tight, p.procs.iter().any(|a| where_words(a).is_some()), p.procs.iter().any(|a| a.stale_reason.is_some()) || !p.dead_notes.is_empty());
-    (cols(full, hide), hide)
+    (cols(hide), hide)
 }
 
 /// How a tree row joins the line: on the trunk (more below), the trunk's end, or (under the
@@ -1360,17 +1390,6 @@ pub fn show_row(ui: &Ui, pid: u32) {
         ui.w.views[&View::Agents].list.select_row(Some(&row));
         crate::motion::scroll_into_view(&ui.w.views[&View::Agents].scroll, &row);
     }
-}
-
-/// `v`: the screensaver's full readouts, or the small waves.
-pub fn toggle_readouts(ui: &Ui) {
-    {
-        let mut st = ui.st.borrow_mut();
-        st.full_readouts = !st.full_readouts;
-    }
-    views::render_chips(ui);
-    views::render_status(ui);
-    render(ui);
 }
 
 /// After each process refresh: the open rows' subagents again, so their live lines stay current.

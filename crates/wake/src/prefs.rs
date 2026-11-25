@@ -25,14 +25,13 @@ fn dir() -> std::path::PathBuf {
 /// Reads the settings file; `saves` is false for a demo or a screenshot.
 pub fn init(saves: bool) {
     let (mut s, note) = settings::load(&dir());
-    for (var, field, allowed) in [("WAKE_THEME", 0, &settings::THEMES[..]), ("WAKE_ACCENT", 1, &settings::ACCENTS[..]), ("WAKE_DENSITY", 2, &settings::DENSITIES[..])] {
+    for (var, field, allowed) in [("WAKE_THEME", 0, &settings::THEMES[..]), ("WAKE_ACCENT", 1, &settings::ACCENTS[..])] {
         if let Ok(v) = std::env::var(var)
             && allowed.contains(&v.as_str())
         {
             match field {
                 0 => s.theme = v,
-                1 => s.accent = v,
-                _ => s.density = v,
+                _ => s.accent = v,
             }
         }
     }
@@ -77,10 +76,6 @@ pub fn change(ui: &Ui, f: impl FnOnce(&mut Settings)) {
             crate::app::toast(&ui, &e, true);
         }
     });
-}
-
-pub fn detailed() -> bool {
-    get().density == "detailed"
 }
 
 /// A view's remembered sort.

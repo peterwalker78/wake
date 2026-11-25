@@ -94,7 +94,6 @@ pub fn sections(s: &Settings, ais: &[AiChoice]) -> Vec<(&'static str, Vec<Row>)>
     let look = vec![
         row("theme", "Theme", "", Kind::Segments, vec![ch("dark", "Dark"), ch("light", "Light"), ch("system", "System")], &s.theme),
         row("accent", "Accent", "", Kind::Swatches, theme::ACCENTS.iter().map(|(n, ..)| ch(n, &cap(n))).collect(), &s.accent),
-        row("density", "Detail", "Detailed draws each agent's full readout in Agents; z switches it for now.", Kind::Segments, vec![ch("reduced", "Reduced"), ch("detailed", "Detailed")], &s.density),
         switch("motion", "Motion", "Panels slide and rows fade, briefly. Off keeps everything still.", s.motion != "reduced"),
     ];
     let open = vec![row("start", "Start on", "", Kind::Dropdown, START_VIEWS.iter().map(|v| ch(v.id(), v.name())).collect(), &s.start_view)];
@@ -418,10 +417,6 @@ pub fn apply(ui: &Ui, key: &str, id: &str) {
             theme::apply(&p.theme, &p.accent);
             app::redraw_all(ui);
         }
-        "density" => {
-            prefs::change(ui, |s| s.density = id.clone());
-            app::set_detailed(ui, id == "detailed", false);
-        }
         "motion" => {
             prefs::change(ui, |s| s.motion = if id == "on" { "full" } else { "reduced" }.into());
             crate::motion::apply(ui);
@@ -507,7 +502,6 @@ mod tests {
                 ("ai", Kind::Segments),
                 ("theme", Kind::Segments),
                 ("accent", Kind::Swatches),
-                ("density", Kind::Segments),
                 ("motion", Kind::Switch),
                 ("start", Kind::Dropdown),
                 ("remote", Kind::Segments),
@@ -519,14 +513,14 @@ mod tests {
                 assert!(r.choices.iter().any(|c| c.id == r.current), "{} shows its value", r.key);
             }
         }
-        let motion = &secs[1].1[3];
+        let motion = &secs[1].1[2];
         assert_eq!(motion.current, "on", "full motion is on");
         assert_eq!(step_choice(motion, -1).as_deref(), Some("off"));
         let mut s = Settings::default();
         s.motion = "reduced".into();
         s.notify_behind = false;
         let secs = sections(&s, &[]);
-        assert_eq!((secs[1].1[3].current.as_str(), secs[3].1[1].current.as_str()), ("off", "off"));
+        assert_eq!((secs[1].1[2].current.as_str(), secs[3].1[1].current.as_str()), ("off", "off"));
         assert!(secs[1].1[0].choices.iter().map(|c| c.label.as_str()).eq(["Dark", "Light", "System"]));
         assert!(secs[3].1[0].choices.iter().map(|c| c.label.as_str()).eq(["Off", "5 min", "10 min", "30 min"]));
     }

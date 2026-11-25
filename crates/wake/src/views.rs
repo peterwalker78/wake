@@ -657,7 +657,7 @@ fn chips_sig(st: &AppState) -> String {
         View::Projects => vec![ov.projects.iter().filter(|p| p.removed).count()],
         View::History | View::Questions | View::Settings => vec![],
     };
-    format!("{:?}{:?}{:?}{}{}{:?}{:?}{}{}{counts:?}", st.view, st.filter, st.proj_filter, st.stale_only, st.full_readouts, st.idea_tab, st.picked, st.show_removed, ov.projects.len())
+    format!("{:?}{:?}{:?}{}{:?}{:?}{}{}{counts:?}", st.view, st.filter, st.proj_filter, st.stale_only, st.idea_tab, st.picked, st.show_removed, ov.projects.len())
 }
 
 pub fn render_chips(ui: &Ui) {
@@ -737,20 +737,8 @@ pub fn render_chips(ui: &Ui) {
                 chips.add(&w::label(PURPOSE_MONITOR, &["meta"]), PURPOSE_PRIO);
             }
         }
-        View::Agents => {
-            // No filter: what looks stale is the first group. The row keeps the two actions.
-            let stale = st.procs.as_ref().map_or(0, |p| agents::row_count(p, true));
-            chips.add_next(&w::spacer());
-            let ui2 = ui.clone();
-            let full = st.full_readouts;
-            let b = w::button(if full { "Small waves" } else { "Full readouts" }, Some("v"), &["ghost", "sm"], move || agents::toggle_readouts(&ui2));
-            b.set_tooltip_text(Some(if full { "Show a small wave per agent" } else { "Show each agent's readout as your screensaver draws it" }));
-            chips.add_next(&b);
-            if stale > 0 {
-                let ui2 = ui.clone();
-                chips.add_next(&w::button(&format!("Stop all stale ({stale})"), Some("Shift+S"), &["danger"], move || agents::stop_all_stale(&ui2)));
-            }
-        }
+        // Agents' row is hidden: its actions are on its title line (agents.rs).
+        View::Agents => {}
         View::Ideas => {
             chips.add_next(&w::label("Ideas", &["ttl"]));
             let all: Vec<&Idea> = st.ideas.iter().flatten().filter(|i| st.proj_filter.is_none() || i.project == st.proj_filter).collect();

@@ -73,19 +73,6 @@ impl View {
         }
     }
 
-    /// Its key, as the rail and the keys overlay show it.
-    pub fn key(self) -> &'static str {
-        match self {
-            View::Monitor => "1",
-            View::Agents => "2",
-            View::Projects => "3",
-            View::Ideas => "4",
-            View::History => "5",
-            View::Questions => "6",
-            View::Settings => ",",
-        }
-    }
-
     pub fn from_id(id: &str) -> Option<View> {
         View::ALL.into_iter().find(|v| v.id() == id.to_lowercase())
     }
@@ -537,8 +524,8 @@ fn build(app: &gtk::Application, opts: Opts) {
         b.set_valign(gtk::Align::Center);
         b
     };
-    let cmd = pair_btn(w::icons::FIND, "Find", "Find a session (Ctrl+K)");
-    let add_btn = pair_btn(w::icons::ADD, "New idea", "New idea (c)");
+    let cmd = pair_btn(w::icons::FIND, "Find", "Find a session (Ctrl+F)");
+    let add_btn = pair_btn(w::icons::ADD, "New idea", "New idea (Ctrl+N)");
     let pair = w::hbox(0, &["pair"]);
     pair.set_valign(gtk::Align::Center);
     pair.append(&cmd);
@@ -628,7 +615,7 @@ fn build(app: &gtk::Application, opts: Opts) {
     {
         let sb = w::hbox(10, &["searchbox"]);
         sb.append(&history_entry);
-        sb.append(&w::kbd("/"));
+
         views[&View::History].top.append(&sb);
     }
     main.append(&stack);
@@ -2386,28 +2373,14 @@ pub enum Cmd {
     Edge(bool),
     /// Page Up and Page Down: a screenful up or down.
     Page(i32),
-    Switcher,
-    View(View),
     Down,
     Up,
     Open,
-    GoTo,
-    Capture,
-    Search,
-    Pause,
-    Tick,
-    Done,
+    /// Agents, Delete: stop the selected agent (asks first).
     Stop,
-    StopAllStale,
     Expand,
     Collapse,
     Escape,
-    /// `?`: every key, in a small overlay.
-    Keys,
-    /// `a`: ask a question (the Questions view, the keyboard in its input).
-    Ask,
-    /// Ideas, `s`: start an agent on the ticked ideas (or the selected one).
-    StartAgent,
 }
 
 /// The command for `key` in `view`, with no Ctrl or Alt held and no text field focused.
@@ -2419,44 +2392,25 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
     if on_control && matches!(key, K::Return | K::KP_Enter | K::space) {
         return None;
     }
+    // Only the keys every desktop list has: no letters, so typing never does anything by surprise.
+    let _ = shift;
     let agents = view == View::Agents;
-    let ideas = view == View::Ideas;
     let settings = view == View::Settings;
     let cards = matches!(view, View::Projects | View::Ideas);
-    if key == K::S && shift {
-        return agents.then_some(Cmd::StopAllStale);
-    }
-    Some(match key.to_lower() {
-        K::g => Cmd::Switcher,
-        K::question => Cmd::Keys,
-        K::_1 | K::KP_1 => Cmd::View(View::Monitor),
-        K::_2 | K::KP_2 => Cmd::View(View::Agents),
-        K::_3 | K::KP_3 => Cmd::View(View::Projects),
-        K::_4 | K::KP_4 => Cmd::View(View::Ideas),
-        K::_5 | K::KP_5 => Cmd::View(View::History),
-        K::_6 | K::KP_6 => Cmd::View(View::Questions),
-        K::comma => Cmd::View(View::Settings),
-        K::a => Cmd::Ask,
-        K::j | K::Down => Cmd::Down,
-        K::k | K::Up => Cmd::Up,
+    Some(match key {
+        K::Down | K::KP_Down => Cmd::Down,
+        K::Up | K::KP_Up => Cmd::Up,
         K::Home | K::KP_Home => Cmd::Edge(true),
         K::End | K::KP_End => Cmd::Edge(false),
         K::Page_Down | K::KP_Page_Down => Cmd::Page(1),
         K::Page_Up | K::KP_Page_Up => Cmd::Page(-1),
         K::Return | K::KP_Enter => Cmd::Open,
         K::space if settings => Cmd::Open,
-        K::o => Cmd::GoTo,
-        K::c => Cmd::Capture,
-        K::slash => Cmd::Search,
-        K::p => Cmd::Pause,
-        K::x if ideas => Cmd::Tick,
-        K::d if ideas => Cmd::Done,
-        K::s | K::Delete if agents => Cmd::Stop,
-        K::s if ideas => Cmd::StartAgent,
-        K::Right | K::l if agents || settings => Cmd::Expand,
-        K::Left | K::h if agents || settings => Cmd::Collapse,
-        K::Right | K::l if cards => Cmd::Across(1),
-        K::Left | K::h if cards => Cmd::Across(-1),
+        K::Delete | K::KP_Delete if agents => Cmd::Stop,
+        K::Right | K::KP_Right if agents || settings => Cmd::Expand,
+        K::Left | K::KP_Left if agents || settings => Cmd::Collapse,
+        K::Right | K::KP_Right if cards => Cmd::Across(1),
+        K::Left | K::KP_Left if cards => Cmd::Across(-1),
         K::Escape => Cmd::Escape,
         _ => return None,
     })
@@ -2470,14 +2424,6 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagat
     }
     let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
     let alt = mods.contains(gdk::ModifierType::ALT_MASK);
-    if ctrl && !alt && key.to_lower() == gdk::Key::k {
-        if ui.st.borrow().sw.open {
-            switcher::close(ui);
-        } else {
-            switcher::open(ui);
-        }
-        return Stop;
-    }
     if ui.st.borrow().modal_open {
         return dialogs::on_key(ui, key, ctrl);
     }
@@ -2541,13 +2487,6 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagat
     if alt || ctrl {
         return Proceed;
     }
-    // Behind the remote: Esc acknowledges its banner, Shift+P pulls.
-    if let Some(p) = crate::disk::on_key(ui, key, mods) {
-        return p; // disk.rs hook: m sets a session's project
-    }
-    if let Some(p) = crate::behind::on_key(ui, key, mods) {
-        return p;
-    }
     let focus = gtk::prelude::GtkWindowExt::focus(&ui.window);
     // An open drop-down list has every key (arrows, Enter, Esc, typing).
     if focus.as_ref().is_some_and(|f| f.ancestor(gtk::Popover::static_type()).is_some()) {
@@ -2562,10 +2501,9 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagat
     }
 }
 
-/// The keys Windows and Linux apps share, besides Wake's own single keys: Ctrl+F finds, Ctrl+N
-/// is a new idea, Ctrl+, settings, Ctrl+Q quits, Ctrl+Tab and Ctrl+Page Down step through the
-/// views, F5 or Ctrl+R refreshes, F1 or Ctrl+? shows the keys, F10 opens the main menu, and
-/// Shift+F10 or the Menu key opens the selected item's ⋯ menu.
+/// Wake's few shortcuts, as in other desktop apps: Ctrl+F finds, Ctrl+N is a new idea, Ctrl+Tab
+/// steps through the views, F1 shows the keys, Ctrl+Q quits, and Shift+F10 or the Menu key opens
+/// the selected item's ⋯ menu.
 fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
     use gdk::Key as K;
     let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
@@ -2577,32 +2515,17 @@ fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib:
     match key {
         K::f | K::F if ctrl => switcher::open(ui),
         K::n | K::N if ctrl => open_capture(ui),
-        K::comma if ctrl => set_view(ui, View::Settings),
         K::q | K::Q if ctrl => ui.window.close(),
-        K::r | K::R if ctrl => refresh_now(ui),
-        K::F5 => refresh_now(ui),
-        K::question if ctrl => dialogs::keys(ui),
-        K::slash if ctrl && shift => dialogs::keys(ui),
         K::F1 => dialogs::keys(ui),
         K::F10 if shift => context_menu(ui),
         K::Menu => context_menu(ui),
-        K::F10 => ui.w.menu.popup(),
         K::Tab | K::ISO_Left_Tab if ctrl => step_view(ui, if shift || key == K::ISO_Left_Tab { -1 } else { 1 }),
-        K::Page_Down if ctrl => step_view(ui, 1),
-        K::Page_Up if ctrl => step_view(ui, -1),
         _ => return None,
     }
     Some(glib::Propagation::Stop)
 }
 
-/// F5: read everything again now.
-fn refresh_now(ui: &Ui) {
-    refresh(ui);
-    refresh_procs(ui);
-    refresh_ideas(ui);
-}
-
-/// Ctrl+Tab and Ctrl+Page Down: the next view in the switcher's order (wrapping); back with Shift.
+/// Ctrl+Tab: the next view in the switcher's order (wrapping); back with Shift.
 fn step_view(ui: &Ui, d: i32) {
     const ORDER: [View; 5] = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents];
     let now = ui.st.borrow().view;
@@ -2687,10 +2610,6 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
     let view = ui.st.borrow().view;
     let sel = ui.st.borrow().sel.clone();
     match cmd {
-        Cmd::Switcher => switcher::open(ui),
-        Cmd::View(v) => set_view(ui, v),
-        Cmd::Keys => dialogs::keys(ui),
-        Cmd::Ask => crate::questions::ask_key(ui),
         Cmd::Down => move_sel(ui, 1),
         Cmd::Up => move_sel(ui, -1),
         Cmd::Edge(first) => {
@@ -2712,39 +2631,6 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
             }
         }
         Cmd::Open => open_sel(ui),
-        Cmd::GoTo => match selected_session(ui) {
-            Some(id) => go_to(ui, &id),
-            None => return false,
-        },
-        Cmd::Capture => open_capture(ui),
-        Cmd::Search => set_view(ui, View::History),
-        Cmd::Pause => {
-            let id = {
-                let st = ui.st.borrow();
-                let project_of = |sid: &str| st.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.id == sid).and_then(|s| s.project.clone()));
-                match &st.drawer {
-                    Some(Drawer::Project(id)) => Some(id.clone()),
-                    Some(Drawer::Session(id)) => project_of(id),
-                    None if view == View::Projects => sel,
-                    None if matches!(view, View::Monitor | View::History) => sel.as_deref().and_then(project_of).or(st.proj_filter.clone()),
-                    None => st.proj_filter.clone(),
-                }
-            };
-            match id {
-                Some(id) => dialogs::pause(ui, &id),
-                None => toast(ui, "Pick a project first: select one in Projects, or a session in Monitor.", false),
-            }
-        }
-        Cmd::Tick => {
-            if let Some(sel) = sel {
-                views::toggle_pick(ui, &sel);
-            }
-        }
-        Cmd::Done => {
-            if let Some(sel) = sel {
-                views::toggle_done(ui, &sel);
-            }
-        }
         Cmd::Stop => {
             // Only a process's own row: a subagent's or the fold's row never stops anything.
             if view == View::Agents
@@ -2753,8 +2639,6 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
                 agents::stop_one(ui, pid);
             }
         }
-        Cmd::StopAllStale => agents::stop_all_stale(ui),
-        Cmd::StartAgent => crate::start::open(ui, None),
         Cmd::Expand | Cmd::Collapse if view == View::Settings => return setview::step(ui, if cmd == Cmd::Expand { 1 } else { -1 }),
         Cmd::Expand | Cmd::Collapse if view == View::Agents => return agents::key(ui, if cmd == Cmd::Expand { agents::TreeKey::Right } else { agents::TreeKey::Left }),
         Cmd::Expand | Cmd::Collapse => return false,
@@ -2783,20 +2667,6 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
         }
     }
     true
-}
-
-/// The session `o` goes to: the open panel's, else the selected row's.
-pub fn selected_session(ui: &Ui) -> Option<String> {
-    let st = ui.st.borrow();
-    match &st.drawer {
-        Some(Drawer::Session(id)) => Some(id.clone()),
-        _ => match st.view {
-            View::Monitor | View::History => st.sel.clone(),
-            // A subagent's row (or the fold's) stands for its session.
-            View::Agents => agents::selected_proc(&st).and_then(|p| p.session_id.clone()),
-            _ => None,
-        },
-    }
 }
 
 /// Focus back on the current view's list, on the selected row if any.
@@ -2853,13 +2723,15 @@ mod tests {
     }
 
     #[test]
-    fn keys_map_to_commands_whatever_caps_lock_says() {
-        assert_eq!(command_for(K::j, false, View::Monitor, false), Some(Cmd::Down));
-        assert_eq!(command_for(K::J, false, View::Monitor, false), Some(Cmd::Down), "Caps Lock j still moves");
-        assert_eq!(command_for(K::_2, false, View::Monitor, false), Some(Cmd::View(View::Agents)));
-        assert_eq!(command_for(K::o, false, View::History, false), Some(Cmd::GoTo));
-        assert_eq!(command_for(K::g, false, View::Ideas, false), Some(Cmd::Switcher));
-        assert_eq!(command_for(K::comma, false, View::Agents, false), Some(Cmd::View(View::Settings)));
+    fn letters_do_nothing_so_typing_never_surprises() {
+        assert_eq!(command_for(K::Down, false, View::Monitor, false), Some(Cmd::Down));
+        assert_eq!(command_for(K::Up, false, View::Monitor, false), Some(Cmd::Up));
+        for k in [K::j, K::k, K::h, K::l, K::g, K::c, K::o, K::p, K::s, K::S, K::x, K::d, K::a, K::_1, K::_2, K::comma, K::slash, K::question] {
+            for v in View::ALL {
+                assert_eq!(command_for(k, false, v, false), None, "{k:?} in {v:?}");
+                assert_eq!(command_for(k, true, v, false), None, "Shift+{k:?} in {v:?}");
+            }
+        }
     }
 
     #[test]
@@ -2884,7 +2756,7 @@ mod tests {
             let (t, bt) = stretch(a, b, f64::from(i) / 20.0);
             assert!(bt - t >= 2.0);
         }
-        assert_eq!(command_for(K::h, false, View::Settings, false), Some(Cmd::Collapse));
+        assert_eq!(command_for(K::Left, false, View::Settings, false), Some(Cmd::Collapse));
         assert_eq!(command_for(K::space, false, View::Settings, false), Some(Cmd::Open), "Space flips a switch");
         assert_eq!(command_for(K::space, false, View::Monitor, false), None);
         assert_eq!(command_for(K::Right, false, View::Monitor, false), None, "arrows elsewhere are GTK's");
@@ -2900,12 +2772,10 @@ mod tests {
     }
 
     #[test]
-    fn stopping_keys_only_in_agents_and_stop_all_needs_a_real_shift() {
-        assert_eq!(command_for(K::s, false, View::Agents, false), Some(Cmd::Stop));
-        assert_eq!(command_for(K::S, false, View::Agents, false), Some(Cmd::Stop), "Caps Lock S is one stop, not all");
-        assert_eq!(command_for(K::S, true, View::Agents, false), Some(Cmd::StopAllStale));
-        assert_eq!(command_for(K::S, true, View::Monitor, false), None);
-        assert_eq!(command_for(K::s, false, View::Monitor, false), None);
+    fn delete_stops_an_agent_only_in_agents_and_lists_keep_their_usual_keys() {
+        assert_eq!(command_for(K::Delete, false, View::Agents, false), Some(Cmd::Stop));
+        assert_eq!(command_for(K::Delete, false, View::Monitor, false), None);
+        assert_eq!(command_for(K::Delete, false, View::Ideas, false), None, "Delete never starts anything");
         assert_eq!(command_for(K::Right, false, View::Agents, false), Some(Cmd::Expand));
         // As in any list on Windows or Linux: Home and End, Page Up and Page Down; and ← → among cards.
         assert_eq!(command_for(K::Home, false, View::Monitor, false), Some(Cmd::Edge(true)));
@@ -2922,15 +2792,5 @@ mod tests {
         assert_eq!(command_for(K::Return, false, View::Agents, true), None);
         assert_eq!(command_for(K::space, false, View::Agents, true), None);
         assert_eq!(command_for(K::Return, false, View::Monitor, false), Some(Cmd::Open));
-        assert_eq!(command_for(K::x, false, View::Ideas, false), Some(Cmd::Tick));
-        assert_eq!(command_for(K::x, false, View::Monitor, false), None);
-    }
-
-    #[test]
-    fn s_starts_an_agent_in_ideas_and_stops_one_only_in_agents() {
-        assert_eq!(command_for(K::s, false, View::Ideas, false), Some(Cmd::StartAgent));
-        assert_eq!(command_for(K::s, false, View::Agents, false), Some(Cmd::Stop));
-        assert_eq!(command_for(K::s, false, View::Projects, false), None);
-        assert_eq!(command_for(K::Delete, false, View::Ideas, false), None, "Delete never starts anything");
     }
 }

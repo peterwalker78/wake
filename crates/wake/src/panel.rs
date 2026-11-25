@@ -136,12 +136,22 @@ pub fn focus_primary(ui: &Ui) {
         None
     }
     while let Some(c) = child {
-        if let Some(f) = find(&c) {
-            f.grab_focus();
+        if let Some(f) = find(&c)
+            && f.grab_focus()
+        {
             return;
         }
         child = c.next_sibling();
     }
+    // No main button (a session Wake can't place, or one that has ended): the first control
+    // after the close button, so the keyboard is always in the details once they open.
+    let root: gtk::Widget = ui.w.drawer.clone().upcast();
+    for c in crate::keynav::controls(&root) {
+        if c.widget_name() != "close" && c.grab_focus() {
+            return;
+        }
+    }
+    ui.w.drawer.child_focus(gtk::DirectionType::TabForward);
 }
 
 /// Loads a session's detail (and, on `refresh`, the open running subagents) off the UI thread.
@@ -300,7 +310,16 @@ pub fn render(ui: &Ui) {
     // one starts at the top.
     let same = ui.st.borrow().panel_drawn.as_ref().is_some_and(|d| d.starts_with(&target_key(&drawer))) && ui.w.drawer.is_visible();
     ui.st.borrow_mut().panel_drawn = Some(sig);
-    let focus_name = gtk::prelude::GtkWindowExt::focus(&ui.window).filter(|f| f.is_ancestor(&ui.w.drawer)).map(|f| f.widget_name().to_string()).filter(|n| !n.is_empty());
+    // Where the keyboard is in the details, to put it back on the same control after the redraw:
+    // by its name when that is its own, else by its place among the controls.
+    let root: gtk::Widget = ui.w.drawer.clone().upcast();
+    let had = gtk::prelude::GtkWindowExt::focus(&ui.window).filter(|f| f.is_ancestor(&ui.w.drawer));
+    let before = crate::keynav::controls(&root);
+    let focus_at = had.as_ref().map(|f| {
+        let at = before.iter().position(|c| c == f || f.is_ancestor(c));
+        let name = at.map(|i| before[i].widget_name().to_string()).filter(|n| !n.starts_with("Gtk") && !n.is_empty());
+        (name, at.unwrap_or(0))
+    });
     let sw = find_scroll(&ui.w.drawer);
     let mut c = ui.w.drawer.first_child();
     while let Some(x) = c {
@@ -320,14 +339,16 @@ pub fn render(ui: &Ui) {
     // Giving focus back must not scroll the focused widget into view (before layout it has no
     // place yet, which used to send the reader to the top): the viewport stops following focus
     // until the new contents are laid out.
-    if let Some(name) = focus_name
-        && let Some(w) = find_named(ui.w.drawer.upcast_ref(), &name)
-    {
+    if let Some((name, at)) = focus_at {
+        let after = crate::keynav::controls(&root);
+        let w = name.and_then(|n| after.iter().find(|c| c.widget_name() == n.as_str()).cloned()).or_else(|| after.get(at.min(after.len().saturating_sub(1))).cloned());
         let viewport = find_scroll(&ui.w.drawer).and_then(|s| s.child()).and_downcast::<gtk::Viewport>();
         if let Some(v) = &viewport {
             v.set_scroll_to_focus(false);
         }
-        w.grab_focus();
+        if !w.is_some_and(|w| w.grab_focus()) {
+            focus_primary(ui);
+        }
         if let Some(v) = viewport {
             let v2 = v.clone();
             crate::motion::after_layout(&v, move || v2.set_scroll_to_focus(true));
@@ -787,7 +808,7 @@ fn session_menu(ui: &Ui, s: &SessionSummary) -> gtk::MenuButton {
         item("Open its project", false, Box::new(move || open_project(&ui2, &p, true)));
     }
     let (ui2, id) = (ui.clone(), s.id.clone());
-    item("Change its project… (m)", false, Box::new(move || crate::disk::set_project(&ui2, &id)));
+    item("Change its project…", false, Box::new(move || crate::disk::set_project(&ui2, &id)));
     // Stopping: the same confirmation as in Agents, and never the main button.
     let pid = res_of(&ui.st.borrow(), &s.id).map(|r| r.pid);
     if let Some(pid) = pid {
@@ -1046,7 +1067,7 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
     let word = go_words(s, &loc, can_go);
     let ui2 = ui.clone();
     let id = s.id.clone();
-    let b = w::button(&word, if primary { Some("o") } else { None }, if primary { &["primary"] } else { &["sm"] }, move || app::go_to(&ui2, &id));
+    let b = w::button(&word, None, if primary { &["primary"] } else { &["sm"] }, move || app::go_to(&ui2, &id));
     if primary {
         b.set_widget_name("primary");
     }
@@ -1367,7 +1388,7 @@ fn project(ui: &Ui, id: &str) {
     } else {
         let ui2 = ui.clone();
         let id2 = p.id.clone();
-        let b = w::button(if p.paused.is_some() { "Pause again" } else { "Pause" }, Some("p"), &["primary"], move || dialogs::pause(&ui2, &id2));
+        let b = w::button(if p.paused.is_some() { "Pause again" } else { "Pause" }, None, &["primary"], move || dialogs::pause(&ui2, &id2));
         b.set_widget_name("primary");
         b.set_tooltip_text(Some("Keep a note, the next step and where git stands, so coming back is quick."));
         act.append(&b);

@@ -1,12 +1,12 @@
 //! Moving round the window with the keyboard.
 //!
-//! The window has regions, in this order: the rail (views and projects), the filters (the chips
-//! above the list), the list (the view itself: its search box, column heads and rows), the side
-//! panel, the capture bar, and the top bar. Tab and Shift+Tab move through a region's controls and
-//! then on to the next region; the rail and the filters are one stop each (arrows move inside
-//! them, as in a toolbar). F6 and Shift+F6 jump region to region. The region the keyboard is in
-//! gets a quiet accent edge, but only after keyboard use (GTK's focus-visible). Esc in the rail,
-//! the filters or the top bar steps back to the list.
+//! The window has regions, in the order they sit on screen: the title bar, the filters (the
+//! controls above the list), the list (the view itself), and the details. Tab and Shift+Tab are
+//! GTK's own, control by control in that same order, with a list as one stop (as in any GTK app).
+//! The arrows move within the region that has the keyboard and never leave it; in the list they
+//! move the selection. F6 and Shift+F6 jump region to region. The region the keyboard is in gets a
+//! quiet accent edge, but only after keyboard use (GTK's focus-visible). Esc in the filters or the
+//! title bar steps back to the list.
 //!
 //! `--show keys:<sequence>` replays keys through the same handler, for focus screenshots.
 
@@ -23,16 +23,13 @@ pub enum Region {
     List,
     Panel,
     Top,
+    /// The view tabs along the bottom of a narrow window.
+    Tabs,
 }
 
-pub const ORDER: [Region; 5] = [Region::Rail, Region::Filters, Region::List, Region::Panel, Region::Top];
+pub const ORDER: [Region; 6] = [Region::Top, Region::Rail, Region::Filters, Region::List, Region::Panel, Region::Tabs];
 
 impl Region {
-    /// One Tab stop, arrows inside (a toolbar or a menu of links).
-    pub fn composite(self) -> bool {
-        matches!(self, Region::Rail | Region::Filters)
-    }
-
     pub fn name(self) -> &'static str {
         match self {
             Region::Rail => "views and projects",
@@ -40,6 +37,7 @@ impl Region {
             Region::List => "list",
             Region::Panel => "details",
             Region::Top => "top bar",
+            Region::Tabs => "view tabs",
         }
     }
 }
@@ -74,6 +72,7 @@ fn widget(ui: &Ui, r: Region) -> Option<gtk::Widget> {
             Some(ui.w.views[&v].root.clone().upcast())
         }
         Region::Panel => Some(ui.w.drawer.clone().upcast()),
+        Region::Tabs => Some(ui.w.tabs_bottom.clone().upcast()),
         Region::Top => {
             // The top bar (the behind banner may sit above it in the column).
             let mut c = ui.w.column.first_child();
@@ -99,13 +98,21 @@ fn focusable(w: &gtk::Widget) -> bool {
 }
 
 /// The focusable controls inside `w`, in order.
-fn controls(w: &gtk::Widget) -> Vec<gtk::Widget> {
+pub fn controls(w: &gtk::Widget) -> Vec<gtk::Widget> {
     fn walk(w: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
-        if !w.is_visible() || !w.is_sensitive() {
+        // Only what is on screen: not another page of a stack, nor a folded part.
+        if !w.is_visible() || !w.is_child_visible() || !w.is_sensitive() {
             return;
         }
         if focusable(w)
-            && (w.is::<gtk::Button>() || w.is::<gtk::CheckButton>() || w.is::<gtk::Entry>() || w.is::<gtk::DropDown>() || w.is::<gtk::ListBoxRow>() || w.is::<gtk::Switch>() || w.is::<gtk::TextView>())
+            && (w.is::<gtk::Button>()
+                || w.is::<gtk::CheckButton>()
+                || w.is::<gtk::Entry>()
+                || w.is::<gtk::DropDown>()
+                || w.is::<gtk::ListBoxRow>()
+                || w.is::<gtk::FlowBoxChild>()
+                || w.is::<gtk::Switch>()
+                || w.is::<gtk::TextView>())
         {
             out.push(w.clone());
             // A drop-down's own button is part of it.
@@ -124,32 +131,10 @@ fn controls(w: &gtk::Widget) -> Vec<gtk::Widget> {
     out
 }
 
-/// A region's Tab stops: its controls, where a list counts as one stop (its current row, then
-/// that row's own controls) and the other rows' controls are skipped.
-fn tab_stops(w: &gtk::Widget, focus: &gtk::Widget) -> Vec<gtk::Widget> {
-    let row_of = |c: &gtk::Widget| -> Option<gtk::ListBoxRow> { c.downcast_ref::<gtk::ListBoxRow>().cloned().or_else(|| c.ancestor(gtk::ListBoxRow::static_type()).and_downcast()) };
-    let cs = controls(w);
-    // Per list: the row holding the focus, else the selected one, else the first.
-    let current = |list: &gtk::ListBox| -> Option<gtk::ListBoxRow> {
-        let rows: Vec<gtk::ListBoxRow> = cs.iter().filter_map(|c| c.downcast_ref::<gtk::ListBoxRow>().cloned()).filter(|r| r.parent().as_ref() == Some(list.upcast_ref())).collect();
-        rows.iter().find(|r| focus == r.upcast_ref::<gtk::Widget>() || focus.is_ancestor(*r)).cloned().or_else(|| list.selected_row().filter(|s| rows.contains(s))).or_else(|| rows.first().cloned())
-    };
-    cs.iter()
-        .filter(|c| match row_of(c) {
-            None => true,
-            Some(row) => match row.parent().and_downcast::<gtk::ListBox>() {
-                Some(list) => current(&list).as_ref() == Some(&row),
-                None => true,
-            },
-        })
-        .cloned()
-        .collect()
-}
-
 fn shown(ui: &Ui, r: Region) -> bool {
-    // In a narrow window the rail is behind ☰: still a stop, it opens as a drawer.
-    if r == Region::Rail && ui.st.borrow().lay.rail == crate::layout::Rail::Hidden {
-        return true;
+    // A rail tucked away is not a stop: the keyboard never opens what the eye can't see.
+    if r == Region::Rail && ui.st.borrow().lay.rail == crate::layout::Rail::Hidden && !ui.w.body.rail_open() {
+        return false;
     }
     let Some(w) = widget(ui, r) else { return false };
     if !w.is_visible() || !w.is_mapped() {
@@ -169,7 +154,7 @@ pub fn region_of(ui: &Ui, f: &gtk::Widget) -> Option<Region> {
         return Some(Region::Rail);
     }
     // Inner regions first (the list's root sits inside the main column with the chips).
-    for r in [Region::Panel, Region::Filters, Region::List, Region::Rail, Region::Top] {
+    for r in [Region::Panel, Region::Filters, Region::List, Region::Rail, Region::Top, Region::Tabs] {
         if let Some(w) = widget(ui, r)
             && (f == &w || f.is_ancestor(&w))
         {
@@ -224,6 +209,11 @@ pub fn home(ui: &Ui, r: Region) {
                 b.grab_focus();
             }
         }
+        Region::Tabs => {
+            if let Some(b) = first(&controls(&w), |b| b.has_css_class("on")) {
+                b.grab_focus();
+            }
+        }
     }
 }
 
@@ -239,44 +229,6 @@ pub fn cycle(ui: &Ui, forward: bool) {
     }
 }
 
-/// Tab: through the region's controls, then on to the next region.
-pub fn tab(ui: &Ui, forward: bool) {
-    let st = ui.st.borrow();
-    if st.modal_open || st.sw.open {
-        drop(st);
-        ui.window.child_focus(if forward { gtk::DirectionType::TabForward } else { gtk::DirectionType::TabBackward });
-        return;
-    }
-    drop(st);
-    let Some(f) = focus(ui) else {
-        cycle(ui, forward);
-        return;
-    };
-    let Some(r) = region_of(ui, &f) else {
-        cycle(ui, forward);
-        return;
-    };
-    if !r.composite()
-        && let Some(w) = widget(ui, r)
-    {
-        let cs = tab_stops(&w, &f);
-        let at = cs.iter().position(|c| *c == f || f.is_ancestor(c));
-        if std::env::var_os("WAKE_SHOT_DEBUG").is_some() {
-            eprintln!("tab: {} stops in {:?}, focus at {at:?}: {:?}", cs.len(), r, cs.iter().map(|c| c.type_().name()).collect::<Vec<_>>());
-        }
-        let next = match at {
-            Some(i) if forward => cs.get(i + 1),
-            Some(i) => i.checked_sub(1).and_then(|j| cs.get(j)),
-            None => None,
-        };
-        if let Some(n) = next {
-            n.grab_focus();
-            return;
-        }
-    }
-    cycle(ui, forward);
-}
-
 /// Arrows inside the rail (up and down) and the filters (left and right).
 fn step_within(ui: &Ui, r: Region, f: &gtk::Widget, d: i32) -> bool {
     let Some(w) = widget(ui, r) else { return false };
@@ -287,7 +239,86 @@ fn step_within(ui: &Ui, r: Region, f: &gtk::Widget, d: i32) -> bool {
     true
 }
 
-/// A move the arrow keys (and j k h l, Home, End) make among controls.
+/// The words on a control (its label, else its tooltip), for the replay's log.
+fn label_of(w: &gtk::Widget) -> Option<String> {
+    if let Some(b) = w.downcast_ref::<gtk::Button>()
+        && let Some(l) = b.label()
+    {
+        return Some(l.to_string());
+    }
+    fn first_label(w: &gtk::Widget) -> Option<String> {
+        if let Some(l) = w.downcast_ref::<gtk::Label>() {
+            return Some(l.text().to_string()).filter(|t| !t.trim().is_empty());
+        }
+        let mut c = w.first_child();
+        while let Some(x) = c {
+            if let Some(t) = first_label(&x) {
+                return Some(t);
+            }
+            c = x.next_sibling();
+        }
+        None
+    }
+    first_label(w).or_else(|| w.tooltip_text().map(|t| t.to_string())).map(|t| t.chars().take(30).collect())
+}
+
+/// The list item (a selectable row or a card) holding `w`, if any.
+fn item_of(w: &gtk::Widget) -> Option<gtk::Widget> {
+    let mut p = Some(w.clone());
+    while let Some(x) = p {
+        if x.is::<gtk::FlowBoxChild>() || x.downcast_ref::<gtk::ListBoxRow>().is_some_and(|r| r.is_selectable()) {
+            return Some(x);
+        }
+        p = x.parent();
+    }
+    None
+}
+
+/// The next (or previous) control in the window after `from`, wrapping round, that takes the focus.
+fn step_on(ui: &Ui, from: Option<&gtk::Widget>, back: bool) {
+    let all = controls(ui.window.upcast_ref());
+    if all.is_empty() {
+        return;
+    }
+    let n = all.len();
+    let at = from.and_then(|f| all.iter().rposition(|c| c == f || f.is_ancestor(c)));
+    for k in 1..=n {
+        let i = match at {
+            Some(a) if back => (a + n - k) % n,
+            Some(a) => (a + k) % n,
+            None if back => n - k,
+            None => k - 1,
+        };
+        if Some(&all[i]) != from && all[i].grab_focus() {
+            return;
+        }
+    }
+}
+
+/// The list items (rows, cards) under `root` that Tab skips while the keyboard is on `f`: every
+/// item but the one holding it, and rows with nothing to press (a heading). Rows that only hold
+/// controls of their own (column heads, a group's "Show them") stay stops: they are buttons.
+fn items_besides(root: &gtk::Widget, f: &gtk::Widget) -> Vec<gtk::Widget> {
+    fn walk(w: &gtk::Widget, f: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
+        let heading = || w.downcast_ref::<gtk::ListBoxRow>().is_some_and(|r| !r.is_selectable() && controls(w).iter().all(|c| c == w));
+        let item = w.is::<gtk::FlowBoxChild>() || w.downcast_ref::<gtk::ListBoxRow>().is_some_and(|r| r.is_selectable()) || heading();
+        let holds = w == f || f.is_ancestor(w);
+        if item && !holds && w.is_sensitive() {
+            out.push(w.clone());
+            return;
+        }
+        let mut c = w.first_child();
+        while let Some(x) = c {
+            walk(&x, f, out);
+            c = x.next_sibling();
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, f, &mut out);
+    out
+}
+
+/// A move the arrow keys (and Home, End) make among controls.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Arrow {
     Up,
@@ -301,10 +332,10 @@ pub enum Arrow {
 fn arrow_key(key: gdk::Key) -> Option<Arrow> {
     use gdk::Key as K;
     Some(match key {
-        K::Up | K::KP_Up | K::k => Arrow::Up,
-        K::Down | K::KP_Down | K::j => Arrow::Down,
-        K::Left | K::KP_Left | K::h => Arrow::Left,
-        K::Right | K::KP_Right | K::l => Arrow::Right,
+        K::Up | K::KP_Up => Arrow::Up,
+        K::Down | K::KP_Down => Arrow::Down,
+        K::Left | K::KP_Left => Arrow::Left,
+        K::Right | K::KP_Right => Arrow::Right,
         K::Home | K::KP_Home => Arrow::First,
         K::End | K::KP_End => Arrow::Last,
         _ => return None,
@@ -384,16 +415,55 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
         return None;
     }
     match key {
+        // Tab in a list: GTK's own move, with the list as one stop (as on any desktop): from a
+        // row to its own buttons, then out of the list; never on to the next row.
+        K::Tab | K::KP_Tab | K::ISO_Left_Tab => {
+            let st = ui.st.borrow();
+            if st.modal_open || st.sw.open {
+                return None;
+            }
+            let v = st.view;
+            drop(st);
+            let root: gtk::Widget = ui.w.views[&v].root.clone().upcast();
+            let back = shift || key == K::ISO_Left_Tab;
+            let off = focus(ui).filter(|f| f.is_ancestor(&root)).map(|f| items_besides(&root, &f)).unwrap_or_default();
+            // Out of reach for this one move (and back before anything is drawn): a list and a
+            // card grid both pass over items that can't be used.
+            for w in &off {
+                w.set_sensitive(false);
+            }
+            let before = focus(ui);
+            ui.window.emit_by_name::<()>("move-focus", &[&if back { gtk::DirectionType::TabBackward } else { gtk::DirectionType::TabForward }]);
+            // GTK said it moved but didn't (a scrolling area with nothing to focus does that):
+            // the next control on screen, so a press is never lost.
+            if focus(ui) == before {
+                step_on(ui, before.as_ref(), back);
+            }
+            for w in &off {
+                w.set_sensitive(true);
+            }
+            // Landed on a list's scrolling area or the list itself (no row it could take, as when
+            // nothing is selected yet), or came into the list on an item that isn't the selected
+            // one (a card grid comes in at its end): the selected item, else the first.
+            if let Some(f) = focus(ui)
+                && f.is_ancestor(&root)
+            {
+                let bare = f.is::<gtk::ScrolledWindow>() || f.is::<gtk::Viewport>() || f.is::<gtk::ListBox>() || f.is::<gtk::FlowBox>();
+                let came_in = !before.as_ref().is_some_and(|b| b.is_ancestor(&root));
+                let item = item_of(&f).map(|i| i.widget_name().to_string());
+                let sel = ui.st.borrow().sel.clone();
+                if bare || (came_in && item.is_some() && item != sel) {
+                    app::focus_list(ui);
+                }
+            }
+            return Some(Stop);
+        }
         K::F6 => {
             if !ui.st.borrow().modal_open && !ui.st.borrow().sw.open {
                 cycle(ui, !shift);
                 return Some(Stop);
             }
             return None;
-        }
-        K::Tab | K::KP_Tab | K::ISO_Left_Tab => {
-            tab(ui, !(shift || key == K::ISO_Left_Tab));
-            return Some(Stop);
         }
         _ => {}
     }
@@ -425,7 +495,7 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
         app::focus_list(ui);
         return Some(Stop);
     }
-    if matches!(r, Region::Panel | Region::Top)
+    if matches!(r, Region::Panel | Region::Top | Region::Tabs)
         && let Some(a) = arrow_key(key)
     {
         if let Some(w) = widget(ui, r) {
@@ -433,11 +503,11 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
         }
         return Some(Stop);
     }
-    let d = match (r, key.to_lower()) {
-        (Region::Rail, K::Down | K::j) => 1,
-        (Region::Rail, K::Up | K::k) => -1,
-        (Region::Filters, K::Right | K::l) => 1,
-        (Region::Filters, K::Left | K::h) => -1,
+    let d = match (r, key) {
+        (Region::Rail, K::Down) => 1,
+        (Region::Rail, K::Up) => -1,
+        (Region::Filters, K::Right) => 1,
+        (Region::Filters, K::Left) => -1,
         (Region::Rail | Region::Filters | Region::Top, K::Escape) => {
             app::set_rail_open(ui, false);
             app::focus_list(ui);
@@ -499,6 +569,7 @@ pub enum Step {
     Type(String),
     /// `wait`: a beat with no key.
     Wait,
+    Redraw,
 }
 
 pub fn parse(seq: &str) -> Result<Vec<Step>, String> {
@@ -506,6 +577,10 @@ pub fn parse(seq: &str) -> Result<Vec<Step>, String> {
     for tok in seq.split(',').map(str::trim).filter(|t| !t.is_empty()) {
         if tok == "wait" {
             out.push(Step::Wait);
+            continue;
+        }
+        if tok == "redraw" {
+            out.push(Step::Redraw);
             continue;
         }
         if let Some(t) = tok.strip_prefix("type:") {
@@ -538,9 +613,23 @@ pub fn parse(seq: &str) -> Result<Vec<Step>, String> {
 }
 
 /// What GTK itself would do with a key Wake's handler let through (a replay has no real event).
-fn default_action(ui: &Ui, key: gdk::Key, _mods: gdk::ModifierType) {
+fn default_action(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) {
     use gdk::Key as K;
+    // Tab: GTK's own (the window's move-focus binding, as a real key press runs it).
+    if matches!(key, K::Tab | K::KP_Tab | K::ISO_Left_Tab) {
+        let back = key == K::ISO_Left_Tab || mods.contains(gdk::ModifierType::SHIFT_MASK);
+        let dir = if back { gtk::DirectionType::TabBackward } else { gtk::DirectionType::TabForward };
+        ui.window.emit_by_name::<()>("move-focus", &[&dir]);
+        return;
+    }
     let Some(f) = focus(ui) else { return };
+    // Esc in a menu: GTK's popover closes itself (and the keyboard goes back to its button).
+    if key == K::Escape
+        && let Some(p) = f.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>()
+    {
+        p.popdown();
+        return;
+    }
     match key {
         K::Return | K::KP_Enter | K::space => {
             if let Some(e) = f.ancestor(gtk::Entry::static_type()).and_downcast::<gtk::Entry>() {
@@ -601,6 +690,12 @@ pub fn replay(ui: &Ui, seq: &str) {
             match step {
                 Step::Type(t) => type_text(&ui, &t),
                 Step::Wait => {}
+                // As when new data arrives: the details and the list are drawn again.
+                Step::Redraw => {
+                    ui.st.borrow_mut().panel_drawn = None;
+                    crate::panel::render(&ui);
+                    crate::views::render_view(&ui);
+                }
                 Step::Key(k, m) => {
                     if app::on_key(&ui, k, m) == glib::Propagation::Proceed {
                         default_action(&ui, k, m);
@@ -614,9 +709,11 @@ pub fn replay(ui: &Ui, seq: &str) {
                 let v = ui.st.borrow().view;
                 eprintln!("keys: step {i}: scroll {:.0}", ui.w.views[&v].scroll.vadjustment().value());
                 eprintln!(
-                    "keys: after step {i}: focus {:?} in {:?}",
+                    "keys: after step {i}: focus {:?} in {:?} label {:?} drawer {}",
                     f.as_ref().map(|f| (f.type_().name(), f.widget_name().to_string(), f.state_flags(), f.css_classes())),
-                    f.as_ref().and_then(|f| region_of(&ui, f)).map(Region::name)
+                    f.as_ref().and_then(|f| region_of(&ui, f)).map(Region::name),
+                    f.as_ref().and_then(label_of),
+                    ui.st.borrow().drawer.is_some()
                 );
             }
         });
@@ -629,14 +726,15 @@ mod tests {
     use Region::*;
 
     #[test]
-    fn regions_go_rail_filters_list_panel_capture_top_and_wrap() {
+    fn regions_go_in_screen_order_and_wrap() {
         let all = ORDER.to_vec();
-        assert_eq!(next_region(&all, Some(Rail), true), Some(Filters));
+        assert_eq!(next_region(&all, Some(Top), true), Some(Rail));
+        assert_eq!(next_region(&all, Some(Filters), true), Some(List));
         assert_eq!(next_region(&all, Some(List), true), Some(Panel));
-        assert_eq!(next_region(&all, Some(Top), true), Some(Rail), "wraps round");
-        assert_eq!(next_region(&all, Some(Rail), false), Some(Top));
-        assert_eq!(next_region(&all, None, true), Some(Rail));
-        assert_eq!(next_region(&all, None, false), Some(Top));
+        assert_eq!(next_region(&all, Some(Tabs), true), Some(Top), "wraps round");
+        assert_eq!(next_region(&all, Some(Top), false), Some(Tabs));
+        assert_eq!(next_region(&all, None, true), Some(Top));
+        assert_eq!(next_region(&all, None, false), Some(Tabs));
     }
 
     #[test]
@@ -666,12 +764,6 @@ mod tests {
         assert_eq!(next_region(&no_panel, Some(Panel), true), Some(Top));
         assert_eq!(next_region(&no_panel, Some(Panel), false), Some(List));
         assert_eq!(next_region(&[], Some(List), true), None);
-    }
-
-    #[test]
-    fn only_the_rail_and_the_filters_are_single_stops() {
-        assert!(Rail.composite() && Filters.composite());
-        assert!(!List.composite() && !Panel.composite() && !Top.composite());
     }
 
     #[test]

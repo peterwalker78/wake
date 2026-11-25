@@ -512,6 +512,25 @@ mod shell {
         }
     }
 
+    /// Moves the focus on through `order` (the children of `obj`, first to last; reversed for
+    /// Shift+Tab): further inside the child that has it, else into the next that takes it.
+    fn focus_in_order(obj: &gtk::Widget, mut order: Vec<gtk::Widget>, dir: gtk::DirectionType) -> bool {
+        if dir == gtk::DirectionType::TabBackward {
+            order.reverse();
+        }
+        let current = obj.focus_child();
+        let from = match current.as_ref().and_then(|c| order.iter().position(|w| w == c)) {
+            Some(i) => {
+                if order[i].child_focus(dir) {
+                    return true;
+                }
+                i + 1
+            }
+            None => 0,
+        };
+        order[from..].iter().any(|w| w.child_focus(dir))
+    }
+
     fn show(w: &gtk::Widget, on: bool) {
         if w.is_child_visible() != on {
             w.set_child_visible(on);
@@ -521,6 +540,37 @@ mod shell {
     impl WidgetImpl for Imp {
         fn request_mode(&self) -> gtk::SizeRequestMode {
             gtk::SizeRequestMode::HeightForWidth
+        }
+
+        /// Tab and Shift+Tab in a fixed order, the order things read in: the rail (when it is
+        /// out), the list, then the details. Not by where they happen to be drawn, which changes
+        /// while the details slide. Details that take the list's place (a narrow window) leave
+        /// the list out of reach, as it is out of sight.
+        fn focus(&self, dir: gtk::DirectionType) -> bool {
+            use gtk::DirectionType as D;
+            if !matches!(dir, D::TabForward | D::TabBackward) {
+                return self.parent_focus(dir);
+            }
+            let order = {
+                let parts = self.parts.borrow();
+                let Some(p) = parts.as_ref() else { return false };
+                let details = p.panel.is_visible();
+                let pushed = details && self.lay.get().is_some_and(|l| l.push);
+                let mut order: Vec<gtk::Widget> = Vec::new();
+                for w in [&p.peek, &p.rail] {
+                    if w.is_visible() && w.is_child_visible() {
+                        order.push(w.clone());
+                    }
+                }
+                if !pushed && p.main.is_child_visible() {
+                    order.push(p.main.clone());
+                }
+                if details {
+                    order.push(p.panel.clone());
+                }
+                order
+            };
+            focus_in_order(self.obj().upcast_ref(), order, dir)
         }
 
         fn measure(&self, o: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {

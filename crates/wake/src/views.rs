@@ -356,7 +356,7 @@ pub fn render_top(ui: &Ui) {
                 inner.append(&b);
             }
             b.set_child(Some(&inner));
-            b.set_tooltip_text(Some(&format!("{} (key {}): {tip}", v.name(), v.key())));
+            b.set_tooltip_text(Some(&format!("{}: {tip}", v.name())));
             b.update_property(&[gtk::accessible::Property::Label(v.name())]);
             if bottom {
                 b.set_hexpand(true);
@@ -475,7 +475,7 @@ fn fill_rail(ui: &Ui, nav: &gtk::Box, plist: &gtk::Box, slim: bool, view: View, 
         if view == v {
             b.add_css_class("on");
         }
-        b.set_tooltip_text(Some(&format!("{} (key {})", v.name(), v.key())));
+        b.set_tooltip_text(Some(v.name()));
         let inner = w::hbox(if slim { 2 } else { 6 }, &[]);
         let name = if slim { w::label(&v.name()[..1], &["ini"]) } else { w::label(v.name(), &[]) };
         name.set_hexpand(true);
@@ -487,7 +487,7 @@ fn fill_rail(ui: &Ui, nav: &gtk::Box, plist: &gtk::Box, slim: bool, view: View, 
             inner.append(&w::dot(if answering { "working" } else { "back" }));
             b.set_tooltip_text(Some(&match (answering, unread) {
                 (true, _) => "Ask (key 6): answering".to_string(),
-                (false, n) => format!("Ask (key 6): {} new", fmt::pl(n, "answer", "answers")),
+                (false, n) => format!("Ask: {} new", fmt::pl(n, "answer", "answers")),
             }));
         } else if let Some((n, warn)) = n {
             let l = w::label(&n.to_string(), &["n"]);
@@ -495,10 +495,10 @@ fn fill_rail(ui: &Ui, nav: &gtk::Box, plist: &gtk::Box, slim: bool, view: View, 
                 l.add_css_class("amber");
             }
             if v == View::Agents {
-                b.set_tooltip_text(Some(&format!("Agents (key 2): {n} look stale")));
+                b.set_tooltip_text(Some(&format!("Agents: {n} look stale")));
             }
             if v == View::Monitor {
-                b.set_tooltip_text(Some(&format!("Monitor (key 1): {}", fmt::pl(n, "open session", "open sessions"))));
+                b.set_tooltip_text(Some(&format!("Monitor: {}", fmt::pl(n, "open session", "open sessions"))));
             }
             inner.append(&l);
         }
@@ -773,7 +773,7 @@ pub fn render_chips(ui: &Ui) {
             } else {
                 let n = st.picked.len() as u64;
                 let ui2 = ui.clone();
-                let start = w::button(&format!("Start an agent on {}", fmt::pl(n, "idea", "ideas")), Some("s"), &["violet"], move || crate::start::open(&ui2, None));
+                let start = w::button(&format!("Start an agent on {}", fmt::pl(n, "idea", "ideas")), None, &["violet"], move || crate::start::open(&ui2, None));
                 start.set_tooltip_text(Some("Opens a Konsole tab in the project's folder with the agent and this brief typed in, waiting for your Enter"));
                 chips.add_next(&start);
                 let ui2 = ui.clone();
@@ -1298,10 +1298,10 @@ fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
     let (loc, _, can_go, tip) = app::loc_for(ui, s);
     let id = s.id.clone();
     let ui2 = ui.clone();
-    let go = w::button(&panel::go_words(s, &loc, can_go), Some("o"), &["suggested"], move || app::go_to(&ui2, &id));
+    let go = w::button(&panel::go_words(s, &loc, can_go), None, &["suggested"], move || app::go_to(&ui2, &id));
     go.set_sensitive(can_go);
     if !tip.is_empty() {
-        go.set_tooltip_text(Some(&format!("{tip} (o)")));
+        go.set_tooltip_text(Some(&tip));
     }
     acts.append(&go);
     let id = s.id.clone();
@@ -1994,7 +1994,7 @@ fn ideas(ui: &Ui) {
         if tab == IdeaTab::Sort {
             let check = gtk::CheckButton::new();
             check.set_active(picked.contains(&i.id));
-            check.set_tooltip_text(Some("Tick for a brief (x)"));
+            check.set_tooltip_text(Some("Tick for a brief"));
             check.update_property(&[gtk::accessible::Property::Label(&format!("Tick for a brief: {}", fmt::clip(&i.text, 60)))]);
             {
                 let ui = ui.clone();
@@ -2063,7 +2063,7 @@ fn ideas(ui: &Ui) {
         let btn = if i.state != "inbox" {
             w::button("Back to sort", None, &["sm", "ghost"], move || set_idea(&ui2, &id, Some("inbox"), None, "Back in the list to sort.".into()))
         } else {
-            w::button("Done", Some("d"), &["sm", "ghost", "done"], move || set_idea(&ui2, &id, Some("done"), None, "Marked done.".into()))
+            w::button("Done", None, &["sm", "ghost", "done"], move || set_idea(&ui2, &id, Some("done"), None, "Marked done.".into()))
         };
         btn.set_valign(gtk::Align::Center);
         foot.append(&btn);
@@ -2137,15 +2137,6 @@ pub fn toggle_pick(ui: &Ui, id: &str) {
     // Redrawn once the toggle's own signal has finished.
     let ui = ui.clone();
     glib::idle_add_local_once(move || render_view(&ui));
-}
-
-pub fn toggle_done(ui: &Ui, id: &str) {
-    let state = ui.st.borrow().ideas.as_ref().and_then(|l| l.iter().find(|i| i.id == id).map(|i| i.state.clone()));
-    match state.as_deref() {
-        Some("done") | Some("sent") => set_idea(ui, id, Some("inbox"), None, "Back in the list to sort.".into()),
-        Some(_) => set_idea(ui, id, Some("done"), None, "Marked done.".into()),
-        None => {}
-    }
 }
 
 pub fn search_changed(ui: &Ui, q: String) {

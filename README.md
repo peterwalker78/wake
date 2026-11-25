@@ -32,7 +32,7 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
 - **Projects** shows where you left each project, a card each: the next step you wrote down (or
   Claude's last recap), the sessions open in it, commits waiting to be pulled, and git loose ends
   in plain words (uncommitted files, branches and commits not pushed, repos with no remote).
-- **Ideas** keeps what you noticed while working (`c`, the New idea button, or `wake , text` in a
+- **Ideas** keeps what you noticed while working (the New idea button, `Ctrl+N`, or `wake , text` in a
   terminal), as notes to sort into projects. Tick a few and start an agent on them with a brief.
 - **History** lists every session by the day you last used it, and searches everything you asked,
   every session title and every file touched, including sessions Claude has since deleted: Wake
@@ -49,7 +49,7 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
 - **Peek**: hold `Space` on a session to see it without leaving Wake, and let go to come back.
   On Slipstream the desktop slides to the agent's window; on KDE Plasma a small KWin script
   switches to it; anywhere else, and for background sessions, Wake shows the agent's terminal text.
-- **Go there** (`o`) takes you to the session: its Konsole tab, a new window attached to a
+- **Go there** takes you to the session: its Konsole tab, a new window attached to a
   background session (`claude attach`), or a new window resuming an ended one.
 - **Behind**: Wake asks each project's remote, now and then, whether someone pushed commits you
   haven't pulled, and says so before you start work on an old copy. It asks with
@@ -74,25 +74,19 @@ bar.
 
 ## Keys
 
+Wake works like any desktop app: `Tab` and `Shift+Tab` go from part to part of the window (a list
+is one stop), the arrow keys move within the part you're in, `Enter` opens the details or presses
+a button, and `Esc` goes back. Every action is a button or in an item's ⋯ menu.
+
 | Key | |
 |---|---|
-| `1` to `6` | Monitor, Agents, Projects, Ideas, History, Ask |
-| `g` or `Ctrl+K` | Find: a session by name; `→` looks inside at its subagents; `Tab` switches to New idea |
-| `Enter` | the details; `Esc` goes back a page, then closes them |
+| `Ctrl+F` | find a session by name |
+| `Ctrl+N` | a new idea |
+| `Ctrl+Tab` | the next view (`Shift` for the one before) |
+| the Menu key or `Shift+F10` | the selected item's ⋯ menu |
 | hold `Space` | peek at the session; let go to come back, `Enter` to stay |
-| `o` | go there |
-| `c` | New idea: keep a thought, in the project you choose (also the New idea button) |
-| `p` | pause the project, with a note for next time |
-| `a` | Ask a question |
-| `/` | search everything you asked |
-| `s` / `Shift+S` | in Agents: stop the selected agent / every stale one |
-| `,` | Settings |
-| `?` or `F1` | every key |
-
-The usual desktop shortcuts work too: `Ctrl+F` finds, `Ctrl+N` is a new idea, `Ctrl+Tab` and
-`Ctrl+Page Down` step through the views, `Home`, `End`, `Page Up` and `Page Down` move in a list,
-`F5` reads everything again, `F10` opens the main menu, `Shift+F10` or the Menu key opens the
-selected item's menu, `Alt+←` goes back, and `Ctrl+Q` quits.
+| `Delete` | in Agents: stop the selected agent (it asks first) |
+| `F1` | the keys |
 
 From a terminal:
 

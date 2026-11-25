@@ -517,34 +517,6 @@ pub fn project_reason(ui: &Ui, s: &SessionSummary) -> String {
     }
 }
 
-/// The session `m` sets the project of: the open panel's, else the selected row's (an agent's
-/// row in Agents too).
-fn session_for_key(ui: &Ui) -> Option<String> {
-    if let Some(id) = app::selected_session(ui) {
-        return Some(id);
-    }
-    let st = ui.st.borrow();
-    if st.view == View::Agents {
-        return crate::agents::selected_proc(&st)?.session_id.clone();
-    }
-    None
-}
-
-/// `m`: Set project. disk.rs hook target (app.rs `on_key`, beside behind's).
-pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
-    if key.to_lower() != gdk::Key::m || mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) {
-        return None;
-    }
-    let view = ui.st.borrow().view;
-    let panel_session = matches!(ui.st.borrow().drawer, Some(Drawer::Session(_)));
-    if !(panel_session || matches!(view, View::Monitor | View::History | View::Agents)) {
-        return None;
-    }
-    let id = session_for_key(ui)?;
-    set_project(ui, &id);
-    Some(glib::Propagation::Stop)
-}
-
 /// "Which project is this session?": every tracked project, "No project", and (when the person
 /// set one) "Let Wake decide".
 pub fn set_project(ui: &Ui, session: &str) {

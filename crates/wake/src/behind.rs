@@ -13,7 +13,7 @@ use gtk4::{self as gtk, gdk, glib, prelude::*};
 use wake_core::*;
 
 use crate::{
-    app::{self, Drawer, Ui, View},
+    app::{self, Drawer, Ui},
     dialogs, fmt, w,
 };
 
@@ -33,10 +33,6 @@ window.wake .behind-banner button.btn.bb-pull { background-color: #FFB547; borde
 .behind-block.alarm { border-color: @rose; background-color: alpha(@rose, .10); }
 .behind-block .bk-line { color: @amber; font-size: 12.5px; }
 ";
-
-/// Esc acknowledges the banner only once it has been up this long, so the Esc that was on its way
-/// to close a panel doesn't dismiss a warning nobody read.
-const ESC_GRACE: Duration = Duration::from_millis(1500);
 
 struct Banner {
     /// The banner slides down into place (and up when acknowledged).
@@ -81,7 +77,7 @@ pub fn build(ui: &Ui) {
     text.append(&note);
     root.append(&text);
     let ui2 = ui.clone();
-    let pull = w::button("Pull now", Some("Shift+P"), &["bb-pull"], move || {
+    let pull = w::button("Pull now", None, &["bb-pull"], move || {
         if let Some(id) = banner_project() {
             confirm_pull(&ui2, &id);
         }
@@ -89,7 +85,7 @@ pub fn build(ui: &Ui) {
     pull.set_valign(gtk::Align::Center);
     root.append(&pull);
     let ui2 = ui.clone();
-    let ack_b = w::button("I know, carry on", Some("Esc"), &[], move || {
+    let ack_b = w::button("I know, carry on", None, &[], move || {
         if let Some(id) = banner_project() {
             ack(&ui2, &id);
         }
@@ -170,7 +166,7 @@ pub fn render(ui: &Ui) {
             }
         }
         bn.title.set_text(&format!("You're building in {}. {}", b.project_name, news(b)));
-        bn.fix.set_text(&next_step(b, true));
+        bn.fix.set_text(&next_step(b));
         bn.fix.set_tooltip_text(Some(&command_tip(b)));
         let mut note = Vec::new();
         if list.len() > 1 {
@@ -203,51 +199,8 @@ pub fn ack(ui: &Ui, project: &str) {
     app::focus_list(ui);
 }
 
-/// Keys: `Esc` acknowledges the banner; `Shift+P` pulls the project in front of you. None when
-/// the key isn't one of these.
-pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
-    if key == gdk::Key::Escape {
-        let showing = BANNER.with(|b| b.borrow().as_ref().and_then(|b| b.showing.clone()));
-        let (id, since) = showing?;
-        if since.elapsed() < ESC_GRACE {
-            return Some(glib::Propagation::Stop);
-        }
-        ack(ui, &id);
-        return Some(glib::Propagation::Stop);
-    }
-    let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
-    if key == gdk::Key::P || (key == gdk::Key::p && shift) {
-        match context_project(ui) {
-            Some(id) => match of(ui, &id) {
-                Some(b) if b.can_pull => confirm_pull(ui, &id),
-                Some(b) => app::toast(ui, &cant_pull(&b), true),
-                None => app::toast(ui, "That project isn't behind; nothing to pull.", false),
-            },
-            None => app::toast(ui, "Pick a project that's behind first.", false),
-        }
-        return Some(glib::Propagation::Stop);
-    }
-    None
-}
-
-/// The project `P` is about: the banner's, the open panel's, else the selected row's.
-fn context_project(ui: &Ui) -> Option<String> {
-    if let Some(id) = banner_project() {
-        return Some(id);
-    }
-    let st = ui.st.borrow();
-    let project_of = |sid: &str| st.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.id == sid).and_then(|s| s.project.clone()));
-    match (&st.drawer, st.view) {
-        (Some(Drawer::Project(id)), _) => Some(id.clone()),
-        (Some(Drawer::Session(id)), _) => project_of(id),
-        (None, View::Projects) => st.sel.clone(),
-        (None, View::Monitor) => st.sel.as_deref().and_then(project_of),
-        _ => None,
-    }
-}
-
 fn cant_pull(b: &Behind) -> String {
-    format!("{}: {}", b.project_name, next_step(b, false))
+    format!("{}: {}", b.project_name, next_step(b))
 }
 
 /// What happened, in plain words: "Someone pushed 3 commits you don't have yet."
@@ -259,7 +212,7 @@ fn news(b: &Behind) -> String {
 }
 
 /// What to do about it, in plain words; `key` adds the key for Pull.
-fn next_step(b: &Behind, key: bool) -> String {
+fn next_step(b: &Behind) -> String {
     if b.dirty > 0 {
         let (has, it) = if b.dirty == 1 { ("1 file has".to_string(), "it") } else { (format!("{} files have", b.dirty), "them") };
         format!("{has} changes that aren't committed. Commit {it} (or ask your agent to), then pull.")
@@ -271,7 +224,7 @@ fn next_step(b: &Behind, key: bool) -> String {
             b.host
         )
     } else if b.can_pull {
-        if key { "Pull them before you start (Shift+P).".to_string() } else { "Pull them before you start.".to_string() }
+        "Pull them before you start.".to_string()
     } else {
         "Wake can't pull this one for you. Ask your agent to pull them in.".to_string()
     }
@@ -279,7 +232,7 @@ fn next_step(b: &Behind, key: bool) -> String {
 
 /// The plain sentences together: what happened, then what to do.
 fn plain(b: &Behind) -> String {
-    format!("{} {}", news(b), next_step(b, true))
+    format!("{} {}", news(b), next_step(b))
 }
 
 /// The git underneath, for a tooltip: the command Pull runs and where.
@@ -373,7 +326,7 @@ pub fn panel_block(ui: &Ui, project: &str) -> Option<gtk::Box> {
     if b.alarm.is_some() {
         bx.add_css_class("alarm");
     }
-    let line = w::wrap(&format!("{} {}", news(&b), next_step(&b, false)), &["bk-line"]);
+    let line = w::wrap(&format!("{} {}", news(&b), next_step(&b)), &["bk-line"]);
     line.set_tooltip_text(Some(&command_tip(&b)));
     bx.append(&line);
     let mut meta = match &b.checked_at {
@@ -390,7 +343,7 @@ pub fn panel_block(ui: &Ui, project: &str) -> Option<gtk::Box> {
     if b.can_pull {
         let ui2 = ui.clone();
         let id = project.to_string();
-        let btn = w::button("Pull now", Some("Shift+P"), &["primary", "sm"], move || confirm_pull(&ui2, &id));
+        let btn = w::button("Pull now", None, &["primary", "sm"], move || confirm_pull(&ui2, &id));
         btn.set_widget_name("pull-now");
         btn.set_halign(gtk::Align::Start);
         bx.append(&btn);
@@ -445,11 +398,11 @@ mod tests {
 
     #[test]
     fn behind_reads_as_plain_sentences_with_git_only_in_the_tooltip() {
-        assert_eq!(plain(&b(Some(3), 0, 0)), "Someone pushed 3 commits you don't have yet. Pull them before you start (Shift+P).");
-        assert_eq!(next_step(&b(Some(1), 1, 0), false), "1 file has changes that aren't committed. Commit it (or ask your agent to), then pull.");
-        assert_eq!(next_step(&b(None, 2, 0), false), "2 files have changes that aren't committed. Commit them (or ask your agent to), then pull.");
+        assert_eq!(plain(&b(Some(3), 0, 0)), "Someone pushed 3 commits you don't have yet. Pull them before you start.");
+        assert_eq!(next_step(&b(Some(1), 1, 0)), "1 file has changes that aren't committed. Commit it (or ask your agent to), then pull.");
+        assert_eq!(next_step(&b(None, 2, 0)), "2 files have changes that aren't committed. Commit them (or ask your agent to), then pull.");
         assert_eq!(news(&b(None, 0, 0)), "Someone pushed new commits you don't have yet.");
-        assert!(next_step(&b(Some(2), 0, 1), false).starts_with("You also have 1 commit that isn't on GitHub"));
+        assert!(next_step(&b(Some(2), 0, 1)).starts_with("You also have 1 commit that isn't on GitHub"));
         for words in [plain(&b(Some(3), 0, 0)), plain(&b(Some(3), 1, 0)), plain(&b(Some(3), 0, 2)), cant_pull(&b(Some(3), 1, 0))] {
             assert!(!words.contains("git") && !words.contains("stash") && !words.contains("fast-forward"), "{words}");
         }

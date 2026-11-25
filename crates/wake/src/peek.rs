@@ -31,7 +31,6 @@ const SUBS_EVERY: u32 = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldKey {
     Space,
-    Tab,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,7 +138,6 @@ pub fn hold_key(key: gdk::Key, mods: gdk::ModifierType) -> Option<HoldKey> {
     }
     match key {
         gdk::Key::space => Some(HoldKey::Space),
-        gdk::Key::Tab | gdk::Key::KP_Tab => Some(HoldKey::Tab),
         _ => None,
     }
 }
@@ -291,7 +289,6 @@ pub fn on_press(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib:
 pub fn on_release(ui: &Ui, key: gdk::Key) {
     let k = match key {
         gdk::Key::space => HoldKey::Space,
-        gdk::Key::Tab | gdk::Key::KP_Tab | gdk::Key::ISO_Left_Tab => HoldKey::Tab,
         _ => return,
     };
     if ui.peek.borrow().phase != Phase::Idle {
@@ -347,11 +344,9 @@ fn feed(ui: &Ui, ev: Ev) -> Option<glib::Propagation> {
     Some(Stop)
 }
 
-/// A tap's usual meaning: Tab moves the focus on; Space activates the row (or, in the switcher,
-/// is a space in the filter).
+/// A tap's usual meaning: Space activates the row (or, in the switcher, is a space in the filter).
 fn tap(ui: &Ui, k: HoldKey) {
     match k {
-        HoldKey::Tab => crate::keynav::tab(ui, true),
         HoldKey::Space if ui.st.borrow().sw.open => {
             let e = &ui.w.sw_entry;
             let mut pos = e.position();
@@ -896,8 +891,6 @@ mod tests {
         let (p, a) = run(&[Ev::Down(Space, 0), Ev::Up(Space, 90), Ev::Timer(185)]);
         assert_eq!(a, vec![Arm, Tap(Space), Swallow]);
         assert_eq!(p, Phase::Idle);
-        let (_, a) = run(&[Ev::Down(Tab, 0), Ev::Up(Tab, 179)]);
-        assert_eq!(a[1], Tap(Tab));
     }
 
     #[test]
@@ -909,9 +902,9 @@ mod tests {
 
     #[test]
     fn a_key_repeat_past_the_threshold_starts_the_peek_before_the_timer() {
-        let (p, a) = run(&[Ev::Down(Tab, 0), Ev::Down(Tab, 200), Ev::Timer(205)]);
+        let (p, a) = run(&[Ev::Down(Space, 0), Ev::Down(Space, 200), Ev::Timer(205)]);
         assert_eq!(a, vec![Arm, Start, Swallow]);
-        assert_eq!(p, Phase::Peeking { key: Tab });
+        assert_eq!(p, Phase::Peeking { key: Space });
     }
 
     #[test]
@@ -923,7 +916,7 @@ mod tests {
 
     #[test]
     fn escape_comes_back_and_other_keys_go_nowhere_while_peeking() {
-        let (_, a) = run(&[Ev::Down(Space, 0), Ev::Timer(190), Ev::Other, Ev::Down(Tab, 300), Ev::Up(Tab, 310), Ev::Escape]);
+        let (_, a) = run(&[Ev::Down(Space, 0), Ev::Timer(190), Ev::Other, Ev::Other, Ev::Other, Ev::Escape]);
         assert_eq!(a, vec![Arm, Start, Swallow, Swallow, Swallow, End { stay: false }]);
     }
 
@@ -940,8 +933,6 @@ mod tests {
     fn another_key_during_the_decision_is_a_tap_then_that_key() {
         let (p, a) = run(&[Ev::Down(Space, 0), Ev::Other]);
         assert_eq!((p, a[1]), (Phase::Idle, TapThenPass(Space)));
-        let (_, a) = run(&[Ev::Down(Tab, 0), Ev::Down(Space, 50)]);
-        assert_eq!(a[1], TapThenPass(Tab));
     }
 
     #[test]
@@ -951,10 +942,10 @@ mod tests {
     }
 
     #[test]
-    fn idle_keys_are_not_ours_and_shift_tab_is_never_a_hold() {
+    fn idle_keys_are_not_ours_and_tab_is_never_a_hold() {
         assert_eq!(step(Phase::Idle, Ev::Other), (Phase::Idle, Pass));
         assert_eq!(step(Phase::Idle, Ev::Up(Space, 0)), (Phase::Idle, Pass));
-        assert_eq!(hold_key(gdk::Key::Tab, gdk::ModifierType::SHIFT_MASK), None);
+        assert_eq!(hold_key(gdk::Key::Tab, gdk::ModifierType::empty()), None, "Tab is always the next control");
         assert_eq!(hold_key(gdk::Key::space, gdk::ModifierType::CONTROL_MASK), None);
         assert_eq!(hold_key(gdk::Key::space, gdk::ModifierType::empty()), Some(Space));
     }

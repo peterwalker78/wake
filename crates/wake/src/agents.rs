@@ -281,7 +281,7 @@ pub fn render(ui: &Ui) {
     let n_stale = stale_summary(&p).0;
     if n_stale > 0 {
         let ui2 = ui.clone();
-        acts.append(&w::button(&format!("Stop all stale ({n_stale})"), Some("Shift+S"), &["danger"], move || stop_all_stale(&ui2)));
+        acts.append(&w::button(&format!("Stop all stale ({n_stale})"), None, &["danger"], move || stop_all_stale(&ui2)));
     }
     head.append(&acts);
     vw.top.append(&head);
@@ -731,8 +731,9 @@ pub fn key(ui: &Ui, k: TreeKey) -> bool {
         (Act::Panel, _) => {
             // The row's own session, never the one the panel already shows.
             let id = selected_proc(&ui.st.borrow()).and_then(|p| p.session_id.clone());
-            if let Some(id) = id {
-                panel::open_session(ui, &id, true);
+            match id {
+                Some(id) => panel::open_session(ui, &id, true),
+                None => app::toast(ui, "Wake couldn't match this agent to a session, so there are no details to show.", false),
             }
         }
         (Act::Subs(o), RowKey::Session(p)) => set_open(ui, *p, o),

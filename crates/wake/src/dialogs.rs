@@ -235,85 +235,39 @@ pub fn confirm(ui: &Ui, title: &str, body: &[String], list: &[(String, String)],
 
 /// `?`: every key, grouped, so the status bar only needs the few that matter where you are.
 pub fn keys(ui: &Ui) {
-    let c = card(900);
+    let c = card(760);
     let top = w::hbox(8, &[]);
     top.append(&w::label("Keys", &["h2"]));
     top.append(&w::spacer());
     top.append(&w::label("Esc closes", &["hint"]));
     c.append(&top);
     let peek = crate::peek::hint_word(ui);
-    let groups: [(&str, Vec<(&str, String)>); 7] = [
+    let groups: [(&str, Vec<(&str, String)>); 2] = [
         (
-            "Anywhere",
+            "Moving around",
             vec![
-                ("1 – 6", "Monitor, Agents, Projects, Ideas, History, Ask".into()),
-                (",  Ctrl+,", "Settings".into()),
-                ("a", "Ask a question".into()),
-                ("g  Ctrl+K  Ctrl+F", "Find a session by name".into()),
-                ("c  Ctrl+N", "New idea".into()),
-                ("Ctrl+Tab  Ctrl+PgDn", "next view (Shift+Tab, PgUp: back)".into()),
-                ("F5  Ctrl+R", "read everything again now".into()),
-                ("F10", "the main menu".into()),
-                ("F1  Ctrl+?", "these keys".into()),
+                ("Tab  Shift+Tab", "the next or previous part of the window".into()),
+                ("↑ ↓ ← →", "move in the list, the details or a menu".into()),
+                ("Home  End", "the first or last".into()),
+                ("Enter", "open the details, or press the button".into()),
+                ("Esc", "go back, or close".into()),
+                ("hold Space", format!("{peek} the session; let go to come back")),
+            ],
+        ),
+        (
+            "Shortcuts",
+            vec![
+                ("Ctrl+F", "find a session".into()),
+                ("Ctrl+N", "a new idea".into()),
+                ("Ctrl+Tab", "the next view (Shift: back)".into()),
+                ("Menu  Shift+F10", "the selected item's menu".into()),
+                ("Delete", "in Agents: stop the agent (asks first)".into()),
+                ("F1", "these keys".into()),
                 ("Ctrl+Q", "quit".into()),
-                ("/", "search History: everything you asked".into()),
-                ("Tab  F6", "next part of the window (Shift: back)".into()),
-                ("↑ ↓ ← →", "move within the part that has the keyboard: the list, the details, the title bar or a menu".into()),
-                ("Esc  Alt+←", "one step back: a dialog, a page of the details, the details, then the list".into()),
-                ("click blank space", "put the details away".into()),
             ],
         ),
-        (
-            "On a row or card",
-            vec![
-                ("j k  ↑ ↓", "move (in cards, ← → too)".into()),
-                ("Home  End  PgUp  PgDn", "first, last, a screenful".into()),
-                ("Enter  double-click", "its details (a click selects)".into()),
-                ("Shift+F10  Menu", "its ⋯ menu".into()),
-                ("hold Space", format!("{peek}; let go to come back, Enter to stay")),
-                ("o", "go to it".into()),
-                ("p", "pause its project".into()),
-                ("m", "set its project (when Wake guessed wrong)".into()),
-                ("Shift+P", "pull its project when it's behind (asks first)".into()),
-            ],
-        ),
-        (
-            "Find and New idea",
-            vec![
-                ("↑ ↓", "choose a session; in New idea, the project to keep it in".into()),
-                ("Enter", "go to the session; in New idea, keep it".into()),
-                ("→ ←", "look inside a session at its subagents, and back".into()),
-                ("Tab", "switch between Find and New idea".into()),
-            ],
-        ),
-        (
-            "Agents",
-            vec![
-                ("click a column", "sort by it; again to reverse, again for Wake's order".into()),
-                ("→ ←", "show or hide its subagents; on a subagent, its steps (← back to the session)".into()),
-                ("Enter", "on a subagent, its steps; on \"N finished\", the finished ones".into()),
-                ("s", "stop the selected agent".into()),
-                ("Shift+S", "stop every stale agent".into()),
-            ],
-        ),
-        ("Ideas", vec![("x", "tick for a brief".into()), ("s", "start an agent on them (asks first)".into()), ("d", "done".into()), ("Enter", "sort into a project".into())]),
-        (
-            "Ask",
-            vec![
-                ("Enter", "ask (Shift+Enter: a new line)".into()),
-                ("n", "a new thread".into()),
-                ("j k", "move between threads".into()),
-                ("Enter  a", "ask a follow-up".into()),
-                ("y", "copy the last answer".into()),
-                ("r", "ask again".into()),
-                ("Delete", "remove the thread".into()),
-                ("/", "filter the threads".into()),
-                ("Esc  Ctrl+C", "stop an answer".into()),
-            ],
-        ),
-        ("Settings", vec![("j k  ↑ ↓", "move".into()), ("← →", "change the selected setting".into()), ("Space  Enter", "flip a switch, open a list".into())]),
     ];
-    // Two columns, so the whole list fits without scrolling.
+    // Two columns side by side.
     let grid = gtk::Grid::builder().column_spacing(36).row_spacing(16).build();
     for (i, (title, rows)) in groups.into_iter().enumerate() {
         let g = w::vbox(5, &["keygrp"]);
@@ -322,15 +276,13 @@ pub fn keys(ui: &Ui) {
         for (k, what) in rows {
             let r = w::hbox(12, &[]);
             let kl = w::label(k, &["keyname"]);
-            kl.set_size_request(110, -1);
+            kl.set_size_request(130, -1);
             kl.set_xalign(0.0);
             r.append(&kl);
             r.append(&w::wrap(&what, &["plain"]));
             g.append(&r);
         }
-        // Anywhere, Agents, Ideas and Settings on the left; sessions, Find and Ask on the right.
-        let (col, row) = [(0, 0), (1, 0), (1, 1), (0, 1), (0, 2), (1, 2), (0, 3)][i];
-        grid.attach(&g, col, row, 1, if i == 5 { 2 } else { 1 });
+        grid.attach(&g, i as i32, 0, 1, 1);
     }
     c.append(&grid);
     let ui2 = ui.clone();

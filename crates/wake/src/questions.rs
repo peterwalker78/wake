@@ -97,10 +97,10 @@ pub fn build(ui: &Ui) {
     let filter = gtk::Entry::builder().placeholder_text("Filter questions").hexpand(true).build();
     filter.add_css_class("search");
     top.append(&filter);
-    top.append(&w::kbd("/"));
+
     side.append(&top);
     let ui2 = ui.clone();
-    let new = w::button("New question", Some("n"), &["ghost", "sm", "qnew"], move || new_thread(&ui2, true));
+    let new = w::button("New question", None, &["ghost", "sm", "qnew"], move || new_thread(&ui2, true));
     new.set_halign(gtk::Align::Start);
     side.append(&new);
     let list = gtk::ListBox::new();
@@ -132,6 +132,8 @@ pub fn build(ui: &Ui) {
     let holder = w::vbox(0, &[]);
     holder.append(&col);
     let thread_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&holder).build();
+    // Not a Tab stop of its own: the thread is for reading (its buttons still are stops).
+    thread_scroll.set_focusable(false);
     main.append(&thread_scroll);
 
     // A chat composer: the text box the full width, and one line under it with what the question
@@ -551,9 +553,14 @@ fn render_thread(ui: &Ui) {
             let m = w::wrap(e, &["qerr"]);
             l.append(&m);
             if last {
-                l.append(&w::kbd("r"));
-                l.append(&w::label("retry", &["hint"]));
+                let ui2 = ui.clone();
+                l.append(&w::button("Ask again", None, &["sm"], move || retry(&ui2)));
             }
+            tb.append(&l);
+        } else if last && !turn.answer.trim().is_empty() {
+            let l = w::hbox(8, &[]);
+            let ui2 = ui.clone();
+            l.append(&w::button("Copy the answer", None, &["sm", "ghost"], move || copy(&ui2)));
             tb.append(&l);
         }
         wd.thread.append(&tb);
@@ -749,19 +756,6 @@ pub fn focus_input(ui: &Ui) {
     if let Some(wd) = ws() {
         wd.input.grab_focus();
     }
-}
-
-/// `a` from anywhere: a new question, the keyboard in the input. In Questions itself, `a` asks a
-/// follow-up in the selected thread.
-pub fn ask_key(ui: &Ui) {
-    if ui.st.borrow().view != View::Questions {
-        st(|s| {
-            s.sel = None;
-            s.ctx_manual = false;
-        });
-        app::set_view(ui, View::Questions);
-    }
-    focus_input(ui);
 }
 
 /// The window's width crossed the line where the thread list and the thread stop fitting side by
@@ -1021,17 +1015,11 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
     }
     let on_control = focus.as_ref().is_some_and(|f| f.is::<gtk::Button>() || f.is::<gtk::DropDown>() || f.ancestor(gtk::DropDown::static_type()).is_some());
     match key.to_lower() {
-        K::j | K::Down => move_sel(ui, 1),
-        K::k | K::Up => move_sel(ui, -1),
+        K::Down | K::KP_Down => move_sel(ui, 1),
+        K::Up | K::KP_Up => move_sel(ui, -1),
         K::Return | K::KP_Enter if on_control => return None,
-        K::Return | K::KP_Enter | K::a | K::i => focus_input(ui),
-        K::n => new_thread(ui, true),
-        K::y => copy(ui),
-        K::r => retry(ui),
-        K::Delete => delete(ui),
-        K::slash => {
-            wd.filter.grab_focus();
-        }
+        K::Return | K::KP_Enter => focus_input(ui),
+        K::Delete | K::KP_Delete => delete(ui),
         K::Escape => return stop(ui).then_some(Stop),
         _ => return None,
     }

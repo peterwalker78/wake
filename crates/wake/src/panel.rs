@@ -711,7 +711,7 @@ fn session_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
     }
     // The project in the attribution's own words ("probably Skyhook (it changed files there)"),
     // and always a way to change it: the link opens Set project, as `m` does.
-    let m = format!("· {} <a href=\"change\" title=\"Say which project it belongs to (m)\">change</a> · {}", w::esc(&crate::disk::project_reason(ui, s)), w::esc(&loc)); // disk.rs hook
+    let m = format!("· {} <a href=\"change\" title=\"Say which project it belongs to (m)\">change project</a> · {}", w::esc(&crate::disk::project_reason(ui, s)), w::esc(&loc)); // disk.rs hook
     let wl = w::wrap("", &["where"]);
     wl.set_markup(&m);
     wl.set_hexpand(true);
@@ -959,9 +959,9 @@ fn res_of(st: &app::AppState, id: &str) -> Option<SessionResources> {
     st.ov.as_ref()?.resources.as_ref()?.session(id).cloned()
 }
 
-/// "PID 3007709 · 735 MB": memory with its terminal; the breakdown is in the tooltip.
+/// "735 MB in memory": with its terminal; the PID and the breakdown are in the tooltip.
 fn proc_words(r: SessionResources) -> String {
-    format!("PID {} · {}", r.pid, fmt::bytes(r.rss_bytes))
+    format!("{} in memory", fmt::bytes(r.rss_bytes))
 }
 
 /// The tooltip: what the number is made of, and where the link goes.
@@ -971,10 +971,10 @@ fn proc_tip(r: SessionResources) -> String {
     } else {
         format!("{} for the agent.", fmt::bytes(r.rss_bytes))
     };
-    format!("{parts} Opens its row in Agents: CPU, memory, and stopping it.")
+    format!("{parts} PID {}.\nOpens its row in Agents: CPU, memory, and stopping it.", r.pid)
 }
 
-/// "PID 3007709 · 680 MB" for a live session, a link to its row in Agents.
+/// "680 MB in memory" for a live session, a link to its row in Agents.
 fn proc_line(ui: &Ui, s: &SessionSummary) -> Option<gtk::Button> {
     let (pid, words, tip) = {
         let st = ui.st.borrow();

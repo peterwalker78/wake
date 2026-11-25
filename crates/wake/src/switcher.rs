@@ -280,13 +280,13 @@ fn render_rows(ui: &Ui) {
                 format!(
                     "<b>Back to where you were</b> <span foreground=\"{}\">· {} · {}</span>",
                     crate::theme::hex("muted"),
-                    w::esc(s.project_name.as_deref().unwrap_or("no project (~)")),
+                    w::esc(s.project_name.as_deref().unwrap_or("no project")),
                     w::esc(&s.title)
                 )
             }
             Item::Session(_) => {
                 line.append(&w::dot(class));
-                format!("<b>{}</b> <span foreground=\"{}\">· {}</span>", w::esc(s.project_name.as_deref().unwrap_or("no project (~)")), crate::theme::hex("muted"), w::esc(&s.title))
+                format!("<b>{}</b> <span foreground=\"{}\">· {}</span>", w::esc(s.project_name.as_deref().unwrap_or("no project")), crate::theme::hex("muted"), w::esc(&s.title))
             }
         };
         let l = w::clip("", &["t"]);

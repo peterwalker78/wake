@@ -33,8 +33,6 @@ const CSS: &str = "
 .disk-safe { color: @mint; } .disk-check { color: @amber; } .disk-keep { color: @dim; }
 .disk-refused { font-size: 11px; color: @amber; }
 .disk-cmd { font-family: \"JetBrains Mono\", monospace; font-size: 11px; color: @soft; background-color: @codebg; border-radius: 5px; padding: 3px 7px; }
-.disk-line { padding: 2px 4px 8px 4px; }
-.disk-line .meta { font-size: 11.5px; }
 .disk-scroll { min-height: 120px; }
 .disk-proj { padding: 3px 0; }
 ";
@@ -63,57 +61,7 @@ fn report(st: &AppState) -> Option<&DiskReport> {
     st.ov.as_ref()?.disk.as_ref()
 }
 
-// ---------------------------------------------------------------- Projects: columns and the machine line
-
-/// The two columns this adds to Projects, before "Last touched": (title, width, grow, right) and
-/// sort key. None while the panel is open (the table is compact then).
-pub fn cols(compact: bool) -> Vec<(crate::views::Col, Option<&'static str>)> {
-    if compact {
-        return Vec::new();
-    }
-    vec![(("Disk", 170, false, true), Some("disk")), (("Memory", 96, false, true), Some("memory"))]
-}
-
-/// Inserts this module's columns before the last one ("Last touched"). disk.rs hook target.
-pub fn add_cols(cols: &mut Vec<crate::views::Col>, keys: &mut Vec<Option<&'static str>>, compact: bool) {
-    let at = cols.len().saturating_sub(1);
-    for (i, (c, k)) in self::cols(compact).into_iter().enumerate() {
-        cols.insert(at + i, c);
-        keys.insert(at + i, k);
-    }
-}
-
-fn disk_words(st: &AppState, id: &str) -> String {
-    let Some(r) = report(st) else { return "measuring…".into() };
-    match r.project(id) {
-        Some(p) if p.bytes == 0 => "–".into(),
-        Some(p) => {
-            let at_least = if p.partial { "≥ " } else { "" };
-            if p.rebuildable >= 1 << 27 { format!("{at_least}{} · {} rebuildable", size(p.bytes), size(p.rebuildable)) } else { format!("{at_least}{}", size(p.bytes)) }
-        }
-        None if r.measuring.is_some() => "measuring…".into(),
-        None => "–".into(),
-    }
-}
-
-fn disk_tip(st: &AppState, id: &str) -> String {
-    let Some(r) = report(st) else { return "Wake measures the disk in the background, at low priority.".into() };
-    let Some(p) = r.project(id) else { return "Not measured yet.".into() };
-    let mut t = format!("{} on disk: its folders, plus its caches and conversations kept elsewhere.", size(p.bytes));
-    if p.rebuildable > 0 {
-        t.push_str(&format!("\n{} is build output and caches that come back by themselves.", size(p.rebuildable)));
-    }
-    t.push_str(&format!("\nMeasured {}. Open the project for the list.", fmt::ago(p.measured_at.as_deref())));
-    t
-}
-
-fn mem_words(st: &AppState, id: &str) -> String {
-    let Some(r) = st.ov.as_ref().and_then(|o| o.resources.as_ref()).and_then(|r| r.project(id)) else { return String::new() };
-    match r.cpu_percent {
-        Some(c) if c >= 1.0 => format!("{} · {}%", fmt::bytes(r.rss_bytes), c.round() as u32),
-        _ => fmt::bytes(r.rss_bytes),
-    }
-}
+// ---------------------------------------------------------------- Projects: the Disk button
 
 fn mem_tip(st: &AppState, id: &str) -> Option<String> {
     let r = st.ov.as_ref()?.resources.as_ref()?.project(id)?;
@@ -124,35 +72,6 @@ fn mem_tip(st: &AppState, id: &str) -> Option<String> {
         r.processes,
         r.cpu_percent.map(|c| format!("\nCPU: {:.0}% of one core.", c)).unwrap_or_default()
     ))
-}
-
-/// The cells for one project row, matching [`cols`]. disk.rs hook target.
-pub fn project_cells(ui: &Ui, p: &ProjectSummary, compact: bool) -> Vec<(gtk::Widget, i32, bool)> {
-    ensure_css();
-    let widths: Vec<i32> = cols(compact).iter().map(|c| c.0.1).collect();
-    if widths.is_empty() {
-        return Vec::new();
-    }
-    let st = ui.st.borrow();
-    let d = w::label(&disk_words(&st, &p.id), &["gitc", "num"]);
-    d.set_xalign(1.0);
-    d.set_tooltip_text(Some(&disk_tip(&st, &p.id)));
-    let m = w::label(&mem_words(&st, &p.id), &["gitc", "num"]);
-    m.set_xalign(1.0);
-    m.set_tooltip_text(mem_tip(&st, &p.id).as_deref());
-    drop(st);
-    let (a, b) = (p.id.clone(), p.id.clone());
-    crate::views::live_text(ui, View::Projects, &d, move |st| Some(disk_words(st, &a)));
-    crate::views::live_tip(ui, View::Projects, &d, {
-        let id = p.id.clone();
-        move |st| Some(disk_tip(st, &id))
-    });
-    crate::views::live_text(ui, View::Projects, &m, move |st| Some(mem_words(st, &b)));
-    crate::views::live_tip(ui, View::Projects, &m, {
-        let id = p.id.clone();
-        move |st| mem_tip(st, &id)
-    });
-    vec![(d.upcast(), widths[0], false), (m.upcast(), widths[1], false)]
 }
 
 /// Projects sorted by `key`: "disk" and "memory" here, the rest by `sort::projects`.
@@ -189,21 +108,17 @@ fn machine_words(st: &AppState) -> String {
     s
 }
 
-/// One line above the Projects table for the machine, with "Disk details". disk.rs hook target.
-pub fn machine_line(ui: &Ui) -> gtk::Box {
+/// Projects' "Disk" button: it opens the machine's disk details, and its tooltip says how full
+/// the disk is (kept current). Disk is its own job, so Projects gives it a button, not a column.
+pub fn details_button(ui: &Ui) -> gtk::Button {
     ensure_css();
-    let row = w::hbox(10, &["disk-line"]);
-    let l = w::clip(&machine_words(&ui.st.borrow()), &["meta"]);
-    l.set_tooltip_text(Some(
-        "What takes the space, and what could be cleared and made again. On an atomic system such as Bazzite, / is the read-only system image and always shows as full; that's normal.",
-    ));
-    crate::views::live_text(ui, View::Projects, &l, |st| Some(machine_words(st)));
-    row.append(&l);
     let ui2 = ui.clone();
-    let b = w::button("Disk details", None, &["ghost", "sm"], move || machine(&ui2));
+    let b = w::button("Disk", None, &["ghost", "sm"], move || machine(&ui2));
     b.set_widget_name("disk-details");
-    row.append(&b);
-    row
+    let tip = |st: &AppState| format!("{}\nWhat takes the space, and what could be cleared and made again.", machine_words(st));
+    b.set_tooltip_text(Some(&tip(&ui.st.borrow())));
+    crate::views::live_tip(ui, View::Projects, &b, move |st| Some(tip(st)));
+    b
 }
 
 // ---------------------------------------------------------------- items
@@ -1146,7 +1061,7 @@ pub fn demo_attribution(sessions: &[SessionSummary]) -> Vec<Attribution> {
         if s.id.starts_with("91aa4e7c") && s.project.as_deref() == Some("Skyhook") {
             out.push(Attribution { session: s.id.clone(), project: s.project.clone(), how: "files".into(), words: "probably Skyhook (it changed files there)".into(), started_at_home: true });
         } else if s.project.is_none() {
-            out.push(Attribution { session: s.id.clone(), project: None, how: "none".into(), words: "no project (~)".into(), started_at_home: true });
+            out.push(Attribution { session: s.id.clone(), project: None, how: "none".into(), words: "no project".into(), started_at_home: true });
         }
     }
     out

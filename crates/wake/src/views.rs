@@ -265,7 +265,7 @@ fn focus_header(ui: &Ui, view: View, key: &str) {
 }
 
 pub fn project_label(name: Option<&str>) -> String {
-    name.map_or_else(|| "no project (~)".to_string(), str::to_string)
+    name.map_or_else(|| "no project".to_string(), str::to_string)
 }
 
 pub fn render_loading(ui: &Ui) {
@@ -587,7 +587,9 @@ pub fn render_status(ui: &Ui) {
     let s = &ui.w.status;
     w::clear(s);
     let conn = w::hbox(6, &["a"]);
-    let tabs_unknown = app::tabs_unknown(ui);
+    // Only worth a warning while some session is open: with none, there is no tab to find.
+    let any_live = ui.st.borrow().ov.as_ref().is_some_and(|o| o.sessions.iter().any(|s| app::is_live(s.state)));
+    let tabs_unknown = app::tabs_unknown(ui).filter(|_| any_live);
     let secs = last_ok.map(|t| (glib::monotonic_time() - t) / 1_000_000).unwrap_or(0);
     let (dot, words, class) = if ui.demo {
         ("demo", "demo data".to_string(), "")
@@ -785,7 +787,7 @@ pub fn render_chips(ui: &Ui) {
     });
     match st.view {
         View::Monitor => {
-            chips.add_next(&w::label("Sessions", &["ttl"]));
+            chips.add_next(&w::label("Monitor", &["ttl"]));
             let base: Vec<&SessionSummary> = ov.sessions.iter().filter(|s| st.proj_filter.is_none() || s.project == st.proj_filter).collect();
             for (f, l) in CHIPS {
                 let n = base.iter().filter(|s| matches(s, f)).count();
@@ -807,6 +809,8 @@ pub fn render_chips(ui: &Ui) {
             if let Some(id) = st.proj_filter.clone() {
                 let ui = ui.clone();
                 chips.add_next(&w::button("Project details", None, &["sm"], move || panel::open_project(&ui, &id, true)));
+            } else {
+                chips.add(&w::label(PURPOSE_MONITOR, &["meta"]), PURPOSE_PRIO);
             }
         }
         View::Agents => {
@@ -859,12 +863,8 @@ pub fn render_chips(ui: &Ui) {
             if st.idea_tab != IdeaTab::Sort {
                 // Nothing to tick or send in these lists.
             } else if st.picked.is_empty() {
-                let m = w::hbox(6, &[]);
-                m.append(&w::kbd("x"));
-                m.append(&w::label("tick for a brief", &["meta"]));
-                m.append(&w::kbd("s"));
-                m.append(&w::label("start an agent", &["meta"]));
-                chips.add_next(&m);
+                // The keys (x, s) are in the status bar.
+                chips.add(&w::label(PURPOSE_IDEAS, &["meta"]), PURPOSE_PRIO);
             } else {
                 let n = st.picked.len() as u64;
                 let ui2 = ui.clone();
@@ -900,6 +900,8 @@ pub fn render_chips(ui: &Ui) {
                 }));
             }
             chips.add_next(&w::spacer());
+            chips.add(&w::label(PURPOSE_PROJECTS, &["meta"]), PURPOSE_PRIO);
+            chips.add_next(&crate::disk::details_button(ui));
             let ui = ui.clone();
             chips.add_next(&w::button("+ Track a folder", None, &["sm"], move || {
                 ui.st.borrow_mut().adding = true;
@@ -925,6 +927,24 @@ pub fn render_chips(ui: &Ui) {
         }
     }
 }
+
+/// Opens a second Wake on demo data, and reaps it when it closes.
+fn open_demo() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    std::thread::spawn(move || {
+        if let Ok(mut child) = std::process::Command::new(exe).arg("--demo").spawn() {
+            let _ = child.wait();
+        }
+    });
+}
+
+/// Each screen says what it is for, in one line beside its title (History and Questions say what
+/// they search and who answers, in the same place).
+const PURPOSE_MONITOR: &str = "what needs you, and the way back to it";
+const PURPOSE_PROJECTS: &str = "where you left each project, and what's next";
+const PURPOSE_IDEAS: &str = "what you noticed, to sort into projects or hand to an agent";
+/// The purpose line is the first thing a narrow header lets go of, before any button.
+const PURPOSE_PRIO: i32 = 1000;
 
 // ---------- views ----------
 
@@ -1087,9 +1107,8 @@ pub type Col = (&'static str, i32, bool, bool);
 /// open, State · where makes way so the question stays readable beside the panel (the state is
 /// then a dot by the name).
 fn session_cols(now: &'static str, compact: bool) -> Vec<Col> {
-    // With the panel open, State · where narrows to a dot and a short place ("K2·1") rather than
-    // going: every other row still says what it is doing and where.
-    let state: Col = if compact { ("Where", 74, false, false) } else { ("State · where", 150, false, false) };
+    // With the panel open, State · where narrows to the state in a word: the panel says where.
+    let state: Col = if compact { ("State", 84, false, false) } else { ("State · where", 150, false, false) };
     vec![("Project · session", 230, false, false), state, (now, 240, true, false), ("Last", 76, false, true)]
 }
 
@@ -1098,19 +1117,14 @@ fn session_keys(_compact: bool) -> Vec<Option<&'static str>> {
     vec![Some("project"), Some("state"), None, Some("last")]
 }
 
-/// A place in a few characters, for the narrow column: "K2·1", "K·3", "bg", "—".
-pub fn short_loc(loc: &str) -> String {
-    let l = loc.trim();
-    if let Some(rest) = l.strip_prefix("Konsole") {
-        let (win, tab) = rest.split_once("· tab").unwrap_or((rest, ""));
-        return format!("K{}·{}", win.trim(), tab.trim());
-    }
-    match l {
-        "background" => "bg".into(),
-        "not open" | "" => "—".into(),
-        "checking…" => "…".into(),
-        "kept by Wake" => "kept".into(),
-        other => other.chars().take(6).collect(),
+/// The state in one short word, for a narrow column: "waiting", "working", "idle".
+pub fn short_state(s: State) -> &'static str {
+    match s {
+        State::Waiting => "waiting",
+        State::Working => "working",
+        State::Idle => "idle",
+        State::Ended => "ended",
+        State::Unknown => "lost track",
     }
 }
 
@@ -1155,7 +1169,7 @@ pub fn session_row(ui: &Ui, view: View, s: &SessionSummary, now: gtk::Widget, co
         let (class, word) = w::state_word(s.state);
         let both = w::hbox(6, &["state", class]);
         both.append(&w::dot(class));
-        let l = w::clip(&short_loc(&text), &["loc", "plain"]);
+        let l = w::clip(short_state(s.state), &["loc", "plain"]);
         l.set_tooltip_text(Some(&format!("{word} · {text}")));
         both.append(&l);
         cells.push((both.upcast(), cols[1].1, false));
@@ -1205,7 +1219,7 @@ fn session_card(ui: &Ui, view: View, s: &SessionSummary, now: gtk::Widget) -> gt
     let line = w::hbox(8, &[]);
     line.append(&w::clip(&s.title, &["title"]));
     let (text, ..) = app::loc_for(ui, s);
-    let l = w::label(&short_loc(&text), &["loc", "plain", "state", class]);
+    let l = w::label(short_state(s.state), &["loc", "plain", "state", class]);
     l.set_tooltip_text(Some(&format!("{word} · {text}")));
     line.append(&l);
     card.append(&line);
@@ -1311,14 +1325,23 @@ pub fn now_text(s: &SessionSummary) -> (String, String, bool) {
     let prompt = s.last_prompt.as_deref().map(|p| (format!("{} {}", dim("you asked:"), e(&fmt::clip(p, 300))), p.to_string()));
     let recap = s.away_summary.as_deref().map(fmt::recap).filter(|r| !r.is_empty()).map(|r| (format!("{} {}", dim("recap:"), e(&fmt::clip(&r, 300))), r));
     let (m, tip) = if s.state == State::Working { prompt.or(recap) } else { recap.or(prompt) }.unwrap_or_else(|| (dim("nothing asked yet"), String::new()));
-    // Why it stopped comes first: "finished, handed back · recap: …".
-    match crate::why::stop_reason(s) {
-        Some(r) => {
-            let words = if r.class == "dim" { dim(&e(&r.words)) } else { e(&r.words) };
-            (format!("{words} {} {m}", dim("·")), format!("{}\n{tip}", r.words), false)
-        }
+    // Why it stopped comes first: "finished · recap: …". Only the why: the state column already
+    // says ended or lost track, and Last says when.
+    match crate::why::stop_reason(s).and_then(|r| row_reason(&r.words).map(|w| (w.to_string(), r.words.clone()))) {
+        Some((words, full)) => (format!("{} {} {m}", e(&words), dim("·")), format!("{full}\n{tip}"), false),
         None => (m, tip, false),
     }
+}
+
+/// The part of a stop reason a row needs beside its state and age: "finished, handed back" and
+/// "stopped mid-task" (without "(last ran 01:30)"); nothing for "lost track: …" or "ended: last
+/// ran …", which the state column and Last already say.
+fn row_reason(words: &str) -> Option<&str> {
+    let w = words.strip_prefix("ended: ").unwrap_or(words);
+    if w.starts_with("lost track") || w.starts_with("last ran") {
+        return None;
+    }
+    Some(w.split(" (last ran").next().unwrap_or(w))
 }
 
 /// The "Now" cell: the question when it is asking (amber, up to two lines), else what you last
@@ -1383,7 +1406,7 @@ fn monitor(ui: &Ui) {
         let b = w::empty(big, "");
         let l = w::wrap(
             &format!(
-                "{small}\n\nWake lists every Claude Code and Codex session on this computer: which is working, which is waiting for you, and where it runs. Run wake --demo in a terminal to see a full board."
+                "{small}\n\nWake lists every Claude Code and Codex session on this computer: which is working, which is waiting for you, and where it runs."
             ),
             &[],
         );
@@ -1393,7 +1416,14 @@ fn monitor(ui: &Ui) {
         b
     };
     if total == 0 {
-        vw.empty.append(&empty("No sessions in the last 14 days.", "Start Claude in any project. It shows up here within a few seconds.", true));
+        let b = empty("No sessions in the last 14 days.", "Start Claude in any project. It shows up here within a few seconds.", true);
+        // Seeing it full is the quickest way to learn what it is for: a second Wake on made-up data.
+        let btn = w::button("See a full board, with made-up sessions", None, &["sm"], open_demo);
+        btn.set_tooltip_text(Some("Opens a second Wake window on demo data (wake --demo). Nothing in it is real."));
+        btn.set_halign(gtk::Align::Center);
+        btn.set_margin_top(14);
+        b.append(&btn);
+        vw.empty.append(&b);
         return;
     }
     if rows.is_empty() {
@@ -1453,7 +1483,7 @@ fn project_cols(compact: bool, any_open: bool) -> (Vec<Col>, Vec<Option<&'static
     let all: [(Col, Option<&'static str>); 5] = [
         (("Project", 220, false, false), Some("project")),
         (("Next step", 220, true, false), None),
-        (("Open", 130, false, false), Some("open")),
+        (("Sessions", 130, false, false), Some("open")),
         (("Loose ends in git", 230, false, false), Some("git")),
         (("Last touched", 96, false, true), Some("last")),
     ];
@@ -1484,7 +1514,6 @@ fn projects(ui: &Ui) {
     let Some(had_focus) = begin(ui, View::Projects, sig) else { return };
     let vw = &ui.w.views[&View::Projects];
     w::clear(&vw.top);
-    vw.top.append(&crate::disk::machine_line(ui)); // disk.rs hook: the machine's disk line
     if adding {
         let row = w::hbox(8, &["addrow"]);
         row.append(&w::label("Folder", &["meta"]));
@@ -1547,8 +1576,7 @@ fn projects(ui: &Ui) {
         return;
     }
     let any_open = list.iter().any(|p| p.live.waiting + p.live.working + p.live.idle > 0);
-    let (mut cols, mut keys) = project_cols(compact, any_open);
-    crate::disk::add_cols(&mut cols, &mut keys, compact); // disk.rs hook: DISK and MEMORY columns
+    let (cols, keys) = project_cols(compact, any_open);
     vw.head.append(&table_head(ui, View::Projects, &cols, &keys));
     let cards = app::cards(&ui.st.borrow());
     for p in &list {
@@ -1556,9 +1584,6 @@ fn projects(ui: &Ui) {
         let line = w::hbox(7, &[]);
         line.append(&project_dot(p));
         line.append(&w::clip(&p.name, &["pname"]));
-        if let Some(m) = crate::behind::pill(ui, Some(&p.id)) {
-            line.append(&m);
-        }
         if let Some(pause) = &p.paused {
             let pill = w::label(&format!("paused {}", fmt::short_when(Some(&pause.at))), &["pill", "paused"]);
             pill.set_tooltip_text(Some(&pause.note));
@@ -1629,7 +1654,6 @@ fn projects(ui: &Ui) {
         last.set_hexpand(true);
         let id = p.id.clone();
         live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
-        cells.extend(crate::disk::project_cells(ui, p, compact)); // disk.rs hook
         cells.push((last.upcast(), cols[cols.len() - 1].1, false));
         let r = w::row(cells, &["tr"]);
         if p.removed {
@@ -1811,7 +1835,7 @@ fn ideas(ui: &Ui) {
             w::button("Back to sort", None, &["sm"], move || set_idea(&ui2, &id, Some("inbox"), None, "Back in the list to sort.".into()))
         } else {
             // The d key cap shows on the selected row only (style.css).
-            w::button("Done", Some("d"), &["sm", "done"], move || set_idea(&ui2, &id, Some("done"), None, "Marked done.".into()))
+            w::button("Done", Some("d"), &["sm", "ghost", "done"], move || set_idea(&ui2, &id, Some("done"), None, "Marked done.".into()))
         };
         btn.set_valign(gtk::Align::Center);
         tools.append(&btn);
@@ -2211,9 +2235,10 @@ mod tests {
         assert!(now_text(&d).0.starts_with("Wants a decision: Next, say whether"));
         y.state = State::Working;
         assert!(now_text(&y).0.contains("you asked:"));
-        assert_eq!(short_loc("Konsole 2 · tab 1"), "K2·1");
-        assert_eq!(short_loc("Konsole · tab 3"), "K·3");
-        assert_eq!(short_loc("background"), "bg");
+        assert_eq!(row_reason("stopped mid-task (last ran 01:30)"), Some("stopped mid-task"));
+        assert_eq!(row_reason("ended: finished, handed back"), Some("finished, handed back"));
+        assert_eq!(row_reason("ended: last ran 09:52"), None);
+        assert_eq!(row_reason("lost track: says busy, but nothing has changed for 6 h"), None);
     }
 
     #[test]

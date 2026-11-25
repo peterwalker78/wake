@@ -103,7 +103,6 @@ pub fn describe(session: &str, project: Option<(&str, &str)>, how: &str, launch_
         ("set", None) => "no project (you set it)".to_string(),
         ("files", Some(n)) => format!("probably {n} (it changed files there)"),
         ("title", Some(n)) => format!("probably {n} (from its title)"),
-        _ if at_home => "no project (~)".to_string(),
         _ => "no project".to_string(),
     };
     Attribution { session: session.to_string(), project: project.map(|p| p.0.to_string()), how: how.to_string(), words, started_at_home: at_home }
@@ -177,6 +176,6 @@ mod tests {
         let d = describe("s1", Some(("night-shift", "night-shift")), "title", Some("/h"), Path::new("/h"));
         assert_eq!(d.words, "probably night-shift (from its title)");
         assert!(d.started_at_home);
-        assert_eq!(describe("s2", None, "none", Some("/h"), Path::new("/h")).words, "no project (~)");
+        assert_eq!(describe("s2", None, "none", Some("/h"), Path::new("/h")).words, "no project");
     }
 }

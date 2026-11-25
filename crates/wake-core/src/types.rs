@@ -575,7 +575,7 @@ pub struct Attribution {
     /// "set" (by the person), "files" (it changed files there), "title" (its title names it) or
     /// "none".
     pub how: String,
-    /// For a person: "probably night-shift (from its title)", "no project (~)", "wake (you set it)".
+    /// For a person: "probably night-shift (from its title)", "no project", "wake (you set it)".
     pub words: String,
     /// It was started in the home folder, as background jobs are.
     pub started_at_home: bool,

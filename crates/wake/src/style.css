@@ -194,7 +194,8 @@ window.wake entry.search { font-size: 14px; min-height: 38px; border-radius: 8px
 .memok { color: @mint; font-size: 13px; }
 .memfree { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; }
 .memfree.low { color: @rose; }
-.pid { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 12px; }
+/* The PID is for the curious: quiet, so the task is what the eye lands on. */
+.pid { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @muted; }
 .tree { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @dim; }
 .why { color: @rose; font-size: 12px; }
 .noreadout { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; border: 1px dashed @line; border-radius: 7px; padding: 8px 9px; }

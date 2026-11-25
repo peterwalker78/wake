@@ -28,6 +28,7 @@ window.wake .behind-banner button.btn.bb-pull { background-color: #FFB547; borde
 .behind-pill { font-family: \"JetBrains Mono\", monospace; font-weight: 700; font-size: 10px; padding: 2px 6px; border-radius: 4px; background-color: alpha(@amber, .16); color: @amber; }
 .behind-pill.alarm { background-color: @rose; color: @on_rose; }
 .behind-line { font-family: \"JetBrains Mono\", monospace; font-size: 11px; color: @amber; }
+.behind-line.alarm { color: @rose; }
 .behind-block { margin: 2px 16px 10px 16px; padding: 10px 12px; border: 1px solid alpha(@amber, .45); border-radius: 8px; background-color: alpha(@amber, .07); }
 .behind-block.alarm { border-color: @rose; background-color: alpha(@rose, .10); }
 .behind-block .bk-line { color: @amber; font-size: 12.5px; }
@@ -332,12 +333,12 @@ pub fn confirm_pull(ui: &Ui, project: &str) {
     });
 }
 
-/// A small marker for a row: "behind 3", red while building while behind. Tooltip: the fix.
+/// A small marker for a row: "3 to pull", red while building while behind. Tooltip: the fix.
 pub fn pill(ui: &Ui, project: Option<&str>) -> Option<gtk::Label> {
     let b = of(ui, project?)?;
     let text = match b.count {
-        Some(n) => format!("behind {n}"),
-        None => "behind".to_string(),
+        Some(n) => format!("{n} to pull"),
+        None => "to pull".to_string(),
     };
     let l = w::label(&text, &["behind-pill"]);
     if b.alarm.is_some() {
@@ -358,6 +359,9 @@ pub fn row_line(ui: &Ui, project: &str) -> Option<gtk::Label> {
         None => "New commits to pull".to_string(),
     };
     let l = w::clip(&short, &["behind-line"]);
+    if b.alarm.is_some() {
+        l.add_css_class("alarm");
+    }
     l.set_tooltip_text(Some(&format!("{}\n{}", plain(&b), command_tip(&b))));
     Some(l)
 }

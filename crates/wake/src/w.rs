@@ -76,15 +76,14 @@ pub fn kbd(text: &str) -> gtk::Label {
     l
 }
 
-/// A button whose child is `text` and, if given, a key cap.
+/// A button labelled `text`. Its key, if it has one, is in its tooltip, as standard apps do
+/// (and in the keys sheet, `?`); a caller's own tooltip replaces it.
 pub fn button(text: &str, key: Option<&str>, classes: &[&str], on_click: impl Fn() + 'static) -> gtk::Button {
     let b = gtk::Button::new();
     let inner = hbox(7, &[]);
     inner.append(&gtk::Label::new(Some(text)));
     if let Some(k) = key {
-        for part in k.split('+') {
-            inner.append(&kbd(part));
-        }
+        b.set_tooltip_text(Some(&format!("{text} ({k})")));
     }
     b.set_child(Some(&inner));
     b.add_css_class("btn");
@@ -288,14 +287,26 @@ pub fn dot(class: &str) -> gtk::Box {
 }
 
 /// "● working" with its class.
+/// A session's state as a status tag: a dot and a word, in the state's colour ("Waiting for you").
 pub fn state_badge(s: wake_core::State) -> gtk::Box {
     let (class, word) = state_word(s);
-    let b = hbox(7, &["state", class]);
+    state_tag(&sentence(word), class)
+}
+
+/// A status tag: a small pill with a dot and a word, coloured by `class` (waiting, working, idle,
+/// ended, unknown). The one way Wake shows a status, everywhere.
+pub fn state_tag(word: &str, class: &str) -> gtk::Box {
+    let b = hbox(6, &["state", "tag", class]);
     b.append(&dot(class));
-    let l = clip(word, &[]);
-    l.set_tooltip_text(None);
-    b.append(&l);
+    b.append(&label(word, &[]));
+    b.set_valign(gtk::Align::Center);
     b
+}
+
+/// "waiting for you" → "Waiting for you".
+pub fn sentence(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
 }
 
 pub fn empty(big: &str, small: &str) -> gtk::Box {
@@ -313,7 +324,7 @@ pub fn empty(big: &str, small: &str) -> gtk::Box {
 
 pub fn sec(title: &str) -> gtk::Box {
     let b = hbox(8, &["sec"]);
-    b.append(&label(&title.to_uppercase(), &[]));
+    b.append(&label(title, &["heading"]));
     b
 }
 
@@ -388,4 +399,26 @@ mod named {
     }
 
     impl WidgetImpl for Imp {}
+}
+
+/// A symbolic icon by the first of `names` the desktop's icon theme has (Breeze and Adwaita name
+/// some icons differently), so it never shows as missing.
+pub fn icon(names: &[&str]) -> gtk::Image {
+    let gicon = gtk::gio::ThemedIcon::from_names(names);
+    gtk::Image::from_gicon(&gicon)
+}
+
+/// The icons Wake uses, each with the names to try.
+pub mod icons {
+    pub const MONITOR: &[&str] = &["notifications-symbolic", "preferences-system-notifications-symbolic", "alarm-symbolic"];
+    pub const PROJECTS: &[&str] = &["folder-symbolic"];
+    pub const IDEAS: &[&str] = &["document-edit-symbolic", "edit-comment-symbolic"];
+    pub const HISTORY: &[&str] = &["document-open-recent-symbolic", "appointment-soon-symbolic"];
+    pub const AGENTS: &[&str] = &["utilities-terminal-symbolic", "system-run-symbolic"];
+    pub const ASK: &[&str] = &["view-conversation-balloon-symbolic", "chat-message-new-symbolic", "dialog-messages-symbolic", "dialog-question-symbolic"];
+    pub const FIND: &[&str] = &["system-search-symbolic", "edit-find-symbolic"];
+    pub const ADD: &[&str] = &["list-add-symbolic"];
+    pub const CLOSE: &[&str] = &["window-close-symbolic"];
+    pub const INFO: &[&str] = &["dialog-information-symbolic"];
+    pub const WARNING: &[&str] = &["dialog-warning-symbolic"];
 }

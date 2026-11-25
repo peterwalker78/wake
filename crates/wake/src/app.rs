@@ -311,8 +311,7 @@ pub struct Widgets {
     /// Rail, main column and side panel, laid out for the width (layout.rs).
     pub body: crate::layout::Shell,
     pub rail: gtk::Box,
-    /// ☰ (the rail as a drawer), and the search box's full and icon forms.
-    pub menu_btn: gtk::Button,
+    /// Find: the search box and its icon form.
     pub cmd_full: gtk::Widget,
     pub cmd_icon: gtk::Button,
     pub counts: crate::layout::Squeeze,
@@ -320,8 +319,11 @@ pub struct Widgets {
     pub tabs: gtk::Box,
     pub indexing: gtk::Label,
     pub clock: gtk::Label,
-    /// "DEMO DATA" in the top bar (the status bar says it too).
-    pub badge: gtk::Label,
+    /// The view switcher's bottom form, in a phone-narrow window.
+    pub tabs_bottom: gtk::Box,
+    /// New idea (+) and the main menu in the title bar.
+    pub add_btn: gtk::Button,
+    pub menu: gtk::MenuButton,
     pub nav: gtk::Box,
     pub plist: gtk::Box,
     /// The slim rail's full form, sliding out over the content (layout.rs), and its lists.
@@ -480,71 +482,77 @@ fn build(app: &gtk::Application, opts: Opts) {
         s.set_gtk_decoration_layout(Some(":close"));
     }
 
-    // Top bar: what doesn't fit drops out, least important first (the badge, the clock, then the
-    // counts from the end); the search button narrows down to its keys.
-    let top = crate::layout::Squeeze::new(12, &["top"]);
-    // ☰: the rail, when the window is too narrow to keep it (a drawer over everything).
-    let menu_btn = gtk::Button::with_label("☰");
-    menu_btn.add_css_class("iconbtn");
-    menu_btn.set_tooltip_text(Some("Views and projects (F6)"));
-    menu_btn.update_property(&[gtk::accessible::Property::Label("Views and projects")]);
-    menu_btn.set_valign(gtk::Align::Center);
-    menu_btn.set_visible(false);
-    top.add(&menu_btn, 0);
-    top.add(&w::label("WAKE", &["logo"]), 0);
-    // The three places you go, as tabs; the tools (Agents, Ideas, Ask, Settings) sit at the right.
-    let tabs = w::hbox(2, &["tabs"]);
-    tabs.update_property(&[gtk::accessible::Property::Label("Views")]);
-    top.add(&tabs, 0);
+    // The title bar, laid out as GTK apps lay theirs out: Find and New idea at the start, the view
+    // switcher in the middle, Ask, the main menu and the window's buttons at the end. It drags and
+    // double-clicks like any title bar.
+    // A row (not a CenterBox, whose centring doubles the wider side's minimum): start, the switcher
+    // between two equal spacers, end. Start and end share a width (a size group) while there is
+    // room, so the switcher sits in the middle.
+    let top = w::hbox(0, &["top"]);
+    let start = w::hbox(6, &["hstart"]);
+    // Find: a search field where there is room, its icon where there isn't. Both open the switcher.
     let cmd = gtk::Button::new();
     cmd.add_css_class("cmd");
     let cmd_in = w::hbox(8, &[]);
-    let cmd_label = w::label("Go to a session…", &[]);
+    cmd_in.append(&w::icon(w::icons::FIND));
+    let cmd_label = w::label("Find a session", &[]);
     cmd_label.set_hexpand(true);
+    cmd_label.set_xalign(0.0);
     cmd_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     cmd_in.append(&cmd_label);
-    cmd_in.append(&w::kbd("Ctrl"));
-    cmd_in.append(&w::kbd("K"));
     cmd.set_child(Some(&cmd_in));
     cmd.set_hexpand(true);
-    cmd.set_tooltip_text(Some("Go to a session (g or Ctrl+K)"));
-    cmd.update_property(&[gtk::accessible::Property::Label("Go to a session")]);
-    // 380 px when there is room, down to 150 in a narrow window.
+    cmd.set_tooltip_text(Some("Find a session (Ctrl+K)"));
+    cmd.update_property(&[gtk::accessible::Property::Label("Find a session")]);
     let cmd_holder = w::hbox(0, &[]);
     cmd_holder.append(&cmd);
-    let cmd_full = w::Fit::new(&cmd_holder, 150, Some(300)).upcast();
-    top.add(&cmd_full, 0);
-    // Narrow, the search box is a 🔍 button (it opens the same switcher over the window).
+    let cmd_full = w::Fit::new(&cmd_holder, 150, Some(240)).upcast();
+    start.append(&cmd_full);
     let cmd_icon = gtk::Button::new();
-    cmd_icon.set_child(Some(&w::label("⌕", &["searchicon"])));
-    cmd_icon.add_css_class("iconbtn");
-    cmd_icon.set_tooltip_text(Some("Go to a session (g or Ctrl+K)"));
-    cmd_icon.update_property(&[gtk::accessible::Property::Label("Go to a session")]);
+    cmd_icon.set_child(Some(&w::icon(w::icons::FIND)));
+    cmd_icon.add_css_class("flat");
+    cmd_icon.set_tooltip_text(Some("Find a session (Ctrl+K)"));
+    cmd_icon.update_property(&[gtk::accessible::Property::Label("Find a session")]);
     cmd_icon.set_valign(gtk::Align::Center);
     cmd_icon.set_visible(false);
-    top.add(&cmd_icon, 0);
-    top.add(&w::spacer(), 0);
+    start.append(&cmd_icon);
+    let add_btn = gtk::Button::new();
+    add_btn.set_child(Some(&w::icon(w::icons::ADD)));
+    add_btn.add_css_class("flat");
+    add_btn.set_tooltip_text(Some("New idea (c)"));
+    add_btn.update_property(&[gtk::accessible::Property::Label("New idea")]);
+    add_btn.set_valign(gtk::Align::Center);
+    start.append(&add_btn);
+    top.append(&start);
+    let gap_l = w::spacer();
+    top.append(&gap_l);
+    // The view switcher: Monitor, Projects, Ideas, History, Agents.
+    let tabs = w::hbox(4, &["tabs"]);
+    tabs.update_property(&[gtk::accessible::Property::Label("Views")]);
+    top.append(&tabs);
+    let gap_r = w::spacer();
+    top.append(&gap_r);
+    let end = w::hbox(6, &["hend"]);
     let indexing = w::label("", &["indexing"]);
     indexing.set_visible(false);
-    top.add(&indexing, 5);
-    // Each count drops out on its own when there is no room (the first, waiting, last).
-    let counts = crate::layout::Squeeze::new(10, &["counts"]);
+    end.append(&indexing);
+    // Ask, with its answers' badge (views.rs fills it).
+    let counts = crate::layout::Squeeze::new(6, &["counts"]);
     counts.set_valign(gtk::Align::Center);
-    // The tools that don't fit go under "More ▾".
-    counts.with_more();
-    top.add(&counts, 0);
-    let badge = w::label("DEMO DATA", &["badge"]);
-    badge.set_visible(demo);
-    badge.set_tooltip_text(Some(if opts.demo { "Made-up data. Nothing you do here is saved or touches this machine." } else { "Wake's core isn't wired in yet, so this is made-up data." }));
-    badge.set_valign(gtk::Align::Center);
-    top.add(&badge, 4);
-    let clock = w::label(&crate::fmt::clock(), &["clock"]);
-    top.add(&clock, 3);
-    // One bar, not two: Wake's top bar is the title bar. It drags and double-clicks like one, and
-    // ends with the desktop's own window buttons (on Slipstream, close only).
+    end.append(&counts);
+    let menu = gtk::MenuButton::new();
+    menu.set_icon_name("open-menu-symbolic");
+    menu.add_css_class("flat");
+    menu.set_tooltip_text(Some("Main menu"));
+    menu.set_valign(gtk::Align::Center);
+    end.append(&menu);
     let controls = gtk::WindowControls::new(gtk::PackType::End);
     controls.set_valign(gtk::Align::Center);
-    top.add(&controls, 0);
+    end.append(&controls);
+    top.append(&end);
+    // The clock isn't in the bar (the desktop has one); it is kept for the code that ticks it.
+    let clock = w::label(&crate::fmt::clock(), &["clock"]);
+    clock.set_visible(false);
     let handle = gtk::WindowHandle::new();
     handle.set_child(Some(&top));
     // An empty title bar: GTK still gives the window its shadow and resize edges.
@@ -609,8 +617,8 @@ fn build(app: &gtk::Application, opts: Opts) {
     cap.add_css_class("capture");
     cap.update_property(&[gtk::accessible::Property::Label("Capture a thought")]);
     let cap_label = w::hbox(6, &["lbl"]);
-    cap_label.append(&w::label("CAPTURE", &[]));
-    cap_label.append(&w::kbd("c"));
+    cap_label.append(&w::icon(w::icons::IDEAS));
+    cap_label.append(&w::label("New idea", &[]));
     cap.append(&cap_label);
     let cap_entry = gtk::Entry::builder().placeholder_text(crate::capture::PLACEHOLDER).hexpand(true).max_length(2000).build();
     cap_entry.update_property(&[gtk::accessible::Property::Label("Capture a thought")]);
@@ -625,6 +633,14 @@ fn build(app: &gtk::Application, opts: Opts) {
     let kept = w::label("", &["kept"]);
     kept.set_size_request(44, -1);
     cap.append(&kept);
+    let cap_close = gtk::Button::new();
+    cap_close.set_child(Some(&w::icon(w::icons::CLOSE)));
+    cap_close.add_css_class("flat");
+    cap_close.set_widget_name("capclose");
+    cap_close.set_tooltip_text(Some("Close (Esc)"));
+    cap_close.set_valign(gtk::Align::Center);
+    cap.append(&cap_close);
+    cap.set_visible(false);
     main.append(&cap);
 
     // The side panel sits beside the table and pushes it, so the selected row stays readable; when
@@ -642,15 +658,21 @@ fn build(app: &gtk::Application, opts: Opts) {
     body.set_vexpand(true);
     body.set_hexpand(true);
 
-    let status = w::hbox(16, &["statusbar"]);
+    // A banner under the title bar for what you should know (demo data, Wake falling behind, tabs it
+    // can't see); hidden while all is well.
+    let status = w::hbox(10, &["statusbar"]);
+    // In a phone-narrow window the view switcher moves to the bottom, as GTK apps do.
+    let tabs_bottom = w::hbox(0, &["tabs", "bottomtabs"]);
+    tabs_bottom.set_visible(false);
 
     let column = w::vbox(0, &[]);
     column.append(&handle);
+    column.append(&status);
     // The body's minimum width is that of its narrowest layout, whatever is open, so opening the
     // panel never changes the window's minimum size (Slipstream, like any tiling compositor,
     // scales down a window whose minimum outgrows its tile).
     column.append(&body);
-    column.append(&status);
+    column.append(&tabs_bottom);
 
     // Overlays: side panel, switcher, dialogs, toast.
     let overlay = gtk::Overlay::new();
@@ -686,12 +708,13 @@ fn build(app: &gtk::Application, opts: Opts) {
             column: column.clone(),
             body: body.clone(),
             rail: rail.clone(),
-            menu_btn: menu_btn.clone(),
             cmd_full: cmd_full.clone(),
             cmd_icon: cmd_icon.clone(),
             counts,
             tabs,
-            badge: badge.clone(),
+            tabs_bottom,
+            add_btn: add_btn.clone(),
+            menu: menu.clone(),
             indexing,
             clock,
             nav,
@@ -785,8 +808,48 @@ fn build(app: &gtk::Application, opts: Opts) {
         cmd_icon.connect_clicked(move |_| switcher::open(&ui));
     }
     {
-        let ui = ui.clone();
-        menu_btn.connect_clicked(move |_| set_rail_open(&ui, !ui.w.body.rail_open()));
+        let ui2 = ui.clone();
+        ui.w.add_btn.connect_clicked(move |_| open_capture(&ui2));
+        if let Some(close) = ui.w.cap_entry.parent().and_then(|b| b.last_child()).and_downcast::<gtk::Button>() {
+            let ui2 = ui.clone();
+            close.connect_clicked(move |_| close_capture(&ui2));
+        }
+    }
+    {
+        // Esc in the capture bar closes it (the project picker, when open, takes Esc first).
+        let ui2 = ui.clone();
+        let esc = gtk::EventControllerKey::new();
+        esc.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                close_capture(&ui2);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        ui.w.cap_entry.add_controller(esc);
+    }
+    {
+        // The main menu: Settings, the keys, and the demo board.
+        let pop = gtk::Popover::new();
+        let items = w::vbox(2, &["moremenu"]);
+        let item = |label: &str, f: Box<dyn Fn()>| {
+            let b = gtk::Button::with_label(label);
+            b.add_css_class("menuitem");
+            let pop = pop.clone();
+            b.connect_clicked(move |_| {
+                pop.popdown();
+                f();
+            });
+            items.append(&b);
+        };
+        let ui2 = ui.clone();
+        item("Settings", Box::new(move || set_view(&ui2, View::Settings)));
+        let ui2 = ui.clone();
+        item("Keyboard shortcuts", Box::new(move || dialogs::keys(&ui2)));
+        let ui2 = ui.clone();
+        item("Ask a question", Box::new(move || set_view(&ui2, View::Questions)));
+        pop.set_child(Some(&items));
+        ui.w.menu.set_popover(Some(&pop));
     }
     {
         // The drawer opened or closed: the keyboard goes into it, and back to the list after.
@@ -1757,16 +1820,10 @@ fn relayout(ui: &Ui, lay: crate::layout::Lay) {
         c = x.next_sibling();
     }
     // The top bar like a phone's: ☰ for the rail, ⌕ for the search box.
-    let tiny = lay.rail == Rail::Hidden;
-    ui.w.menu_btn.set_visible(tiny);
-    ui.w.tabs.set_visible(!tiny);
-    // Short of the full width, the search box is its ⌕ button, so the tabs and tools keep room.
+    // Short of the full width, Find is its search icon, so the view switcher keeps its room.
     let short_top = lay.rail != Rail::Full;
     ui.w.cmd_full.set_visible(!short_top);
     ui.w.cmd_icon.set_visible(short_top);
-    // The clock and the demo badge give way before the tools do (the status bar says "demo data").
-    ui.w.clock.set_visible(!short_top);
-    ui.w.badge.set_visible(ui.demo && !short_top);
     // The capture bar keeps its entry and project; its label makes way.
     if let Some(cap) = ui.w.cap_entry.parent() {
         let mut c = cap.first_child();
@@ -2259,9 +2316,28 @@ pub fn go_to(ui: &Ui, id: &str) {
 
 /// The capture bar steps aside in Questions, which has its own input (two text bars would stack),
 /// and in Settings.
-fn show_capture(ui: &Ui, v: View) {
+/// The capture bar shows only while you are capturing (like a search bar): a new view closes it.
+fn show_capture(ui: &Ui, _v: View) {
+    close_capture(ui);
+}
+
+/// New idea (+ or c): the capture bar slides up with the keyboard in it.
+pub fn open_capture(ui: &Ui) {
     if let Some(bar) = ui.w.cap_entry.parent() {
-        bar.set_visible(!matches!(v, View::Questions | View::Settings));
+        bar.set_visible(true);
+    }
+    crate::capture::begin(ui);
+    ui.w.cap_entry.grab_focus();
+}
+
+/// Esc in the capture bar, or its close button: it goes, and the keyboard goes back to the view.
+pub fn close_capture(ui: &Ui) {
+    if let Some(bar) = ui.w.cap_entry.parent()
+        && bar.is_visible()
+    {
+        bar.set_visible(false);
+        let v = ui.st.borrow().view;
+        ui.w.views[&v].list.grab_focus();
     }
 }
 
@@ -2647,7 +2723,7 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
             Some(id) => go_to(ui, &id),
             None => return false,
         },
-        Cmd::Capture => crate::capture::begin(ui),
+        Cmd::Capture => open_capture(ui),
         Cmd::Search => set_view(ui, View::History),
         Cmd::Pause => {
             let id = {

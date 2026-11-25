@@ -293,122 +293,105 @@ pub fn render_top(ui: &Ui) {
     if let Some(e) = &err {
         ui.w.banner.set_text(&format!("Wake couldn't read everything: {e}"));
     }
-    // The three places as tabs, and the tools at the right, each saying the one thing that
-    // matters about it: what agents hold and how many look stale, ideas to sort, answers.
+    // The view switcher: each place with its icon and name, and a count where something needs you.
+    // Short of the full width it keeps its icons; phone-narrow, it moves to the bottom of the window.
     let lay = ui.st.borrow().lay;
-    let one = lay.rail == crate::layout::Rail::Hidden;
-    let short = lay.rail == crate::layout::Rail::Slim;
-    let (view, mem) = {
-        let st = ui.st.borrow();
-        (st.view, st.procs.as_ref().map(|p| p.total_rss_bytes))
-    };
+    let phone = lay.rail == crate::layout::Rail::Hidden;
+    let icons_only = lay.rail == crate::layout::Rail::Slim;
+    let (view, n_ideas) = (ui.st.borrow().view, ideas);
+    let n_stale = stale.map_or(0, |(n, _)| n);
     let qbadge = crate::questions::rail_badge();
-    let sig = format!("{}/{}/{ideas}/{:?}/{one}/{view:?}/{:?}/{qbadge:?}/{short}", c.working, c.waiting, stale.map(|(n, b)| (n, b / (100 << 20))), mem.map(|b| b / (100 << 20)));
+    let sig = format!("{}/{}/{n_ideas}/{n_stale}/{phone}{icons_only}/{view:?}/{qbadge:?}", c.working, c.waiting);
     if ui.st.borrow().top_drawn == sig {
         return;
     }
     ui.st.borrow_mut().top_drawn = sig;
-    ui.w.counts.clear();
-    w::clear(&ui.w.tabs);
-    let go = |v: View| {
-        let ui = ui.clone();
-        move || app::set_view(&ui, v)
-    };
-    for v in [View::Monitor, View::Projects, View::History] {
-        let b = gtk::Button::new();
-        b.add_css_class("tab");
-        if view == v {
-            b.add_css_class("on");
-        }
-        let inner = w::hbox(7, &[]);
-        inner.append(&w::label(v.name(), &[]));
-        if v == View::Monitor && c.waiting > 0 {
-            inner.append(&w::label(&c.waiting.to_string(), &["tabn", "amber"]));
-        } else if v == View::Monitor && c.working > 0 {
-            inner.append(&w::dot("working"));
-        }
-        b.set_child(Some(&inner));
-        let tip = match v {
-            View::Monitor if c.waiting > 0 => format!("Monitor (key 1): {} waiting for you, {} working", c.waiting, c.working),
-            View::Monitor => format!("Monitor (key 1): {} working", c.working),
-            _ => format!("{} (key {})", v.name(), v.key()),
-        };
-        b.set_tooltip_text(Some(&tip));
-        let f = go(v);
-        b.connect_clicked(move |_| f());
-        ui.w.tabs.append(&b);
-    }
-    let tool = |v: View, name: &str, words: &str, class: &str, tip: String| {
-        let icon = name;
-        let b = gtk::Button::new();
-        b.add_css_class("tool");
-        if !class.is_empty() {
-            b.add_css_class(class);
-        }
-        if view == v {
-            b.add_css_class("on");
-        }
-        let inner = w::hbox(7, &[]);
-        inner.append(&w::label(icon, &["tname"]));
-        if !words.is_empty() {
-            inner.append(&w::label(words, &["tnum"]));
-        }
-        b.set_child(Some(&inner));
-        b.set_tooltip_text(Some(&tip));
-        b.update_property(&[gtk::accessible::Property::Label(v.name())]);
-        let f = go(v);
-        b.connect_clicked(move |_| f());
-        b
-    };
-    if one {
-        // Narrowest, like a phone's app bar: one badge that sums them up; ☰ has the views.
-        let n_stale = stale.map_or(0, |(n, _)| n);
-        let mut words = Vec::new();
-        if c.waiting > 0 {
-            words.push(format!("{} waiting for you", c.waiting));
-        }
-        if c.working > 0 {
-            words.push(format!("{} working", c.working));
-        }
-        if n_stale > 0 {
-            words.push(format!("{n_stale} stale"));
-        }
-        if words.is_empty() {
-            ui.w.counts.add(&w::label("quiet", &["quiet-top"]), 1);
-        } else {
-            let (n, class) = if c.waiting > 0 { (c.waiting, "wait") } else if c.working > 0 { (c.working, "work") } else { (n_stale, "stalec") };
+    ui.w.tabs.set_visible(!phone);
+    ui.w.tabs_bottom.set_visible(phone);
+    let places: [(View, &[&str], u32, &str, String); 5] = [
+        (View::Monitor, w::icons::MONITOR, c.waiting, "attention", format!("{} waiting for you, {} working", c.waiting, c.working)),
+        (View::Projects, w::icons::PROJECTS, 0, "", "Where you left each project".into()),
+        (View::Ideas, w::icons::IDEAS, n_ideas, "", fmt::pl(n_ideas, "idea to sort", "ideas to sort")),
+        (View::History, w::icons::HISTORY, 0, "", "Every session, by day; search it".into()),
+        (View::Agents, w::icons::AGENTS, n_stale, "attention", if n_stale > 0 { format!("{n_stale} look stale") } else { "Agent processes and their memory".into() }),
+    ];
+    for (bar, bottom) in [(&ui.w.tabs, false), (&ui.w.tabs_bottom, true)] {
+        w::clear(bar);
+        for (v, icon, n, badge_class, tip) in &places {
             let b = gtk::Button::new();
-            b.add_css_class("stat");
-            b.add_css_class(class);
-            let inner = w::hbox(7, &[]);
-            inner.append(&w::dot("d"));
-            inner.append(&w::label(&n.to_string(), &["n"]));
+            b.add_css_class("tab");
+            if view == *v {
+                b.add_css_class("on");
+            }
+            let inner = if bottom { w::vbox(2, &[]) } else { w::hbox(8, &[]) };
+            inner.set_halign(gtk::Align::Center);
+            // The icon, and beside it its count when there is one.
+            let head = w::hbox(4, &[]);
+            head.set_halign(gtk::Align::Center);
+            head.append(&w::icon(icon));
+            let badge = (*n > 0).then(|| {
+                let badge = w::label(&n.to_string(), &["tabn"]);
+                if !badge_class.is_empty() {
+                    badge.add_css_class(badge_class);
+                }
+                badge.set_valign(gtk::Align::Center);
+                badge
+            });
+            if (icons_only || bottom)
+                && let Some(b) = &badge
+            {
+                head.append(b);
+            }
+            inner.append(&head);
+            if !icons_only || bottom {
+                // A name that can shorten, so the bar never holds the window wider than it is
+                // (the layout swaps to icons a moment after a resize).
+                let name = w::label(v.name(), &["tablabel"]);
+                name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                inner.append(&name);
+            }
+            if !(icons_only || bottom) && let Some(b) = badge {
+                inner.append(&b);
+            }
             b.set_child(Some(&inner));
-            b.set_tooltip_text(Some(&format!("{}.", words.join(", "))));
-            b.update_property(&[gtk::accessible::Property::Label(&words.join(", "))]);
-            let f = go(View::Monitor);
-            b.connect_clicked(move |_| f());
-            ui.w.counts.add(&b, 0);
+            b.set_tooltip_text(Some(&format!("{} (key {}): {tip}", v.name(), v.key())));
+            b.update_property(&[gtk::accessible::Property::Label(v.name())]);
+            if bottom {
+                b.set_hexpand(true);
+            }
+            let ui2 = ui.clone();
+            let v = *v;
+            b.connect_clicked(move |_| app::set_view(&ui2, v));
+            bar.append(&b);
         }
-        return;
     }
-    // Agents: what they hold, and how many look stale (amber).
-    let (agent_words, agent_class, agent_tip) = match (mem, stale.filter(|(n, _)| *n > 0)) {
-        (_, Some((n, b))) => (if short { format!("{n} stale") } else { format!("{n} stale · {}", fmt::bytes(b)) }, "warn", format!("Agents (key 2): {n} look stale and hold {}", fmt::bytes(b))),
-        (Some(m), None) => (fmt::bytes(m), "", format!("Agents (key 2): agents are using {}", fmt::bytes(m))),
-        (None, None) => (String::new(), "", "Agents (key 2)".to_string()),
+    // Ask, at the end of the bar: lit while an answer comes in, with a count of new ones.
+    ui.w.counts.clear();
+    let ask = gtk::Button::new();
+    ask.add_css_class("flat");
+    ask.add_css_class("askbtn");
+    let inner = w::hbox(6, &[]);
+    inner.append(&w::icon(w::icons::ASK));
+    let tip = match qbadge {
+        Some((_, true)) => {
+            ask.add_css_class("live");
+            "Ask (6): answering now".to_string()
+        }
+        Some((n, false)) if n > 0 => {
+            inner.append(&w::label(&n.to_string(), &["tabn"]));
+            format!("Ask (6): {}", fmt::pl(n, "new answer", "new answers"))
+        }
+        _ => "Ask your own AI a question, read-only (6)".to_string(),
     };
-    ui.w.counts.add(&tool(View::Agents, "Agents", &agent_words, agent_class, agent_tip), 1);
-    let idea_words = if ideas > 0 { ideas.to_string() } else { String::new() };
-    ui.w.counts.add(&tool(View::Ideas, "Ideas", &idea_words, "ideas", format!("Ideas (key 4): {}", fmt::pl(ideas, "idea to sort", "ideas to sort"))), 2);
-    let (q_words, q_class, q_tip) = match qbadge {
-        Some((_, true)) => ("answering".to_string(), "live", "Questions (key 6): answering now".to_string()),
-        Some((n, false)) if n > 0 => (format!("{n} new"), "new", format!("Questions (key 6): {}", fmt::pl(n, "new answer", "new answers"))),
-        _ => (String::new(), "", "Questions (key 6): ask your own AI, read-only".to_string()),
-    };
-    ui.w.counts.add(&tool(View::Questions, "Ask", if short { "" } else { &q_words }, q_class, q_tip), 3);
-    let gear = tool(View::Settings, "Settings", "", "", "Settings (,)".to_string());
-    ui.w.counts.add(&gear, 4);
+    ask.set_child(Some(&inner));
+    ask.set_tooltip_text(Some(&tip));
+    ask.update_property(&[gtk::accessible::Property::Label("Ask")]);
+    if view == View::Questions {
+        ask.add_css_class("on");
+    }
+    let ui2 = ui.clone();
+    ask.connect_clicked(move |_| app::set_view(&ui2, View::Questions));
+    ui.w.counts.add(&ask, 0);
 }
 
 pub fn render_rail(ui: &Ui) {
@@ -594,140 +577,50 @@ fn rail_project(ui: &Ui, id: &str) {
 /// The status bar: whether the data is fresh, and at most four keys for where the keyboard is;
 /// the rest are behind `?`.
 pub fn render_status(ui: &Ui) {
-    let (view, err, last_ok, any_stale, panel, procs_at) = {
+    // A banner under the title bar, only when there is something to know: made-up data, Wake
+    // falling behind or failing to read, or Konsole's tabs out of sight while a session is open.
+    let (err, last_ok, procs_at) = {
         let st = ui.st.borrow();
         if st.ov.is_none() {
             return;
         }
-        let in_panel = st.drawer.is_some() && gtk::prelude::GtkWindowExt::focus(&ui.window).is_some_and(|f| f.is_ancestor(&ui.w.drawer));
-        let panel = match &st.drawer {
-            Some(app::Drawer::Session(_)) if in_panel => Some(true),
-            Some(app::Drawer::Project(_)) if in_panel => Some(false),
-            _ => None,
-        };
-        let procs_at = st.procs.as_ref().map(|p| p.generated_at.clone());
-        (st.view, st.ov_error.clone(), st.last_ok, st.procs.as_ref().is_some_and(|p| agents::stale_summary(p).0 > 0), panel, procs_at)
+        (st.ov_error.clone(), st.last_ok, st.procs.as_ref().map(|p| p.generated_at.clone()))
     };
-    let s = &ui.w.status;
-    w::clear(s);
-    let conn = w::hbox(6, &["a"]);
-    // Only worth a warning while some session is open: with none, there is no tab to find.
     let any_live = ui.st.borrow().ov.as_ref().is_some_and(|o| o.sessions.iter().any(|s| app::is_live(s.state)));
     let tabs_unknown = app::tabs_unknown(ui).filter(|_| any_live);
     let secs = last_ok.map(|t| (glib::monotonic_time() - t) / 1_000_000).unwrap_or(0);
-    let (dot, words, class) = if ui.demo {
-        ("demo", "demo data".to_string(), "")
+    let (icon, words, class, tip) = if ui.demo {
+        (w::icons::INFO, "You're looking at made-up data. Nothing here is real.".to_string(), "info", "Demo mode: made-up sessions and agents.".to_string())
     } else if let Some(err) = &err {
-        ("bad", err.clone(), "bad")
+        (w::icons::WARNING, err.clone(), "bad", err.clone())
     } else if secs > 15 {
-        ("late", format!("last checked {} ago", fmt::span(secs as u64)), "late")
-    } else if tabs_unknown.is_some() {
-        ("late", "can't see Konsole tabs".to_string(), "late")
+        (w::icons::WARNING, format!("Wake last checked {} ago.", fmt::span(secs as u64)), "late", "Wake reads your sessions every few seconds; it hasn't managed to lately.".to_string())
+    } else if let Some(why) = tabs_unknown {
+        (w::icons::WARNING, "Wake can't see Konsole's tabs, so Go to may open a new window.".to_string(), "late", format!("{why} Run wake doctor in a terminal to see why."))
     } else {
-        ("ok", "live".to_string(), "")
+        (w::icons::INFO, String::new(), "", String::new())
     };
-    conn.append(&w::dot(dot));
-    let l = w::label(&words, &[]);
-    // A long error shortens rather than pushing the keys out of the window.
-    l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    conn.set_hexpand(true);
-    if !class.is_empty() {
-        l.add_css_class(class);
+    let s = &ui.w.status;
+    let sig = format!("{words}|{class}");
+    if s.widget_name() == sig.as_str() {
+        return;
     }
-    conn.append(&l);
-    let tip = if ui.demo {
-        "Made-up sessions and agents: nothing here is real.".to_string()
-    } else if let Some(why) = tabs_unknown.filter(|_| err.is_none() && secs <= 15) {
-        format!("{why} Run wake doctor in a terminal to see why.")
-    } else {
-        "Wake reads your sessions and git (read only) and never writes to your projects.".to_string()
-    };
-    // How fresh each part is, from the times Wake has.
-    let mut fresh = Vec::new();
-    if last_ok.is_some() {
-        fresh.push(format!("Sessions read {}", fmt::ago_secs(secs.max(0) as u64)));
+    s.set_widget_name(&sig);
+    w::clear(s);
+    s.set_visible(!words.is_empty());
+    if words.is_empty() {
+        return;
     }
-    if let Some(at) = procs_at.as_deref().map(|t| fmt::ago(Some(t))).filter(|a| !a.is_empty()) {
-        fresh.push(format!("agent processes read {at}"));
+    for c in ["info", "bad", "late"] {
+        s.remove_css_class(c);
     }
-    let tip = if ui.demo || fresh.is_empty() { tip } else { format!("{tip}\n{}.", fresh.join(" · ")) };
-    conn.set_tooltip_text(Some(&tip));
-    s.append(&conn);
-    // Each key with its word is one piece; in a narrow window the later ones drop out (all of them
-    // are behind `?`, which always stays).
-    let keys = crate::layout::Squeeze::new(4, &[]);
-    keys.set_halign(gtk::Align::End);
-    let peek_word = crate::peek::hint_word(ui);
-    let mut n = 0;
-    let mut hint = |k: &[&str], word: &str| {
-        let piece = w::hbox(4, &[]);
-        if *k != ["?"] {
-            n += 1;
-        }
-        for x in k {
-            // "hold" is a word before the key, not a key.
-            piece.append(&if *x == "hold" { w::label(x, &["hint"]) } else { w::kbd(x) });
-        }
-        piece.append(&w::label(word, &["hint"]));
-        piece.append(&w::label("·", &["hint", "sep"]));
-        keys.add(&piece, if *k == ["?"] { 0 } else { n });
-    };
-    match (panel, view) {
-        (Some(true), _) => {
-            hint(&["o"], "go to");
-            hint(&["hold", "Space"], peek_word);
-            hint(&["Esc"], "back to the list");
-        }
-        (Some(false), _) => {
-            hint(&["p"], "pause");
-            hint(&["Esc"], "back to the list");
-        }
-        (None, View::Monitor) => {
-            hint(&["Enter"], "details");
-            hint(&["hold", "Space"], peek_word);
-            hint(&["o"], "go to");
-        }
-        (None, View::Agents) => {
-            hint(&["Enter"], "details");
-            hint(&["hold", "Space"], peek_word);
-            if any_stale {
-                hint(&["Shift", "S"], "stop all stale");
-            } else {
-                hint(&["s"], "stop");
-            }
-        }
-        (None, View::Projects) => {
-            hint(&["Enter"], "details");
-            hint(&["p"], "pause");
-        }
-        (None, View::Ideas) => {
-            hint(&["x"], "tick");
-            hint(&["s"], "start an agent");
-            hint(&["d"], "done");
-            hint(&["Enter"], "sort");
-        }
-        (None, View::History) => {
-            hint(&["/"], "search");
-            hint(&["Enter"], "details");
-            hint(&["o"], "go to");
-        }
-        (None, View::Questions) => {
-            hint(&["Enter"], "ask");
-            hint(&["n"], "new question");
-            hint(&["Esc"], "stop an answer");
-        }
-        (None, View::Settings) => {
-            hint(&["j", "k"], "move");
-            hint(&["←", "→"], "change");
-            hint(&["Space"], "switch or open");
-        }
-    }
-    hint(&["?"], "all keys");
-    // The separator after the last piece goes.
-    if let Some(last) = keys.last_child().and_then(|p| p.last_child()) {
-        last.set_visible(false);
-    }
-    s.append(&keys);
+    s.add_css_class(class);
+    s.append(&w::icon(icon));
+    let l = w::wrap(&words, &[]);
+    l.set_xalign(0.0);
+    s.append(&l);
+    let fresh = procs_at.as_deref().map(|t| format!("\nAgent processes read {}.", fmt::ago(Some(t)))).unwrap_or_default();
+    s.set_tooltip_text(Some(&format!("{tip}{fresh}")));
 }
 
 // ---------- chips ----------
@@ -1111,7 +1004,7 @@ pub fn group_row(title: &str, sub: Option<&str>) -> gtk::ListBoxRow {
     r.set_activatable(false);
     r.set_focusable(false);
     r.add_css_class("grouprow");
-    let head = w::label(&title.to_uppercase(), &["pgrp"]);
+    let head = w::label(title, &["pgrp", "heading"]);
     match sub {
         Some(sub) => {
             let b = w::vbox(0, &[]);
@@ -1132,45 +1025,6 @@ pub fn list_row(key: &str, child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
 }
 
 pub type Col = (&'static str, i32, bool, bool);
-
-/// The state in one short word, for a narrow column: "waiting", "working", "idle".
-pub fn short_state(s: State) -> &'static str {
-    match s {
-        State::Waiting => "waiting",
-        State::Working => "working",
-        State::Idle => "idle",
-        State::Ended => "ended",
-        State::Unknown => "lost track",
-    }
-}
-
-fn loc_cell(ui: &Ui, s: &SessionSummary) -> gtk::Widget {
-    let (text, class, go, tip) = app::loc_for(ui, s);
-    if go {
-        let b = gtk::Button::with_label(&text);
-        if let Some(l) = b.child().and_downcast::<gtk::Label>() {
-            l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        }
-        b.add_css_class("loc");
-        if !class.is_empty() {
-            b.add_css_class(class);
-        }
-        b.set_tooltip_text(Some(&tip));
-        let ui = ui.clone();
-        let id = s.id.clone();
-        b.connect_clicked(move |_| app::go_to(&ui, &id));
-        b.set_halign(gtk::Align::Start);
-        b.upcast()
-    } else {
-        let l = w::label(&text, &["loc", class]);
-        l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        if !tip.is_empty() {
-            l.set_tooltip_text(Some(&tip));
-        }
-        l.set_halign(gtk::Align::Start);
-        l.upcast()
-    }
-}
 
 /// What the "Now" cell says, as (pango markup, tooltip, whether it is a question).
 pub fn now_text(s: &SessionSummary) -> (String, String, bool) {
@@ -1323,10 +1177,10 @@ fn monitor(ui: &Ui) {
 
 // ---------- Monitor: the board ----------
 //
-// Not a table: what needs you as cards, with the question in large type and the way there under
-// it; then what is working, each with its live wave; then everything else, one quiet line each.
+// Built from the same few parts as every screen: a page title, section headings, cards for what
+// needs you, and boxed lists of session rows (the same rows History uses).
 
-/// Waiting, working and the rest, among the sessions the project filter lets through.
+/// Waiting, working and idle, among the sessions the project filter lets through.
 fn monitor_tally(ui: &Ui) -> (usize, usize, usize) {
     let st = ui.st.borrow();
     let Some(ov) = &st.ov else { return (0, 0, 0) };
@@ -1335,17 +1189,13 @@ fn monitor_tally(ui: &Ui) -> (usize, usize, usize) {
     (n(&|s| s.state == State::Waiting), n(&|s| s.state == State::Working), n(&|s| s.state == State::Idle))
 }
 
-/// The headline over the board: how many need you, in large type, and the rest in a line.
+/// The page title: how many need you, and the rest in a line under it.
 fn hero((waiting, working, idle): (usize, usize, usize)) -> gtk::Box {
-    let b = w::vbox(2, &["hero"]);
-    let (big, class) = match waiting {
-        0 => ("Nothing needs you right now".to_string(), "calm"),
-        1 => ("1 session needs you".to_string(), "needs"),
-        n => (format!("{n} sessions need you"), "needs"),
+    let big = match waiting {
+        0 => "Nothing needs you right now".to_string(),
+        1 => "1 session needs you".to_string(),
+        n => format!("{n} sessions need you"),
     };
-    let h = w::wrap(&big, &["hero-big", class]);
-    h.set_xalign(0.0);
-    b.append(&h);
     let mut rest = Vec::new();
     if working > 0 {
         rest.push(format!("{working} working"));
@@ -1354,9 +1204,20 @@ fn hero((waiting, working, idle): (usize, usize, usize)) -> gtk::Box {
         rest.push(format!("{idle} idle"));
     }
     let sub = if rest.is_empty() { "No agent is busy.".to_string() } else { format!("{}.", rest.join(" · ")) };
-    let l = w::wrap(&sub, &["hero-sub"]);
-    l.set_xalign(0.0);
-    b.append(&l);
+    page_title(&big, &sub)
+}
+
+/// A page's title and the line under it, the same on every screen that has one.
+pub fn page_title(title: &str, sub: &str) -> gtk::Box {
+    let b = w::vbox(4, &["pagetitle"]);
+    let h = w::wrap(title, &["title-1"]);
+    h.set_xalign(0.0);
+    b.append(&h);
+    if !sub.is_empty() {
+        let l = w::wrap(sub, &["dim"]);
+        l.set_xalign(0.0);
+        b.append(&l);
+    }
     b
 }
 
@@ -1368,56 +1229,56 @@ fn board(ui: &Ui, rows: &[SessionSummary], compact: bool) {
     let rest: Vec<&SessionSummary> = rows.iter().filter(|s| !matches!(s.state, State::Waiting | State::Working)).collect();
     let narrow = compact || app::cards(&ui.st.borrow());
     if !waiting.is_empty() {
-        vw.list.append(&section_row("Needs you", waiting.len(), "needs"));
+        vw.list.append(&section_row("Needs you", waiting.len()));
         for s in waiting {
             vw.list.append(&ask_card(ui, s));
         }
     }
     if !working.is_empty() {
-        vw.list.append(&section_row("Working", working.len(), "work"));
-        for s in working {
-            vw.list.append(&work_row(ui, s, narrow));
+        vw.list.append(&section_row("Working", working.len()));
+        let n = working.len();
+        for (i, s) in working.into_iter().enumerate() {
+            let wave = (!narrow).then(|| wave_cell(ui, s)).flatten();
+            vw.list.append(&session_item(ui, s, now_cell(s), wave, (i == 0, i + 1 == n), !narrow));
         }
     }
     if !rest.is_empty() {
-        vw.list.append(&section_row("Earlier", rest.len(), "earlier"));
-        for s in rest {
-            vw.list.append(&quiet_row(ui, s));
+        vw.list.append(&section_row("Earlier", rest.len()));
+        let n = rest.len();
+        for (i, s) in rest.into_iter().enumerate() {
+            vw.list.append(&session_item(ui, s, now_cell(s), None, (i == 0, i + 1 == n), !narrow));
         }
     }
 }
 
-/// A group's heading: its name and how many, never selected.
-fn section_row(title: &str, n: usize, class: &str) -> gtk::ListBoxRow {
+/// A section's heading and how many are in it, never selected.
+pub fn section_row(title: &str, n: usize) -> gtk::ListBoxRow {
     let r = gtk::ListBoxRow::new();
     r.set_selectable(false);
     r.set_activatable(false);
     r.set_focusable(false);
     r.add_css_class("grouprow");
     r.add_css_class("sectrow");
-    let b = w::hbox(8, &["sect", class]);
-    b.append(&w::label(title, &["sect-t"]));
-    b.append(&w::label(&n.to_string(), &["sect-n"]));
+    let b = w::hbox(8, &["sect"]);
+    b.append(&w::label(title, &["heading"]));
+    if n > 0 {
+        b.append(&w::label(&n.to_string(), &["dim", "count"]));
+    }
     r.set_child(Some(&b));
     r
 }
 
 /// The project and session on one line: the project's colour, its name, the session's title.
 fn who_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
-    who_line_tagged(ui, s, true)
-}
-
-/// `who_line`, with or without the project's colour dot (the timeline has its own).
-fn who_line_tagged(ui: &Ui, s: &SessionSummary, tag: bool) -> gtk::Box {
     let top = w::hbox(8, &[]);
-    if tag && let Some(tag) = project_tag(ui, s.project.as_deref()) {
+    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
         top.append(&tag);
     }
     let name = w::label(&crate::disk::project_words(ui, s), &["pname"]);
     top.append(&name);
-    let t = w::clip(&s.title, &["btitle"]);
-    t.set_hexpand(true);
-    w::shrinkable(t.upcast_ref());
+    let t = w::label(&s.title, &["dim"]);
+    t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    t.set_tooltip_text(Some(&s.title));
     top.append(&t);
     if let Some(m) = crate::behind::pill(ui, s.project.as_deref()) {
         top.append(&m);
@@ -1427,47 +1288,48 @@ fn who_line_tagged(ui: &Ui, s: &SessionSummary, tag: bool) -> gtk::Box {
 
 /// "just now", "2 h ago", kept current in place.
 fn age_label(ui: &Ui, s: &SessionSummary) -> gtk::Label {
-    let last = w::label(&fmt::ago(s.last_at.as_deref()), &["num", "age"]);
+    let last = w::label(&fmt::ago(s.last_at.as_deref()), &["num", "dim"]);
     last.set_xalign(1.0);
-    last.set_valign(gtk::Align::Start);
     let id = s.id.clone();
     live_text(ui, View::Monitor, &last, move |st| session_in(st, &id).map(|s| fmt::ago(s.last_at.as_deref())));
     last
 }
 
-/// A session waiting for you: who, the question in large type, and the way there.
+/// A session waiting for you, as a card: who, its status, the question, and the way there.
 fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
-    let card = w::vbox(10, &["askcard"]);
-    let top = who_line(ui, s);
+    let card = w::vbox(10, &["card", "askcard"]);
+    let top = w::hbox(10, &[]);
+    let who = who_line(ui, s);
+    who.set_hexpand(true);
+    top.append(&who);
     top.append(&age_label(ui, s));
     card.append(&top);
-    let asks = crate::why::asks_question(s);
-    let lead = w::label(if asks { "ASKS YOU" } else { "WANTS A DECISION" }, &["ask-lead"]);
-    lead.set_xalign(0.0);
-    card.append(&lead);
     let q = s.question.clone().or_else(|| s.away_summary.as_deref().map(fmt::recap)).unwrap_or_else(|| "It is waiting for you.".into());
-    let ql = w::wrap(&fmt::clip(&q, 600), &["ask-q"]);
+    let ql = w::wrap(&fmt::clip(&q, 600), &["title-3"]);
     ql.set_xalign(0.0);
     ql.set_lines(4);
     ql.set_ellipsize(gtk::pango::EllipsizeMode::End);
     ql.set_tooltip_text(Some(&q));
     card.append(&ql);
-    let acts = w::hbox(8, &["ask-acts"]);
+    let acts = w::hbox(8, &[]);
     let (loc, _, can_go, tip) = app::loc_for(ui, s);
     let id = s.id.clone();
     let ui2 = ui.clone();
-    let go = w::button(&panel::go_words(s, &loc, can_go), Some("o"), &["primary", "sm"], move || app::go_to(&ui2, &id));
+    let go = w::button(&panel::go_words(s, &loc, can_go), Some("o"), &["suggested"], move || app::go_to(&ui2, &id));
     go.set_sensitive(can_go);
     if !tip.is_empty() {
-        go.set_tooltip_text(Some(&tip));
+        go.set_tooltip_text(Some(&format!("{tip} (o)")));
     }
     acts.append(&go);
     let id = s.id.clone();
     let ui2 = ui.clone();
-    acts.append(&w::button("Details", Some("Enter"), &["ghost", "sm"], move || panel::open_session(&ui2, &id, true)));
+    acts.append(&w::button("Details", Some("Enter"), &[], move || panel::open_session(&ui2, &id, true)));
+    acts.append(&w::spacer());
+    let asks = crate::why::asks_question(s);
+    acts.append(&w::state_tag(if asks { "Asks you" } else { "Wants a decision" }, "waiting"));
     card.append(&acts);
     let r = list_row(&s.id, &card);
-    r.add_css_class("cardrow-ask");
+    r.add_css_class("cardrow");
     r
 }
 
@@ -1480,78 +1342,49 @@ fn wave_pid(ui: &Ui, s: &SessionSummary) -> Option<u32> {
     st.procs.as_ref()?.procs.iter().find(|a| a.session_id.as_deref() == Some(&s.id) && a.note.is_some()).map(|a| a.pid)
 }
 
-/// A working session: its live wave (from agent-notify's note), who, and what it is on.
-fn work_row(ui: &Ui, s: &SessionSummary, narrow: bool) -> gtk::ListBoxRow {
-    let row = w::hbox(16, &["workrow"]);
-    if !narrow {
-        let wave = w::hbox(0, &["wave"]);
-        wave.set_valign(gtk::Align::Center);
-        match wave_pid(ui, s) {
-            Some(pid) => {
-                wave.set_size_request(crate::scope::MINI_W, -1);
-                let area = crate::scope::mini(&ui.scope, pid, &format!("{}, working", s.title));
-                ui.readouts.borrow_mut().push(area.clone());
-                wave.append(&area);
-            }
-            None => {
-                let d = w::dot("working");
-                if crate::motion::on() {
-                    d.add_css_class("pulse");
-                }
-                wave.append(&d);
-            }
-        }
-        row.append(&wave);
+/// A working session's live wave, from agent-notify's note, when it has one.
+fn wave_cell(ui: &Ui, s: &SessionSummary) -> Option<gtk::Widget> {
+    let pid = wave_pid(ui, s)?;
+    let area = crate::scope::mini(&ui.scope, pid, &format!("{}, working", s.title));
+    ui.readouts.borrow_mut().push(area.clone());
+    area.set_valign(gtk::Align::Center);
+    Some(area.upcast())
+}
+
+/// One session as a row of a boxed list, the same on Monitor and History: an optional lead (the
+/// wave), who, a second line, and at the end its status and age. `edge` is (first, last) in its list.
+pub fn session_item(ui: &Ui, s: &SessionSummary, second: gtk::Widget, lead: Option<gtk::Widget>, edge: (bool, bool), wide: bool) -> gtk::ListBoxRow {
+    let row = w::hbox(14, &["item"]);
+    if let Some(l) = lead {
+        row.append(&l);
     }
     let mid = w::vbox(4, &[]);
     mid.set_hexpand(true);
     mid.append(&who_line(ui, s));
-    let now = now_cell(s);
-    w::shrinkable(&now);
-    mid.append(&now);
+    w::shrinkable(&second);
+    mid.append(&second);
     row.append(&mid);
-    let right = w::vbox(6, &[]);
-    right.set_halign(gtk::Align::End);
-    right.append(&age_label(ui, s));
-    if !narrow {
-        let l = loc_cell(ui, s);
-        l.set_halign(gtk::Align::End);
-        right.append(&l);
+    let end = w::vbox(6, &[]);
+    end.set_valign(gtk::Align::Center);
+    let (_, word) = w::state_word(s.state);
+    let tag = w::state_badge(s.state);
+    tag.set_halign(gtk::Align::End);
+    tag.set_tooltip_text(Some(&format!("{word}: {}", s.evidence)));
+    if wide {
+        end.append(&tag);
     }
-    row.append(&right);
+    let age = age_label(ui, s);
+    age.set_halign(gtk::Align::End);
+    end.append(&age);
+    row.append(&end);
     let r = list_row(&s.id, &row);
-    r.add_css_class("workrow-r");
-    r
-}
-
-/// Anything else, one quiet line: its state, who, why it stopped, when.
-fn quiet_row(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
-    let row = w::hbox(10, &["quietrow"]);
-    let (class, word) = w::state_word(s.state);
-    let st = w::label(short_state(s.state), &["state", class, "qstate"]);
-    st.set_xalign(0.0);
-    st.set_tooltip_text(Some(&format!("{word}: {}", s.evidence)));
-    row.append(&st);
-    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
-        row.append(&tag);
+    r.add_css_class("itemrow");
+    if edge.0 {
+        r.add_css_class("first");
     }
-    row.append(&w::label(&crate::disk::project_words(ui, s), &["pname", "qname"]));
-    // Its whole title when there is room (the why takes the spare room after it), shortened when not.
-    let t = w::label(&s.title, &["btitle"]);
-    t.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    t.set_tooltip_text(Some(&s.title));
-    row.append(&t);
-    let (m, tip, _) = now_text(s);
-    let why = w::clip("", &["happ", "qwhy"]);
-    why.set_xalign(0.0);
-    why.set_markup(&m);
-    why.set_tooltip_text((!tip.is_empty()).then_some(tip.as_str()));
-    why.set_hexpand(true);
-    w::shrinkable(why.upcast_ref());
-    row.append(&why);
-    row.append(&age_label(ui, s));
-    let r = list_row(&s.id, &row);
-    r.add_css_class("quietrow-r");
+    if edge.1 {
+        r.add_css_class("last");
+    }
     r
 }
 
@@ -1726,16 +1559,13 @@ fn grid_row(grid: &gtk::FlowBox) -> gtk::ListBoxRow {
 /// where it was left), its open sessions, and its loose ends in git.
 fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
     let colour = crate::setview::colour_of(p);
-    let card = w::vbox(0, &["pcard"]);
-    if p.live.waiting > 0 {
-        card.add_css_class("needs");
-    }
-    let band = w::hbox(0, &["band", &format!("pc-{colour}")]);
-    band.set_size_request(-1, 5);
-    card.append(&band);
+    let card = w::vbox(0, &["card", "pcard"]);
     let body = w::vbox(8, &["pbody"]);
     let head = w::hbox(8, &[]);
-    let name = w::clip(&p.name, &["pcname"]);
+    let dot = w::dot(&format!("pc-{colour}"));
+    dot.add_css_class("tag");
+    head.append(&dot);
+    let name = w::clip(&p.name, &["title-3"]);
     head.append(&name);
     if let Some(pause) = &p.paused {
         let pill = w::label(&format!("paused {}", fmt::short_when(Some(&pause.at))), &["pill", "paused"]);
@@ -1743,7 +1573,7 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
         pill.set_valign(gtk::Align::Center);
         head.append(&pill);
     }
-    let last = w::label(&fmt::ago(p.last_at.as_deref()), &["num"]);
+    let last = w::label(&fmt::ago(p.last_at.as_deref()), &["num", "dim"]);
     last.set_valign(gtk::Align::Center);
     let id = p.id.clone();
     live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
@@ -1751,19 +1581,19 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
     body.append(&head);
     let sub = if p.desc.is_empty() { p.roots.first().map(|r| fmt::folder_hint(r, &p.name)).unwrap_or_default() } else { p.desc.clone() };
     if !sub.is_empty() {
-        body.append(&w::clip(&sub, &["desc"]));
+        body.append(&w::clip(&sub, &["dim"]));
     }
     // The next step, or where it was left.
     let (lead, text, class) = if !p.next.is_empty() {
-        ("NEXT STEP", p.next.clone(), "pcnext")
+        ("Next step", p.next.clone(), "body-large")
     } else if let Some(pause) = &p.paused {
-        ("PAUSED WITH A NOTE", pause.note.clone(), "pcnext")
+        ("Paused with a note", pause.note.clone(), "body-large")
     } else if let Some(sum) = p.last_summary.as_deref().map(fmt::recap).filter(|s| !s.is_empty()) {
-        ("LAST TIME", sum, "pclast")
+        ("Last time", sum, "dim")
     } else {
-        ("NEXT STEP", "None written yet. Open it (Enter) to write one.".to_string(), "pcnone")
+        ("Next step", "None written yet. Open it (Enter) to write one.".to_string(), "dim")
     };
-    let l = w::label(lead, &["pclead"]);
+    let l = w::label(lead, &["caption-heading"]);
     l.set_xalign(0.0);
     l.set_margin_top(6);
     body.append(&l);
@@ -1776,14 +1606,9 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
     t.set_valign(gtk::Align::Start);
     body.append(&t);
     // What is open, and what has come in.
-    let chips = w::hbox(6, &["pchips"]);
+    let chips = w::hbox(6, &[]);
     chips.set_margin_top(6);
-    let chip = |n: u32, word: &str, class: &str| {
-        let b = w::hbox(6, &["pchip", class]);
-        b.append(&w::dot(class));
-        b.append(&w::label(&format!("{n} {word}"), &[]));
-        b
-    };
+    let chip = |n: u32, word: &str, class: &str| w::state_tag(&format!("{n} {word}"), class);
     if p.live.waiting > 0 {
         chips.append(&chip(p.live.waiting, "waiting", "waiting"));
     }
@@ -1794,11 +1619,10 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
         chips.append(&chip(p.live.idle, "idle", "idle"));
     }
     if let Some(l) = crate::behind::row_line(ui, &p.id) {
-        l.add_css_class("pchip");
-        l.set_hexpand(false);
-        // Its whole words: the card has the room.
-        l.set_max_width_chars(-1);
-        chips.append(&l);
+        // As a tag like the others, in its whole words.
+        let t = w::state_tag(&l.text(), "behind");
+        t.set_tooltip_text(l.tooltip_text().as_deref());
+        chips.append(&t);
     }
     if chips.first_child().is_some() {
         body.append(&chips);
@@ -1809,7 +1633,7 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
         body.append(&w::button("Track again", None, &["sm"], move || restore_project(&ui, &id)));
     } else {
         let words = if p.git_checked { git_words(p) } else { dim("checking git…") };
-        let g = w::markup(&words.replace("\n(", " (").replace('\n', " · "), &["gitc", "pcgit"]);
+        let g = w::markup(&words.replace("\n(", " (").replace('\n', " · "), &["caption"]);
         g.set_wrap(true);
         g.set_xalign(0.0);
         g.set_max_width_chars(1);
@@ -1925,9 +1749,8 @@ fn ideas(ui: &Ui) {
     // Sticky notes, each in its project's colour (violet while unsorted).
     let grid = card_grid(ui, "notegrid", 4);
     for i in list {
-        let note = w::vbox(10, &["note"]);
+        let note = w::vbox(10, &["card", "note"]);
         let colour = i.project.as_deref().and_then(|id| colour_by_id(ui, id));
-        note.add_css_class(&colour.map_or_else(|| "unsorted".to_string(), |c| format!("pc-{c}")));
         if i.state == "done" {
             note.add_css_class("done");
         }
@@ -1952,8 +1775,12 @@ fn ideas(ui: &Ui) {
         dd.update_property(&[gtk::accessible::Property::Label(&format!("Project for: {}", fmt::clip(&i.text, 60)))]);
         dd.add_css_class("mini");
         dd.add_css_class("notedd");
-        dd.set_hexpand(true);
-        dd.set_halign(gtk::Align::End);
+        // Its project's colour, as everywhere: a dot by the name.
+        let dot = w::dot(&colour.map_or_else(|| "quiet".to_string(), |c| format!("pc-{c}")));
+        dot.add_css_class("tag");
+        dot.set_halign(gtk::Align::End);
+        top.append(&w::spacer());
+        top.append(&dot);
         let at = i.project.as_ref().and_then(|p| projects.iter().position(|x| &x.0 == p)).map_or(0, |n| n + 1);
         dd.set_selected(at as u32);
         {
@@ -1970,7 +1797,7 @@ fn ideas(ui: &Ui) {
         top.append(&dd);
         note.append(&top);
         // The idea itself, large.
-        let tx = w::wrap(&i.text, &["notetx"]);
+        let tx = w::wrap(&i.text, &["body-large", "notetx"]);
         tx.set_xalign(0.0);
         tx.set_vexpand(true);
         tx.set_valign(gtk::Align::Start);
@@ -1987,7 +1814,7 @@ fn ideas(ui: &Ui) {
             _ => format!("{} · {}", fmt::short_when(Some(&i.at)), source),
         };
         let foot = w::hbox(8, &[]);
-        let meta_l = w::clip(&meta, &["mt"]);
+        let meta_l = w::clip(&meta, &["caption", "dim"]);
         foot.append(&meta_l);
         if let Some(brief) = i.brief.clone().filter(|_| i.state == "sent") {
             // The brief it was sent in, opened in the desktop's default app.
@@ -2173,14 +2000,21 @@ fn history(ui: &Ui) {
             vw.empty.append(&w::empty("Nothing to search yet.", "Sessions appear here once Wake has read them."));
             return;
         }
-        let mut day = String::new();
+        // Each day a section of the same session rows Monitor uses.
+        let mut days: Vec<(String, Vec<&SessionSummary>)> = Vec::new();
         for s in &recent {
             let d = fmt::day(s.last_at.as_deref());
-            if d != day {
-                vw.list.append(&day_row(&d, s.last_at.as_deref()));
-                day = d;
+            match days.last_mut() {
+                Some((day, v)) if *day == d => v.push(s),
+                _ => days.push((d, vec![s])),
             }
-            vw.list.append(&timeline_row(ui, s, now_cell(s), compact));
+        }
+        for (day, ss) in days {
+            vw.list.append(&section_row(&day, 0));
+            let n = ss.len();
+            for (i, s) in ss.into_iter().enumerate() {
+                vw.list.append(&session_item(ui, s, now_cell(s), None, (i == 0, i + 1 == n), !compact));
+            }
         }
     } else {
         let Some(results) = results else {
@@ -2191,74 +2025,15 @@ fn history(ui: &Ui) {
             vw.empty.append(&w::empty(&format!("Nothing matches “{q}”."), "Try a shorter word, a file name, or something you typed to Claude."));
             return;
         }
-        vw.list.append(&day_row(&fmt::pl(results.len() as u64, "session matches", "sessions match"), None));
-        for (s, m) in &results {
+        vw.list.append(&section_row(&fmt::pl(results.len() as u64, "session matches", "sessions match"), 0));
+        let n = results.len();
+        for (i, (s, m)) in results.iter().enumerate() {
             let l = w::clip("", &["snip"]);
             l.set_markup(&highlight(m, &q));
-            vw.list.append(&timeline_row(ui, s, l.upcast(), compact));
+            vw.list.append(&session_item(ui, s, l.upcast(), None, (i == 0, i + 1 == n), !compact));
         }
     }
     finish(ui, View::History, had_focus);
-}
-
-/// A day on the timeline, in large type: "Today", "Yesterday", "Mon 23 Nov".
-fn day_row(title: &str, _at: Option<&str>) -> gtk::ListBoxRow {
-    let r = gtk::ListBoxRow::new();
-    r.set_selectable(false);
-    r.set_activatable(false);
-    r.set_focusable(false);
-    r.add_css_class("grouprow");
-    r.add_css_class("dayrow");
-    let l = w::label(title, &["tlday"]);
-    l.set_xalign(0.0);
-    r.set_child(Some(&l));
-    r
-}
-
-/// One session on the timeline: the time, a dot on the line in its project's colour, who, and
-/// what you asked (or what matched); its state at the right.
-fn timeline_row(ui: &Ui, s: &SessionSummary, second: gtk::Widget, compact: bool) -> gtk::ListBoxRow {
-    let row = w::hbox(0, &["tlrow"]);
-    let when = fmt::when(s.last_at.as_deref());
-    let time = w::label(when.rsplit_once(' ').map_or(when.as_str(), |(_, t)| t), &["tltime"]);
-    time.set_xalign(1.0);
-    time.set_valign(gtk::Align::Start);
-    time.set_size_request(54, -1);
-    row.append(&time);
-    // The line through the day, with this session's dot on it.
-    let rail = w::vbox(0, &["tlrail"]);
-    rail.set_size_request(30, -1);
-    let top = w::hbox(0, &["tlline"]);
-    top.set_size_request(2, 14);
-    top.set_halign(gtk::Align::Center);
-    rail.append(&top);
-    let colour = s.project.as_deref().and_then(|id| colour_by_id(ui, id));
-    let (state_class, word) = w::state_word(s.state);
-    let dot = w::dot(&colour.map_or_else(|| state_class.to_string(), |c| format!("pc-{c}")));
-    dot.add_css_class("tldot");
-    dot.set_halign(gtk::Align::Center);
-    rail.append(&dot);
-    let rest = w::hbox(0, &["tlline"]);
-    rest.set_size_request(2, -1);
-    rest.set_vexpand(true);
-    rest.set_halign(gtk::Align::Center);
-    rail.append(&rest);
-    row.append(&rail);
-    let mid = w::vbox(4, &["tlbody"]);
-    mid.set_hexpand(true);
-    mid.append(&who_line_tagged(ui, s, false));
-    w::shrinkable(&second);
-    mid.append(&second);
-    row.append(&mid);
-    if !compact {
-        let st = w::label(word, &["state", state_class, "tlstate"]);
-        st.set_valign(gtk::Align::Start);
-        st.set_tooltip_text(Some(&s.evidence));
-        row.append(&st);
-    }
-    let r = list_row(&s.id, &row);
-    r.add_css_class("tlrow-r");
-    r
 }
 
 /// Enter on an idea: the keyboard goes to its project list, to sort it.

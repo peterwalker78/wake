@@ -164,10 +164,8 @@ pub struct AppState {
     pub projects: HashMap<String, ProjectDetail>,
     pub subs: HashMap<(String, String), SubagentDetail>,
     pub sub_open: HashSet<String>,
-    pub all_prompts: bool,
-    pub all_files: bool,
-    /// The side panel's sections opened on demand (by name; kept while the panel shows one thing).
-    pub panel_open: HashSet<&'static str>,
+    /// The section of the details shown as a page of its own ("asked", "files"...), else the summary.
+    pub panel_page: Option<&'static str>,
     pub edit_next: bool,
     pub confirm_remove: bool,
     /// Ideas: which list shows (To sort, Sent to an agent, Done).
@@ -195,7 +193,7 @@ pub struct AppState {
     pub kept_gen: u64,
     /// Agents: the screensaver's full readouts instead of the small waves (`v`).
     pub full_readouts: bool,
-    /// Detailed (panel sections open, full readouts) or reduced: Settings' default, `z` for now.
+    /// Detailed (full readouts in Agents) or reduced (small waves): Settings' default, `z` for now.
     pub detailed: bool,
     /// Agents: rows opened to show their subagents, and subagents opened to show their steps.
     pub agent_open: HashSet<u32>,
@@ -239,9 +237,7 @@ impl Default for AppState {
             projects: HashMap::new(),
             subs: HashMap::new(),
             sub_open: HashSet::new(),
-            all_prompts: false,
-            all_files: false,
-            panel_open: HashSet::new(),
+            panel_page: None,
             edit_next: false,
             confirm_remove: false,
             idea_tab: IdeaTab::Sort,
@@ -314,6 +310,8 @@ pub struct Widgets {
     /// Find: the search box and its icon form.
     pub cmd_full: gtk::Widget,
     pub cmd_icon: gtk::Button,
+    /// Back, at the start of the title bar, while the details are a page of their own.
+    pub back_btn: gtk::Button,
     pub counts: crate::layout::Squeeze,
     /// The three places, as tabs in the top bar: Monitor, Projects, History.
     pub tabs: gtk::Box,
@@ -490,6 +488,15 @@ fn build(app: &gtk::Application, opts: Opts) {
     // room, so the switcher sits in the middle.
     let top = w::hbox(0, &["top"]);
     let start = w::hbox(6, &["hstart"]);
+    // Back, where GTK apps put it, while the details fill the window (a phone-narrow one).
+    let back_btn = gtk::Button::new();
+    back_btn.set_child(Some(&w::icon(w::icons::BACK)));
+    back_btn.add_css_class("flat");
+    back_btn.set_tooltip_text(Some("Back to the list (Esc)"));
+    back_btn.update_property(&[gtk::accessible::Property::Label("Back")]);
+    back_btn.set_valign(gtk::Align::Center);
+    back_btn.set_visible(false);
+    start.append(&back_btn);
     // Find: a search field where there is room, its icon where there isn't. Both open the switcher.
     let cmd = gtk::Button::new();
     cmd.add_css_class("cmd");
@@ -714,6 +721,7 @@ fn build(app: &gtk::Application, opts: Opts) {
             tabs,
             tabs_bottom,
             add_btn: add_btn.clone(),
+            back_btn: back_btn.clone(),
             menu: menu.clone(),
             indexing,
             clock,
@@ -806,6 +814,10 @@ fn build(app: &gtk::Application, opts: Opts) {
     {
         let ui = ui.clone();
         cmd_icon.connect_clicked(move |_| switcher::open(&ui));
+    }
+    {
+        let ui2 = ui.clone();
+        ui.w.back_btn.connect_clicked(move |_| panel::back(&ui2));
     }
     {
         let ui2 = ui.clone();
@@ -942,8 +954,9 @@ fn build(app: &gtk::Application, opts: Opts) {
                 if !key.is_empty()
                     && let Ok(mut st) = ui2.st.try_borrow_mut()
                 {
-                    st.sel = Some(key);
+                    st.sel = Some(key.clone());
                 }
+                follow_sel(&ui2, v, key);
             }
         });
     }
@@ -1095,7 +1108,8 @@ fn apply_show(ui: &Ui, show: &str) {
             let id = ui.st.borrow().ov.as_ref().and_then(|ov| ov.sessions.iter().max_by_key(|s| s.prompts).map(|s| s.id.clone()));
             let Some(id) = id else { return };
             panel::open_session(ui, &id, true);
-            ui.st.borrow_mut().all_prompts = true;
+            // Every prompt is on the "You asked" page: scroll that.
+            panel::open_page(ui, "asked");
             let ui2 = ui.clone();
             let mut n = 0;
             glib::timeout_add_local(Duration::from_millis(300), move || {
@@ -1224,11 +1238,9 @@ fn apply_show(ui: &Ui, show: &str) {
                 panel::open_session(ui, &id, true);
                 // Screenshots of the panel's sections opened: WAKE_PANEL_OPEN=subs,asked,files,details.
                 if let Ok(open) = std::env::var("WAKE_PANEL_OPEN") {
-                    for k in ["subs", "asked", "recap", "files", "details", "sessions", "ideas", "git", "pdetails", "colour"] {
-                        if open.split(',').any(|x| x == k) {
-                            ui.st.borrow_mut().panel_open.insert(k);
-                        }
-                    }
+                    // The first one named opens as its page.
+                    let k = ["subs", "asked", "recap", "files", "details", "sessions", "ideas", "git", "pdetails", "colour"].into_iter().find(|k| open.split(',').any(|x| x == *k));
+                    ui.st.borrow_mut().panel_page = k;
                     panel::render(ui);
                 }
             }
@@ -1238,11 +1250,8 @@ fn apply_show(ui: &Ui, show: &str) {
             if let Some(id) = id {
                 panel::open_project(ui, &id, true);
                 if let Ok(open) = std::env::var("WAKE_PANEL_OPEN") {
-                    for k in ["sessions", "ideas", "git", "pdetails", "colour"] {
-                        if open.split(',').any(|x| x == k) {
-                            ui.st.borrow_mut().panel_open.insert(k);
-                        }
-                    }
+                    let k = ["sessions", "ideas", "git", "pdetails", "colour"].into_iter().find(|k| open.split(',').any(|x| x == *k));
+                    ui.st.borrow_mut().panel_page = k;
                     panel::render(ui);
                 }
             }
@@ -1753,13 +1762,14 @@ pub fn render_all(ui: &Ui) {
 /// Whether the tables show their compact columns: the list is narrow, or the details share the
 /// row with it.
 pub fn compact(st: &AppState) -> bool {
-    st.lay.narrow || (st.drawer.is_some() && !st.lay.push)
+    // Over the list or a page of its own, the details leave the list its width.
+    st.lay.narrow || (st.drawer.is_some() && !st.lay.push && !st.lay.overlay)
 }
 
 /// Whether rows are two-line cells rather than columns: the list is narrow, alone or beside the
 /// details (columns cut to a few letters say less than two lines).
 pub fn cards(st: &AppState) -> bool {
-    st.lay.narrow || (st.drawer.is_some() && !st.lay.push && st.lay.narrow_beside)
+    st.lay.narrow || (st.drawer.is_some() && !st.lay.push && !st.lay.overlay && st.lay.narrow_beside)
 }
 
 /// Opens or closes the rail's drawer (a narrow window); does nothing while the rail is shown.
@@ -1820,6 +1830,8 @@ fn relayout(ui: &Ui, lay: crate::layout::Lay) {
         c = x.next_sibling();
     }
     // The top bar like a phone's: ☰ for the rail, ⌕ for the search box.
+    // Back shows while the details fill the window.
+    ui.w.back_btn.set_visible(lay.push && ui.st.borrow().drawer.is_some());
     // Short of the full width, Find is its search icon, so the view switcher keeps its room.
     let short_top = lay.rail != Rail::Full;
     ui.w.cmd_full.set_visible(!short_top);
@@ -1870,17 +1882,13 @@ pub fn redraw_all(ui: &Ui) {
     }
 }
 
-/// The side panel's sections, all of them (Detailed opens them all).
-pub const PANEL_FOLDS: [&str; 10] = ["subs", "asked", "recap", "files", "details", "sessions", "ideas", "git", "pdetails", "colour"];
-
-/// Detailed or reduced: panel sections open or folded, full readouts or small waves. `say` tells
+/// Detailed or reduced: full readouts or small waves in Agents. `say` tells
 /// the person (for `z`, which only lasts until Wake closes).
 pub fn set_detailed(ui: &Ui, on: bool, say: bool) {
     {
         let mut st = ui.st.borrow_mut();
         st.detailed = on;
         st.full_readouts = on;
-        st.panel_open = if on { PANEL_FOLDS.into_iter().collect() } else { HashSet::new() };
         st.drawn.remove(&View::Agents);
         st.panel_drawn = None;
         st.chips_drawn.clear();
@@ -1890,7 +1898,7 @@ pub fn set_detailed(ui: &Ui, on: bool, say: bool) {
         agents::render(ui);
     }
     if say {
-        toast(ui, if on { "More detail for now: panel sections open, full readouts. z again for less." } else { "Less detail for now: panel sections folded, small waves. z again for more." }, false);
+        toast(ui, if on { "More detail for now: full readouts in Agents. z again for less." } else { "Less detail for now: small waves in Agents. z again for more." }, false);
     }
 }
 
@@ -1975,6 +1983,30 @@ fn rows(ui: &Ui) -> Vec<gtk::ListBoxRow> {
         child = c.next_sibling();
     }
     out
+}
+
+/// With the details open, picking another row shows its details instead (after the click is
+/// handled, so a redraw never runs inside it).
+pub fn follow_sel(ui: &Ui, v: View, key: String) {
+    let open = ui.st.try_borrow().ok().and_then(|st| st.drawer.clone());
+    let Some(d) = open else { return };
+    let same = match &d {
+        Drawer::Session(id) | Drawer::Project(id) => *id == key,
+    };
+    if same || key.is_empty() {
+        return;
+    }
+    let ui = ui.clone();
+    glib::idle_add_local_once(move || {
+        if ui.st.borrow().view != v || ui.st.borrow().drawer.is_none() {
+            return;
+        }
+        match v {
+            View::Monitor | View::History => panel::open_session(&ui, &key, false),
+            View::Projects => panel::open_project(&ui, &key, false),
+            _ => {}
+        }
+    });
 }
 
 /// A view drawn as a grid of cards (Projects): the grid, in the list's one row.
@@ -2776,7 +2808,8 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
                 (st.drawer.is_some(), st.show_brief, st.proj_filter.is_some())
             };
             if drawer {
-                panel::close(ui);
+                // A section's page goes back to the summary; the summary closes.
+                panel::back(ui);
             } else if brief {
                 ui.st.borrow_mut().show_brief = false;
                 views::render_view(ui);

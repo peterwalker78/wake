@@ -210,12 +210,9 @@ window.wake entry.search { font-size: 14px; min-height: 38px; border-radius: 8px
 
 /* side panel */
 .drawer { background-color: @panel; border-left: 1px solid @line2; }
-.dh { padding: 13px 15px; border-bottom: 1px solid @line; }
 .h2 { font-weight: 700; font-size: 17px; }
 window.wake button.x { padding: 2px; }
 .dh .desc { font-style: italic; font-size: 12.5px; }
-.dbody { padding: 14px 15px 20px; }
-.dact { padding: 11px 15px; border-bottom: 1px solid @line; }
 .sec { margin-bottom: 7px; }
 .sec.amber { color: @amber; }
 .mint { color: @mint; font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; }
@@ -361,26 +358,33 @@ window.wake .loc.none { border-style: none; }
 .statusbar .kbd { background-color: transparent; }
 
 /* side panel: one line of where and what, two actions, then sections that open on demand */
-.dh { padding: 18px 20px 6px; border-bottom: none; }
+.dh { padding: 18px 16px 8px 20px; border-bottom: none; }
 .dh .h2 { font-size: 18px; }
 .dline { margin-top: 6px; font-size: 12.5px; }
 .dline .state { font-family: "Atkinson Hyperlegible", sans-serif; font-size: 12.5px; font-weight: normal; }
 .where { color: @muted; font-size: 12.5px; font-family: "Atkinson Hyperlegible", sans-serif; }
-.dact { padding: 12px 20px 16px; border-bottom: 1px solid @line; }
+.dact { padding: 6px 16px 18px 20px; border-bottom: 1px solid @line; }
 .dbody { padding: 18px 20px 24px; }
 .now { margin-bottom: 18px; }
 .lead { font-size: 13.5px; color: @ink; }
 .lead.strong { font-size: 14.5px; }
 .lead.quiet { color: @muted; }
 .box.q { margin-bottom: 18px; padding: 12px 14px; }
-.folds { border-top: 1px solid @line; }
-window.wake button.foldbtn { padding: 12px 2px; border-radius: 0; border-bottom: 1px solid @line; }
+/* The details' sections: a boxed list of rows, each opening its own page. */
+.folds { background-color: @bg; border: 1px solid @line2; border-radius: 12px; }
+.folds > .fold:not(:first-child) > button.foldbtn { border-top: 1px solid @line; }
+.folds > .fold.onpage { border: none; }
+.folds.paged { border: none; background: none; }
+window.wake button.foldbtn { padding: 13px 16px; border-radius: 0; }
+.folds > .fold:first-child > button.foldbtn { border-radius: 12px 12px 0 0; }
+.folds > .fold:last-child > button.foldbtn { border-radius: 0 0 12px 12px; }
+.foldbtn image { color: @dim; }
 window.wake button.foldbtn:hover { background-color: @row; }
 .foldbtn .chev { color: @faint; font-size: 11px; min-width: 12px; }
-.foldbtn .ft { font-size: 13px; color: @soft; }
+.foldbtn .ft { font-size: 14px; color: @ink; }
 .fnote { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; }
 .fnote.mint { color: @mint; } .fnote.amber { color: @amber; }
-.foldin { padding: 10px 0 16px 20px; border-bottom: 1px solid @line; }
+.foldin { padding: 0; }
 .asked { background-color: transparent; border: none; border-left: 2px solid @line; border-radius: 0; padding: 2px 10px; margin-bottom: 6px; }
 .repo { border: none; border-left: 2px solid @line; border-radius: 0; padding: 2px 10px; }
 
@@ -758,3 +762,6 @@ list.table > row.boxedge { padding: 0 24px; border-bottom: none; background-colo
 list.table > row.boxedge > box { min-height: 6px; background-color: @panel; border-left: 1px solid @line2; border-right: 1px solid @line2; }
 list.table > row.boxedge.edgetop > box { border-top: 1px solid @line2; border-radius: 12px 12px 0 0; }
 list.table > row.boxedge.edgebottom > box { border-bottom: 1px solid @line2; border-radius: 0 0 12px 12px; }
+
+/* The details over the list (a medium window): a shadow on the list's side. */
+.pagehead { padding: 12px 16px 10px 10px; border-bottom: 1px solid @line; }

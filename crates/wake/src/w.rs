@@ -419,6 +419,9 @@ pub mod icons {
     pub const FIND: &[&str] = &["system-search-symbolic", "edit-find-symbolic"];
     pub const ADD: &[&str] = &["list-add-symbolic"];
     pub const CLOSE: &[&str] = &["window-close-symbolic"];
+    pub const BACK: &[&str] = &["go-previous-symbolic"];
+    pub const NEXT: &[&str] = &["go-next-symbolic"];
+    pub const MORE: &[&str] = &["view-more-symbolic", "view-more-horizontal-symbolic", "open-menu-symbolic"];
     pub const INFO: &[&str] = &["dialog-information-symbolic"];
     pub const WARNING: &[&str] = &["dialog-warning-symbolic"];
 }

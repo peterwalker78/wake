@@ -94,7 +94,7 @@ pub fn sections(s: &Settings, ais: &[AiChoice]) -> Vec<(&'static str, Vec<Row>)>
     let look = vec![
         row("theme", "Theme", "", Kind::Segments, vec![ch("dark", "Dark"), ch("light", "Light"), ch("system", "System")], &s.theme),
         row("accent", "Accent", "", Kind::Swatches, theme::ACCENTS.iter().map(|(n, ..)| ch(n, &cap(n))).collect(), &s.accent),
-        row("density", "Detail", "Reduced folds the side panel's sections; z switches it for now.", Kind::Segments, vec![ch("reduced", "Reduced"), ch("detailed", "Detailed")], &s.density),
+        row("density", "Detail", "Detailed draws each agent's full readout in Agents; z switches it for now.", Kind::Segments, vec![ch("reduced", "Reduced"), ch("detailed", "Detailed")], &s.density),
         switch("motion", "Motion", "Panels slide and rows fade, briefly. Off keeps everything still.", s.motion != "reduced"),
     ];
     let open = vec![row("start", "Start on", "", Kind::Dropdown, START_VIEWS.iter().map(|v| ch(v.id(), v.name())).collect(), &s.start_view)];

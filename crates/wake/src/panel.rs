@@ -14,27 +14,17 @@ pub fn open_session(ui: &Ui, id: &str, focus: bool) {
     {
         let mut st = ui.st.borrow_mut();
         if st.drawer != Some(Drawer::Session(id.to_string())) {
-            st.all_prompts = false;
-            st.all_files = false;
             st.sub_open.clear();
             st.subs_done_open = false;
-            st.panel_open = folds_for(st.detailed);
-            // From a History search: open the part that holds the match, all of it.
+            st.panel_page = None;
+            // From a History search: open the part that holds the match, as its page.
             let hit = (st.view == app::View::History && !st.search_q.trim().is_empty())
                 .then(|| st.search.as_ref()?.iter().find(|(s, _)| s.id == id).map(|(_, m)| m.split_once(": ").map_or("", |(k, _)| k).to_string()))
                 .flatten();
             match hit.as_deref() {
-                Some("prompt") => {
-                    st.panel_open.insert("asked");
-                    st.all_prompts = true;
-                }
-                Some("file") => {
-                    st.panel_open.insert("files");
-                    st.all_files = true;
-                }
-                Some("recap") => {
-                    st.panel_open.insert("recap");
-                }
+                Some("prompt") => st.panel_page = Some("asked"),
+                Some("file") => st.panel_page = Some("files"),
+                Some("recap") => st.panel_page = Some("recap"),
                 _ => {}
             }
         }
@@ -64,7 +54,7 @@ pub fn open_project(ui: &Ui, id: &str, focus: bool) {
         if st.drawer != Some(Drawer::Project(id.to_string())) {
             st.edit_next = false;
             st.confirm_remove = false;
-            st.panel_open = folds_for(st.detailed);
+            st.panel_page = None;
         }
         st.drawer = Some(Drawer::Project(id.to_string()));
         if st.view == app::View::Projects {
@@ -84,9 +74,39 @@ pub fn open_project(ui: &Ui, id: &str, focus: bool) {
     }
 }
 
-/// Which sections a newly shown session or project opens with: all of them when detailed.
-fn folds_for(detailed: bool) -> std::collections::HashSet<&'static str> {
-    if detailed { app::PANEL_FOLDS.into_iter().collect() } else { Default::default() }
+/// Opens a section of the details as a page of its own, with the way back at its top.
+pub fn open_page(ui: &Ui, key: &'static str) {
+    {
+        let mut st = ui.st.borrow_mut();
+        st.panel_page = Some(key);
+        st.panel_drawn = None;
+    }
+    render(ui);
+    if let Some(sw) = find_scroll(&ui.w.drawer) {
+        sw.vadjustment().set_value(0.0);
+    }
+    if let Some(b) = find_named(ui.w.drawer.upcast_ref(), "page-back") {
+        b.grab_focus();
+    }
+}
+
+/// Back: from a section's page to the summary, else the details close.
+pub fn back(ui: &Ui) {
+    let page = ui.st.borrow().panel_page;
+    let Some(key) = page else {
+        close(ui);
+        return;
+    };
+    {
+        let mut st = ui.st.borrow_mut();
+        st.panel_page = None;
+        st.panel_drawn = None;
+    }
+    render(ui);
+    // The keyboard goes back to the row that opened the page.
+    if let Some(b) = find_named(ui.w.drawer.upcast_ref(), &format!("fold-{key}")) {
+        b.grab_focus();
+    }
 }
 
 pub fn close(ui: &Ui) {
@@ -94,6 +114,7 @@ pub fn close(ui: &Ui) {
         let mut st = ui.st.borrow_mut();
         st.drawer = None;
         st.panel_drawn = None;
+        st.panel_page = None;
     }
     show(ui, false);
     app::capture_default(ui);
@@ -228,7 +249,8 @@ fn signature(ui: &Ui) -> String {
     let st = ui.st.borrow();
     // Which sections and subagents are open is not here: opening one happens in place.
     let minute = glib::monotonic_time() / 60_000_000;
-    match &st.drawer {
+    let page = format!("{:?}", st.panel_page);
+    let s = match &st.drawer {
         None => String::new(),
         Some(Drawer::Session(id)) => {
             let sum = st.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| &s.id == id).cloned()).map(steady);
@@ -242,7 +264,7 @@ fn signature(ui: &Ui) -> String {
                 d
             });
             let procs = res_of(&st, id).map(|r| r.pid);
-            format!("s{id}{minute}{}{}{}{}{procs:?}", serde_json::to_string(&sum).unwrap_or_default(), serde_json::to_string(&det).unwrap_or_default(), st.all_prompts, st.all_files)
+            format!("s{id}{minute}{}{}{procs:?}", serde_json::to_string(&sum).unwrap_or_default(), serde_json::to_string(&det).unwrap_or_default())
         }
         Some(Drawer::Project(id)) => {
             let sum = st.ov.as_ref().and_then(|ov| ov.projects.iter().find(|p| &p.id == id).cloned()).map(|mut p| {
@@ -256,7 +278,8 @@ fn signature(ui: &Ui) -> String {
             });
             format!("p{id}{minute}{}{}{}{}{behind}", serde_json::to_string(&sum).unwrap_or_default(), serde_json::to_string(&det).unwrap_or_default(), st.edit_next, st.confirm_remove)
         }
-    }
+    };
+    if s.is_empty() { s } else { format!("{s}{page}") }
 }
 
 /// The panel's scroll position, for the scroll test.
@@ -326,6 +349,8 @@ fn target_key(d: &Drawer) -> String {
 /// The panel slides in and out beside the table (the table makes room at once; the panel's
 /// motion follows). Closing clears it once it has slid away.
 fn show(ui: &Ui, on: bool) {
+    // Back in the title bar while the details fill the window.
+    ui.w.back_btn.set_visible(on && ui.st.borrow().lay.push);
     let rev = &ui.w.drawer_rev;
     if on {
         if !ui.w.drawer.is_visible() {
@@ -381,45 +406,78 @@ pub fn find_named(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
 }
 
 fn head(ui: &Ui, title: &str, sub: &[gtk::Widget]) {
-    // Pushed over the list (a narrow window), the details lead with the way back, as a phone's do.
-    if ui.st.borrow().lay.push {
-        let view = ui.st.borrow().view;
-        let bar = w::hbox(0, &["backbar"]);
-        let ui2 = ui.clone();
-        let back = gtk::Button::with_label(&format!(
-            "‹ {}",
-            match view {
-                app::View::Monitor => "Sessions",
-                v => v.name(),
-            }
-        ));
-        back.add_css_class("back");
-        back.set_widget_name("back");
-        back.set_tooltip_text(Some("Back to the list (Esc or Backspace)"));
-        back.connect_clicked(move |_| close(&ui2));
-        bar.append(&back);
-        put_top(ui, &bar);
-    }
+    // No back bar here: a phone-narrow window has Back in its title bar.
     let dh = w::hbox(10, &["dh"]);
-    let left = w::vbox(3, &[]);
+    let left = w::vbox(4, &[]);
     left.set_hexpand(true);
-    let h = w::wrap(title, &["h2"]);
+    let h = w::wrap(title, &["title-2"]);
+    h.set_xalign(0.0);
     left.append(&h);
     for s in sub {
         left.append(s);
     }
     dh.append(&left);
+    // Filling the window, the details close with Back in the title bar.
+    if !ui.st.borrow().lay.push {
+        dh.append(&close_button(ui));
+    }
+    put_top(ui, &dh);
+}
+
+/// The standard close button at the details' top right (Esc).
+fn close_button(ui: &Ui) -> gtk::Button {
     let ui2 = ui.clone();
     let x = gtk::Button::new();
-    x.set_child(Some(&w::kbd("Esc")));
-    x.add_css_class("x");
+    x.set_child(Some(&w::icon(w::icons::CLOSE)));
+    x.add_css_class("flat");
     x.set_widget_name("close");
     x.set_tooltip_text(Some("Close details (Esc)"));
     x.update_property(&[gtk::accessible::Property::Label("Close")]);
     x.set_valign(gtk::Align::Start);
     x.connect_clicked(move |_| close(&ui2));
-    dh.append(&x);
+    x
+}
+
+/// A section's page: Back to the summary, the section's name, and what it belongs to.
+fn page_head(ui: &Ui, section: &str, of: &str) {
+    let dh = w::hbox(8, &["dh", "pagehead"]);
+    let ui2 = ui.clone();
+    let b = gtk::Button::new();
+    b.set_child(Some(&w::icon(w::icons::BACK)));
+    b.add_css_class("flat");
+    b.set_widget_name("page-back");
+    b.set_tooltip_text(Some("Back (Esc)"));
+    b.update_property(&[gtk::accessible::Property::Label("Back")]);
+    b.set_valign(gtk::Align::Center);
+    b.connect_clicked(move |_| back(&ui2));
+    dh.append(&b);
+    let left = w::vbox(2, &[]);
+    left.set_hexpand(true);
+    let t = w::wrap(section, &["title-3"]);
+    t.set_xalign(0.0);
+    left.append(&t);
+    let o = w::clip(of, &["dim", "caption"]);
+    o.set_xalign(0.0);
+    left.append(&o);
+    dh.append(&left);
+    dh.append(&close_button(ui));
     put_top(ui, &dh);
+}
+
+/// A section's page title, by its key.
+fn page_title(key: &str) -> &'static str {
+    match key {
+        "subs" => "Subagents",
+        "asked" => "You asked",
+        "recap" => "Claude's recap",
+        "files" => "Files it changed",
+        "sessions" => "Sessions",
+        "ideas" => "Ideas",
+        "git" => "Git",
+        "disk" => "Disk",
+        "colour" => "Dot colour",
+        _ => "Details",
+    }
 }
 
 /// Adds `w` above the panel's scrolled area (the title, the actions, a banner block).
@@ -622,57 +680,44 @@ pub fn patch_subs(root: &gtk::Widget, subs: &[SubagentSummary]) {
     }
 }
 
-/// A section that opens on demand: one quiet line (a chevron, its name, a short note on the right),
-/// its contents sliding open below it. Opening or closing happens in place (nothing else is
-/// redrawn, nothing moves above it), and what opens below the fold is scrolled into view. Which
-/// are open is kept while the panel shows the same session or project.
+/// A section of the details. On the summary it is a row (its name, a count, ›) that opens it as a
+/// page; on its own page, all of its content; on another section's page, nothing.
 pub fn fold(ui: &Ui, key: &'static str, title: &str, note: &str, note_class: &str, build: impl FnOnce(&gtk::Box)) -> gtk::Box {
-    let open = ui.st.borrow().panel_open.contains(key);
+    let page = ui.st.borrow().panel_page;
     let outer = w::vbox(0, &["fold"]);
-    let btn = gtk::Button::new();
-    btn.add_css_class("foldbtn");
-    btn.set_widget_name(&format!("fold-{key}"));
-    let h = w::hbox(8, &[]);
-    let chev = w::label(if open { "▾" } else { "▸" }, &["chev"]);
-    h.append(&chev);
-    h.append(&w::label(title, &["ft"]));
-    h.append(&w::spacer());
-    if !note.is_empty() {
-        let n = w::label(note, &["fnote"]);
-        // A long note gives way before the panel grows.
-        n.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        if !note_class.is_empty() {
-            n.add_css_class(note_class);
+    match page {
+        Some(k) if k == key => {
+            outer.add_css_class("onpage");
+            let inner = w::vbox(8, &["foldin"]);
+            build(&inner);
+            outer.append(&inner);
         }
-        h.append(&n);
-    }
-    btn.set_child(Some(&h));
-    let say = |open: bool| format!("{title}{}", if open { ", open" } else { ", closed" });
-    btn.update_property(&[gtk::accessible::Property::Label(&say(open))]);
-    outer.append(&btn);
-    let inner = w::vbox(6, &["foldin"]);
-    build(&inner);
-    let rev = crate::motion::revealer(gtk::RevealerTransitionType::SlideDown, &inner, open);
-    outer.append(&rev);
-    let ui2 = ui.clone();
-    let title = title.to_string();
-    btn.connect_clicked(move |b| {
-        let open = {
-            let mut st = ui2.st.borrow_mut();
-            if st.panel_open.remove(key) {
-                false
-            } else {
-                st.panel_open.insert(key);
-                true
+        Some(_) => outer.set_visible(false),
+        None => {
+            let btn = gtk::Button::new();
+            btn.add_css_class("foldbtn");
+            btn.set_widget_name(&format!("fold-{key}"));
+            let h = w::hbox(10, &[]);
+            h.append(&w::label(title, &["ft"]));
+            h.append(&w::spacer());
+            if !note.is_empty() {
+                let n = w::label(note, &["fnote"]);
+                // A long note gives way before the panel grows.
+                n.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                if !note_class.is_empty() {
+                    n.add_css_class(note_class);
+                }
+                h.append(&n);
             }
-        };
-        chev.set_text(if open { "▾" } else { "▸" });
-        b.update_property(&[gtk::accessible::Property::Label(&format!("{title}{}", if open { ", open" } else { ", closed" }))]);
-        rev.set_reveal_child(open);
-        if open {
-            reveal_into_view(&ui2, &rev, b.upcast_ref());
+            h.append(&w::icon(w::icons::NEXT));
+            btn.set_child(Some(&h));
+            btn.set_tooltip_text(Some(&format!("Open {title}")));
+            btn.update_property(&[gtk::accessible::Property::Label(title)]);
+            let ui2 = ui.clone();
+            btn.connect_clicked(move |_| open_page(&ui2, key));
+            outer.append(&btn);
         }
-    });
+    }
     outer
 }
 
@@ -698,33 +743,67 @@ fn reveal_into_view(ui: &Ui, rev: &gtk::Revealer, head: &gtk::Widget) {
     *id.borrow_mut() = Some(h);
 }
 
-/// The session's one line under its title: what it is doing, where it is.
+/// The session's line under its title: its status tag, then its project and where it is.
 fn session_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
-    let (class, word) = w::state_word(s.state);
-    let line = w::hbox(7, &["dline"]);
-    line.append(&w::dot(class));
-    line.append(&w::label(word, &["state", class]));
+    let line = w::hbox(8, &["dline"]);
+    line.append(&w::state_badge(s.state));
     let (mut loc, ..) = app::loc_for(ui, s);
     // The tab's own title, as Konsole shows it, after Wake's "Konsole · tab 2".
     if let Some(l) = s.location.as_ref().filter(|l| !l.tab_title.is_empty()) {
         loc = format!("{loc} “{}”", l.tab_title);
     }
-    // The project in the attribution's own words ("probably Skyhook (it changed files there)"),
-    // and always a way to change it: the link opens Set project, as `m` does.
-    let m = format!("· {} <a href=\"change\" title=\"Say which project it belongs to (m)\">change project</a> · {}", w::esc(&crate::disk::project_reason(ui, s)), w::esc(&loc)); // disk.rs hook
-    let wl = w::wrap("", &["where"]);
-    wl.set_markup(&m);
+    let wl = w::wrap(&format!("{} · {loc}", crate::disk::project_reason(ui, s)), &["dim"]); // disk.rs hook
+    wl.set_xalign(0.0);
     wl.set_hexpand(true);
-    let (ui2, id) = (ui.clone(), s.id.clone());
-    wl.connect_activate_link(move |_, _| {
-        crate::disk::set_project(&ui2, &id);
-        glib::Propagation::Stop
-    });
     line.append(&wl);
     // How Wake knows, and the rest of the small print, only when asked.
     let agent = format!("{:?}", s.agent).to_lowercase();
     line.set_tooltip_text(Some(&format!("{}\n{agent} · {} · {}", s.evidence, fmt::minutes(s.minutes), fmt::pl(s.prompts, "prompt", "prompts"))));
     line
+}
+
+/// ⋯ beside the main button: its project, which project it belongs to, and stopping it.
+fn session_menu(ui: &Ui, s: &SessionSummary) -> gtk::MenuButton {
+    let mb = gtk::MenuButton::new();
+    mb.set_child(Some(&w::icon(w::icons::MORE)));
+    mb.add_css_class("flat");
+    mb.set_widget_name("panel-more");
+    mb.set_tooltip_text(Some("More"));
+    mb.set_valign(gtk::Align::Center);
+    let pop = gtk::Popover::new();
+    let items = w::vbox(2, &["moremenu"]);
+    let item = |label: &str, danger: bool, f: Box<dyn Fn()>| {
+        let b = gtk::Button::with_label(label);
+        b.add_css_class("menuitem");
+        if danger {
+            b.add_css_class("danger");
+        }
+        let pop = pop.clone();
+        b.connect_clicked(move |_| {
+            pop.popdown();
+            f();
+        });
+        items.append(&b);
+    };
+    if let Some(p) = s.project.clone().filter(|p| app::find_project(ui, p).is_some()) {
+        let ui2 = ui.clone();
+        item("Open its project", false, Box::new(move || open_project(&ui2, &p, true)));
+    }
+    let (ui2, id) = (ui.clone(), s.id.clone());
+    item("Change its project… (m)", false, Box::new(move || crate::disk::set_project(&ui2, &id)));
+    // Stopping: the same confirmation as in Agents, and never the main button.
+    let pid = res_of(&ui.st.borrow(), &s.id).map(|r| r.pid);
+    if let Some(pid) = pid {
+        let ui2 = ui.clone();
+        item("Show it in Agents", false, Box::new(move || crate::agents::show_row(&ui2, pid)));
+    }
+    if let Some(pid) = pid.filter(|_| app::is_live(s.state)) {
+        let ui2 = ui.clone();
+        item("Stop this agent…", true, Box::new(move || crate::agents::stop_one(&ui2, pid)));
+    }
+    pop.set_child(Some(&items));
+    mb.set_popover(Some(&pop));
+    mb
 }
 
 fn session(ui: &Ui, id: &str) {
@@ -738,52 +817,43 @@ fn session(ui: &Ui, id: &str) {
         skeleton(&body(ui));
         return;
     };
-    let mut sub: Vec<gtk::Widget> = vec![session_line(ui, &s).upcast()];
-    if let Some(r) = crate::why::stop_reason(&s).filter(|r| r.decision.is_none()) {
-        let l = w::wrap(&r.words, &["why-line", r.class]);
-        l.set_tooltip_text(Some(&s.evidence));
-        sub.push(l.upcast());
-    }
-    if let Some(l) = proc_line(ui, &s) {
-        sub.push(l.upcast());
-    }
-    head(ui, &s.title, &sub);
-
-    let act = w::hbox(8, &[]);
-    if let Some(b) = go_button(ui, &s, true) {
-        act.append(&b);
+    let page = ui.st.borrow().panel_page;
+    if let Some(k) = page {
+        // A section's page: the way back, its name, and whose it is.
+        page_head(ui, page_title(k), &s.title);
     } else {
-        act.append(&w::clip(if s.deleted_by_claude { "Claude deleted the conversation; it can't be reopened." } else { "Nothing to reopen." }, &["meta"]));
-    }
-    if let Some(p) = s.project.clone().filter(|p| app::find_project(ui, p).is_some()) {
-        let ui2 = ui.clone();
-        act.append(&w::button("Project", None, &["ghost"], move || open_project(&ui2, &p, true)));
-    }
-    // Stopping is quiet here (the same confirmation as in Agents): last, and never the main button.
-    let pid = { res_of(&ui.st.borrow(), &s.id).map(|r| r.pid) };
-    if let Some(pid) = pid.filter(|_| app::is_live(s.state)) {
+        let mut sub: Vec<gtk::Widget> = vec![session_line(ui, &s).upcast()];
+        if let Some(r) = crate::why::stop_reason(&s).filter(|r| r.decision.is_none()) {
+            let l = w::wrap(&r.words, &["dim"]);
+            l.set_xalign(0.0);
+            l.set_tooltip_text(Some(&s.evidence));
+            sub.push(l.upcast());
+        }
+        head(ui, &s.title, &sub);
+        // One main action, and the rest under ⋯.
+        let act = w::hbox(8, &["dact"]);
+        if let Some(b) = go_button(ui, &s, true) {
+            if app::is_live(s.state) {
+                b.set_tooltip_text(Some(&format!("{} (o). Hold Space to peek without leaving Wake.", b.tooltip_text().unwrap_or_default())));
+            }
+            act.append(&b);
+        } else {
+            act.append(&w::clip(if s.deleted_by_claude { "Claude deleted the conversation; it can't be reopened." } else { "Nothing to reopen." }, &["meta"]));
+        }
         act.append(&w::spacer());
-        let ui2 = ui.clone();
-        let b = w::button("Stop…", None, &["ghost", "sm", "quiet-stop"], move || crate::agents::stop_one(&ui2, pid));
-        b.set_widget_name("panel-stop");
-        b.set_tooltip_text(Some("Stop this agent. Wake asks first, and says what it last said."));
-        act.append(&b);
+        act.append(&session_menu(ui, &s));
+        put_top(ui, &act);
     }
-    let top = w::vbox(6, &["dact"]);
-    top.append(&act);
-    // Peeking has no button: say it where the way there is.
-    if app::is_live(s.state) {
-        top.append(&w::wrap("Hold Space to peek without leaving Wake.", &["hint"]));
-    }
-    put_top(ui, &top);
 
     let b = body(ui);
     // What it is doing now: the decision or question it is waiting on (with the way there right
     // under it), else Claude's recap, else your last ask.
     let recap = s.away_summary.as_deref().map(fmt::recap).filter(|a| !a.is_empty());
     let mut recap_shown = false;
-    let asks = s.question.clone().or_else(|| crate::why::stop_reason(&s).and_then(|r| r.decision));
-    if let Some(q) = &asks {
+    let asks = s.question.clone().or_else(|| crate::why::stop_reason(&s).and_then(|r| r.decision)).filter(|_| page.is_none());
+    if page.is_some() {
+        // A section's page shows only that section.
+    } else if let Some(q) = &asks {
         b.append(&decision_card(ui, &s, q));
     } else if let Some(a) = &recap {
         let x = w::vbox(6, &["now"]);
@@ -801,11 +871,14 @@ fn session(ui: &Ui, id: &str) {
         skeleton(&b);
         return;
     };
-    let (all_prompts, all_files, sub_open, done_open) = {
+    let (sub_open, done_open) = {
         let st = ui.st.borrow();
-        (st.all_prompts, st.all_files, st.sub_open.clone(), st.subs_done_open)
+        (st.sub_open.clone(), st.subs_done_open)
     };
     let folds = w::vbox(0, &["folds"]);
+    if page.is_some() {
+        folds.add_css_class("paged");
+    }
     // Subagents first while one is running: that is what moves.
     let run = d.subagents.iter().filter(|a| a.state == State::Working).count();
     let subs_fold = |folds: &gtk::Box| {
@@ -873,20 +946,10 @@ fn session(ui: &Ui, id: &str) {
     if !d.prompts.is_empty() {
         let n = d.prompts.len();
         folds.append(&fold(ui, "asked", "You asked", &n.to_string(), "", |x| {
-            let shown = if all_prompts { &d.prompts[..] } else { &d.prompts[n.saturating_sub(5)..] };
-            for p in shown {
+            // Its own page has the room: every prompt.
+            for p in &d.prompts {
                 let at = p.at.as_deref().and_then(fmt::parse).and_then(|t| t.to_local().ok()).and_then(|t| t.format("%H:%M").ok()).map(|s| s.to_string()).unwrap_or_default();
                 x.append(&asked(&at, &p.text));
-            }
-            if n > 5 {
-                let ui = ui.clone();
-                let l = link(&if all_prompts { "only the last 5".to_string() } else { format!("all {n}") }, "prompts-all", move || {
-                    let v = !ui.st.borrow().all_prompts;
-                    ui.st.borrow_mut().all_prompts = v;
-                    render(&ui);
-                });
-                l.set_halign(gtk::Align::Start);
-                x.append(&l);
             }
         }));
     }
@@ -896,21 +959,12 @@ fn session(ui: &Ui, id: &str) {
     if !d.files.is_empty() {
         let n = d.files.len();
         folds.append(&fold(ui, "files", "Files it changed", &n.to_string(), "", |x| {
-            for f in d.files.iter().take(if all_files { n } else { 8 }) {
+            // Its own page has the room: every file.
+            for f in &d.files {
                 let r = w::hbox(9, &["did"]);
                 r.append(&w::wrap(&fmt::rel(&f.path, s.cwd.as_deref()), &["p"]));
                 r.append(&w::label(&f.edits.to_string(), &["num"]));
                 x.append(&r);
-            }
-            if n > 8 {
-                let ui = ui.clone();
-                let l = link(if all_files { "fewer" } else { "all of them" }, "files-all", move || {
-                    let v = !ui.st.borrow().all_files;
-                    ui.st.borrow_mut().all_files = v;
-                    render(&ui);
-                });
-                l.set_halign(gtk::Align::Start);
-                x.append(&l);
             }
         }));
     }
@@ -946,6 +1000,9 @@ fn session(ui: &Ui, id: &str) {
         if let Some(t) = &d.transcript {
             lines.push(format!("transcript: {t}"));
         }
+        if let Some(r) = res_of(&ui.st.borrow(), &s.id) {
+            lines.push(format!("{} in memory, with its terminal · PID {}", fmt::bytes(r.rss_bytes), r.pid));
+        }
         lines.push(format!("started {} · id {}", fmt::when(s.started_at.as_deref()), s.id));
         let f = w::wrap(&lines.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"), &["facts"]);
         f.set_selectable(true);
@@ -962,39 +1019,6 @@ fn res_of(st: &app::AppState, id: &str) -> Option<SessionResources> {
 /// "735 MB in memory": with its terminal; the PID and the breakdown are in the tooltip.
 fn proc_words(r: SessionResources) -> String {
     format!("{} in memory", fmt::bytes(r.rss_bytes))
-}
-
-/// The tooltip: what the number is made of, and where the link goes.
-fn proc_tip(r: SessionResources) -> String {
-    let parts = if r.rss_bytes > r.own_rss_bytes + (5 << 20) {
-        format!("{} for the agent, {} with its terminal.", fmt::bytes(r.own_rss_bytes), fmt::bytes(r.rss_bytes))
-    } else {
-        format!("{} for the agent.", fmt::bytes(r.rss_bytes))
-    };
-    format!("{parts} PID {}.\nOpens its row in Agents: CPU, memory, and stopping it.", r.pid)
-}
-
-/// "680 MB in memory" for a live session, a link to its row in Agents.
-fn proc_line(ui: &Ui, s: &SessionSummary) -> Option<gtk::Button> {
-    let (pid, words, tip) = {
-        let st = ui.st.borrow();
-        let r = res_of(&st, &s.id)?;
-        (r.pid, proc_words(r.clone()), proc_tip(r))
-    };
-    // A wrapping label inside, so a narrow panel never has to be as wide as this line.
-    let l = w::wrap(&words, &[]);
-    l.set_xalign(0.0);
-    // Wrap only when the panel is narrower than the line, not at the label's default width.
-    l.set_max_width_chars(90);
-    let b = gtk::Button::builder().child(&l).build();
-    b.add_css_class("link");
-    b.add_css_class("plink");
-    b.set_widget_name("pmem");
-    b.set_halign(gtk::Align::Start);
-    b.set_tooltip_text(Some(&tip));
-    let ui2 = ui.clone();
-    b.connect_clicked(move |_| crate::agents::show_row(&ui2, pid));
-    Some(b)
 }
 
 /// The memory on the open panel's process line, kept current in place.
@@ -1247,10 +1271,17 @@ fn project(ui: &Ui, id: &str) {
     if !p.desc.is_empty() {
         sub.push(w::wrap(&p.desc, &["desc"]).upcast());
     }
-    head(ui, &p.name, &sub);
+    let page = ui.st.borrow().panel_page;
+    if let Some(k) = page {
+        page_head(ui, page_title(k), &p.name);
+    } else {
+        head(ui, &p.name, &sub);
+    }
 
     let act = w::hbox(8, &["dact"]);
-    if p.removed {
+    if page.is_some() {
+        // A section's page: only that section.
+    } else if p.removed {
         let ui2 = ui.clone();
         let id2 = p.id.clone();
         let b = w::button("Track again", None, &["primary"], move || crate::views::restore_project(&ui2, &id2));
@@ -1287,17 +1318,20 @@ fn project(ui: &Ui, id: &str) {
             act.append(&b);
         }
     }
-    put_top(ui, &act);
-    if let Some(bk) = crate::behind::panel_block(ui, &p.id) {
-        put_top(ui, &bk);
+    if page.is_none() {
+        put_top(ui, &act);
+        if let Some(bk) = crate::behind::panel_block(ui, &p.id) {
+            put_top(ui, &bk);
+        }
     }
 
     let b = body(ui);
     // A session here that wants a decision: the ask, with the way there right under it.
-    if let Some((s, ask)) = project_ask(ui, &p) {
+    if let Some((s, ask)) = project_ask(ui, &p).filter(|_| page.is_none()) {
         b.append(&decision_card(ui, &s, &ask));
     }
     let x = w::vbox(6, &["now"]);
+    x.set_visible(page.is_none());
     let edit = (!edit_next && !p.removed).then(|| {
         let ui = ui.clone();
         link("edit", "edit-next", move || {
@@ -1352,7 +1386,7 @@ fn project(ui: &Ui, id: &str) {
         skeleton(&b);
         return;
     };
-    if let Some(lp) = &d.last_pause {
+    if let Some(lp) = d.last_pause.as_ref().filter(|_| page.is_none()) {
         let x = w::vbox(6, &["now"]);
         x.append(&w::sec(&format!("Where you left it · {}", fmt::when(Some(&lp.at)))));
         x.append(&w::wrap(if lp.note.is_empty() { "(no note)" } else { &lp.note }, &["lead"]));
@@ -1365,6 +1399,9 @@ fn project(ui: &Ui, id: &str) {
         b.append(&x);
     }
     let folds = w::vbox(0, &["folds"]);
+    if page.is_some() {
+        folds.add_css_class("paged");
+    }
     let mut ss = d.sessions.clone();
     ss.sort_by(crate::views::by_session);
     if !ss.is_empty() {

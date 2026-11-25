@@ -482,15 +482,13 @@ fn close_row(ui: &Ui, card: &gtk::Box) {
     card.append(&row);
 }
 
-/// Opens a project's panel with its Disk section open.
+/// Opens a project's details on their Disk page.
 pub fn open_project_disk(ui: &Ui, id: &str) {
     if ui.st.borrow().view != View::Projects {
         app::set_view(ui, View::Projects);
     }
     crate::panel::open_project(ui, id, false);
-    ui.st.borrow_mut().panel_open.insert("disk");
-    ui.st.borrow_mut().panel_drawn = None;
-    crate::panel::render(ui);
+    crate::panel::open_page(ui, "disk");
 }
 
 // ---------------------------------------------------------------- attribution

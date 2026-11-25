@@ -1522,10 +1522,16 @@ fn card_grid(ui: &Ui, class: &str, max: u32) -> gtk::FlowBox {
     {
         let ui = ui.clone();
         grid.connect_selected_children_changed(move |g| {
-            if let Some(c) = g.selected_children().first()
-                && let Ok(mut st) = ui.st.try_borrow_mut()
-            {
-                st.sel = Some(c.widget_name().to_string());
+            if let Some(c) = g.selected_children().first() {
+                let key = c.widget_name().to_string();
+                let view = match ui.st.try_borrow_mut() {
+                    Ok(mut st) => {
+                        st.sel = Some(key.clone());
+                        st.view
+                    }
+                    Err(_) => return,
+                };
+                app::follow_sel(&ui, view, key);
             }
         });
     }

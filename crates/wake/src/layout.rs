@@ -46,7 +46,11 @@ const NARROW_BELOW: i32 = 720;
 /// their natural widths need about 1130 px).
 const TIGHT_BELOW: i32 = 1140;
 /// The details share the row only while the list keeps this much beside them; else they push.
+#[cfg(test)]
 const LIST_MIN: i32 = 620;
+/// Below this the details are a page of their own; below `OVERLAY_BELOW` they slide over the list.
+const PUSH_BELOW: i32 = 760;
+const OVERLAY_BELOW: i32 = 1180;
 /// Each breakpoint holds this far past its line once crossed, so resizing across it can't flicker.
 const HYST: i32 = 12;
 /// The soft edge drawn left of the details while they slide over the list.
@@ -71,8 +75,11 @@ pub struct Lay {
     /// The list is narrow even without the panel: rows are two-line cells, the top bar and the
     /// capture bar their short forms.
     pub narrow: bool,
-    /// The details, when open, are pushed over the list instead of beside it.
+    /// The details, when open, are a page of their own (a phone-narrow window), with Back.
     pub push: bool,
+    /// The details, when open, slide in over the list from the right (a medium window); the list
+    /// keeps its full width underneath.
+    pub overlay: bool,
     /// Beside the details (when they share the row), the list is narrow: two-line rows there too.
     pub narrow_beside: bool,
     /// The list is under the width the Agents table needs for all its columns.
@@ -128,10 +135,13 @@ pub fn decide(prev: Option<Lay>, width: i32) -> Lay {
     };
     let avail = width - rail_w(rail);
     let narrow = below(prev.map(|p| p.narrow), avail, NARROW_BELOW);
-    let push = below(prev.map(|p| p.push), avail - side_w(avail), LIST_MIN);
-    let narrow_beside = below(prev.map(|p| p.narrow_beside), avail - side_w(avail), NARROW_BELOW);
+    // As GNOME, Material and Fluent do it: beside the list when there is room, over it when there
+    // isn't, a page of its own when the window is phone-narrow.
+    let push = below(prev.map(|p| p.push), avail, PUSH_BELOW);
+    let overlay = !push && below(prev.map(|p| p.overlay), avail, OVERLAY_BELOW);
+    let narrow_beside = if push || overlay { narrow } else { below(prev.map(|p| p.narrow_beside), avail - side_w(avail), NARROW_BELOW) };
     let tight = below(prev.map(|p| p.tight), avail, TIGHT_BELOW);
-    Lay { rail, narrow, push, narrow_beside, tight }
+    Lay { rail, narrow, push, overlay, narrow_beside, tight }
 }
 
 // ---------- the slim rail sliding out ----------
@@ -578,11 +588,12 @@ mod shell {
             self.covered.set(covered);
             show(&p.main, !covered);
             if !covered {
-                let main_w = if lay.push { avail } else { avail - shown };
+                let main_w = if lay.push || lay.overlay { avail } else { avail - shown };
                 let main_min = p.main.measure(gtk::Orientation::Horizontal, -1).0;
                 at(&p.main, rail_w, main_w.max(main_min));
             }
-            let edge_w = if lay.push && shown > 0 && !covered { EDGE_W } else { 0 };
+            // A soft shadow on the list's side of the details when they lie over it.
+            let edge_w = if (lay.push || lay.overlay) && shown > 0 && !covered { EDGE_W } else { 0 };
             at(&p.edge, width - shown - edge_w, edge_w);
             if p.panel.is_visible() {
                 at(&p.panel, width - shown, shown);
@@ -1104,13 +1115,13 @@ mod tests {
     #[test]
     fn the_layout_steps_down_as_the_window_narrows() {
         // Wide: names in the rail, columns, details beside the list.
-        assert_eq!(decide(None, 1600), Lay { rail: Rail::Full, narrow: false, push: false, narrow_beside: false, tight: false });
+        assert_eq!(decide(None, 1600), Lay { rail: Rail::Full, narrow: false, push: false, overlay: false, narrow_beside: false, tight: false });
         // The usual tile: a slim rail and the details still beside the list.
-        assert_eq!(decide(None, 1075), Lay { rail: Rail::Slim, narrow: false, push: false, narrow_beside: true, tight: true });
+        assert_eq!(decide(None, 1075), Lay { rail: Rail::Slim, narrow: false, push: false, overlay: true, narrow_beside: false, tight: true });
         // Narrower: the details push over the list.
-        assert_eq!(decide(None, 900), Lay { rail: Rail::Slim, narrow: false, push: true, narrow_beside: true, tight: true });
+        assert_eq!(decide(None, 900), Lay { rail: Rail::Slim, narrow: false, push: false, overlay: true, narrow_beside: false, tight: true });
         // Narrow: no rail, two-line rows.
-        assert_eq!(decide(None, 700), Lay { rail: Rail::Hidden, narrow: true, push: true, narrow_beside: true, tight: true });
+        assert_eq!(decide(None, 700), Lay { rail: Rail::Hidden, narrow: true, push: true, overlay: false, narrow_beside: true, tight: true });
     }
 
     #[test]
@@ -1204,7 +1215,8 @@ mod tests {
         for width in (BODY_MIN..=2400).step_by(10) {
             let l = decide(None, width);
             let avail = width - rail_w(l.rail);
-            if !l.push {
+            // Beside the details (neither over the list nor a page of its own), the list keeps room.
+            if !l.push && !l.overlay {
                 assert!(avail - side_w(avail) >= LIST_MIN, "{width}");
             }
         }

@@ -292,8 +292,13 @@ pub fn render(ui: &Ui) {
     let mut last_group = "";
     for (group, a) in rows {
         if group != last_group {
+            // Each group is a box: its heading above, its rows inside, rounded top and bottom.
+            if !last_group.is_empty() {
+                vw.list.append(&box_edge(false));
+            }
             let n = rows_in.iter().filter(|g| **g == group).count();
             vw.list.append(&views::group_row(group, n, group_words(group)));
+            vw.list.append(&box_edge(true));
             last_group = group;
         }
         vw.list.append(&proc_row(ui, a, daemon, &p, &cols, full, hide));
@@ -302,11 +307,16 @@ pub fn render(ui: &Ui) {
             vw.list.append(&build(ui, a, &want, &cols, hide));
         }
     }
+    if !last_group.is_empty() {
+        vw.list.append(&box_edge(false));
+    }
     if !stale_only && !p.dead_notes.is_empty() {
         vw.list.append(&views::group_row("Notes whose process has gone", p.dead_notes.len(), None));
+        vw.list.append(&box_edge(true));
         for &pid in &p.dead_notes {
             vw.list.append(&dead_row(ui, pid, &cols, full, hide));
         }
+        vw.list.append(&box_edge(false));
     }
     views::finish(ui, View::Agents, had_focus);
     // A selected subagent whose row has gone with the redraw: its session instead.
@@ -324,6 +334,19 @@ pub fn render(ui: &Ui) {
     }
     app::tick_live(ui);
     ensure_ticking(ui);
+}
+
+/// The rounded top or bottom of a group's box: a thin row that is never selected.
+fn box_edge(top: bool) -> gtk::ListBoxRow {
+    let r = gtk::ListBoxRow::new();
+    r.set_selectable(false);
+    r.set_activatable(false);
+    r.set_focusable(false);
+    r.add_css_class("grouprow");
+    r.add_css_class("boxedge");
+    r.add_css_class(if top { "edgetop" } else { "edgebottom" });
+    r.set_child(Some(&w::hbox(0, &[])));
+    r
 }
 
 /// What a group of agent processes is, under its heading, for someone who hasn't met it before.
@@ -493,6 +516,8 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
         r.add_css_class("stale");
     }
     let row = gtk::ListBoxRow::new();
+    // A row inside its group's box (style.css: boxed lists).
+    row.add_css_class("boxed");
     row.set_widget_name(&a.pid.to_string());
     row.set_child(Some(&r));
     if a.session_id.is_some() {
@@ -540,6 +565,8 @@ fn dead_row(ui: &Ui, pid: u32, cols: &[Col], full: bool, hide: u8) -> gtk::ListB
     ];
     let r = w::row(cells(all, cols, hide), &["tr", "agentrow"]);
     let row = gtk::ListBoxRow::new();
+    // A row inside its group's box (style.css: boxed lists).
+    row.add_css_class("boxed");
     row.set_widget_name(&format!("note-{pid}"));
     row.set_child(Some(&r));
     row
@@ -896,6 +923,8 @@ fn wanted(ui: &Ui, a: &AgentProc) -> Vec<Want> {
 /// Builds one tree row: a list row of its own, selected and walked like a session's row.
 fn build(ui: &Ui, a: &AgentProc, want: &Want, cols: &[Col], hide: u8) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
+    // A row inside its group's box (style.css: boxed lists).
+    row.add_css_class("boxed");
     row.set_widget_name(&want.name);
     row.add_css_class("treerow");
     row.add_css_class(&tree_class(a.pid));

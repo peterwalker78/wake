@@ -38,7 +38,6 @@ window.wake tooltip { background-color: @float; color: @ink; border: 1px solid @
 .kbd { font-family: "JetBrains Mono", monospace; font-weight: 500; font-size: 10px; padding: 2px 5px; border: 1px solid @line2; border-radius: 4px; background-color: @panel2; color: @muted; }
 
 /* top bar */
-.top { min-height: 46px; padding: 0 14px; background-color: @panel; border-bottom: 1px solid @line; }
 .logo { font-weight: 700; font-size: 15px; letter-spacing: 3px; }
 window.wake button.cmd { background-color: @bg; border: 1px solid @line2; border-radius: 7px; padding: 6px 10px; color: @dim; font-size: 12.5px; }
 window.wake button.cmd:hover { border-color: @accent; color: @muted; }
@@ -204,7 +203,7 @@ window.wake entry.search { font-size: 14px; min-height: 38px; border-radius: 8px
 .why { color: @rose; font-size: 12px; }
 .noreadout { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; border: 1px dashed @line; border-radius: 7px; padding: 8px 9px; }
 .agentrow .cell { padding: 7px 12px; }
-.pgrp { padding: 22px 14px 8px; }
+.pgrp { padding: 22px 28px 8px; }
 
 .confirm-list { background-color: @bg; border: 1px solid @line; border-radius: 8px; padding: 8px 10px; }
 .mono { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
@@ -741,6 +740,21 @@ window.wake dropdown.notedd > button { min-width: 0; background-color: transpare
 window.wake dropdown.notedd > button:hover { border-color: @line2; }
 
 /* Agents: the page title over the table, sharing its left edge */
-.agentstitle { padding: 24px 14px 12px; }
-.agentacts { margin-right: 14px; }
+.agentstitle { padding: 26px 28px 8px; }
+.agentacts { margin-right: 24px; }
 .warnline { color: @amber; }
+
+/* Agents: each group a boxed list, like Monitor's and History's. The column heads line up with
+   the rows inside the boxes. */
+.pane.agents .thead { padding: 0 25px; margin-top: 6px; background-color: transparent; border-bottom: none; }
+list.table > row.boxed { padding: 0 24px; border-bottom: none; background-color: transparent; box-shadow: none; }
+list.table > row.boxed > box { background-color: @panel; border-left: 1px solid @line2; border-right: 1px solid @line2; border-top: 1px solid @line; }
+/* The line goes between rows: none under the box's rounded top. */
+list.table > row.boxedge.edgetop + row.boxed > box { border-top-color: transparent; }
+list.table > row.boxed:hover, list.table > row.boxed:selected { background-color: transparent; box-shadow: none; }
+list.table > row.boxed:hover > box { background-color: @row; }
+list.table > row.boxed:selected > box { background-color: @rowhi; box-shadow: inset 3px 0 @accent; }
+list.table > row.boxedge { padding: 0 24px; border-bottom: none; background-color: transparent; }
+list.table > row.boxedge > box { min-height: 6px; background-color: @panel; border-left: 1px solid @line2; border-right: 1px solid @line2; }
+list.table > row.boxedge.edgetop > box { border-top: 1px solid @line2; border-radius: 12px 12px 0 0; }
+list.table > row.boxedge.edgebottom > box { border-bottom: 1px solid @line2; border-radius: 0 0 12px 12px; }

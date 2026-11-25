@@ -16,7 +16,7 @@ It only reads. Nothing it learns about your sessions leaves your computer.
 [**Getting it**](#getting-it) ·
 [**With Slipstream**](#with-slipstream)
 
-<img src="assets/monitor.png" width="840" alt="Wake's Monitor view with made-up data: seven open sessions, each with its project, its state (waiting for you, working, idle, lost track), the Konsole tab or background it runs in, and what it is doing now or the question it is waiting on.">
+<img src="assets/monitor.png" width="840" alt="Wake's Monitor view with made-up data: a headline saying two sessions need you, a card for each with the question it is asking and a Go to button, then the two working sessions with their live traces, then earlier sessions on one line each.">
 
 </div>
 
@@ -26,23 +26,26 @@ You start an agent on something, then another, then switch projects, and an hour
 know which tab is which, which one is waiting on you, or where you'd got to in the project you put
 down yesterday. Wake reads what the agents already leave on disk and puts it in one window.
 
-- **Monitor** lists every open session: whether it is working, waiting for you, idle or gone, how
-  Wake knows that, where it runs (which Konsole tab, or in the background), and what it is doing
-  now or the question it is waiting on.
-- **Agents** lists the agent processes themselves: which PID is which task, how much memory each
-  holds, how long it has been idle, and which look stale (idle for hours with nobody attached, a
-  spare nobody used, a process whose terminal has gone). You can stop them from here; Wake names
-  the task and PID and asks first.
-- **Projects** shows where you left each project: Claude's own last recap, the next step you
-  wrote down, git loose ends in plain words (uncommitted files, branches and commits not pushed,
-  repos with no remote at all), and a pause note when you put one down on purpose.
-- **Ideas** keeps what you noticed while working (`c`, or `wake , text` in a terminal), to sort
-  into projects later. Tick a few and start an agent on them with a brief.
-- **History** searches everything you asked, every session title and every file touched, including
-  sessions Claude has since deleted: Wake keeps a summary of each.
-- **Questions** asks your own `claude`, `codex` or `gemini` a quick question without opening a
-  terminal, in threads you can come back to. They may only search and read; nothing that changes
-  files is allowed.
+- **Monitor** starts with what needs you: each session waiting on a question or a decision is a
+  card with the question in full and the way there under it. Then the sessions at work, each with
+  its live trace and what you last asked, and everything else on one quiet line each.
+- **Projects** shows where you left each project, a card each: the next step you wrote down (or
+  Claude's last recap), the sessions open in it, commits waiting to be pulled, and git loose ends
+  in plain words (uncommitted files, branches and commits not pushed, repos with no remote).
+- **Ideas** keeps what you noticed while working (`c`, the `+` button, or `wake , text` in a
+  terminal), as notes to sort into projects. Tick a few and start an agent on them with a brief.
+- **History** lists every session by the day you last used it, and searches everything you asked,
+  every session title and every file touched, including sessions Claude has since deleted: Wake
+  keeps a summary of each.
+- **Agents** lists the agent processes themselves, grouped by what you might do about them: the
+  ones that look stale first (idle for hours with nobody attached, a spare nobody used), then
+  those working, waiting for you and idle. Each says which PID is which task, how much memory it
+  holds and how long it has been idle; a working one carries its readout. Claude's own background
+  processes are folded away until you ask for them. You can stop an agent from here; Wake names
+  the task and asks first.
+- **Ask** (the speech bubble) asks your own `claude`, `codex` or `gemini` a quick question
+  without opening a terminal, in threads you can come back to. They may only search and read;
+  nothing that changes files is allowed.
 - **Peek**: hold `Space` on a session to see it without leaving Wake, and let go to come back.
   On Slipstream the desktop slides to the agent's window; on KDE Plasma a small KWin script
   switches to it; anywhere else, and for background sessions, Wake shows the agent's terminal text.
@@ -55,20 +58,27 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
   build output and caches that come back by themselves, agent worktrees that are merged, and what
   to leave alone.
 
-The side panel (`Enter`) opens a session or a project in full: the prompts you sent, Claude's
-recap, files changed, subagents and what each handed back.
+The details (`Enter`, or a double click) open a session or a project in full: the question it is
+asking and the way there first, then the prompts you sent, Claude's recap, files changed, and
+subagents and what each handed back, each on a page of its own. They sit beside the list in a wide
+window, slide over it in a narrower one, and take its place in a narrow one, with Back in the title
+bar.
 
 <div align="center">
-<img src="assets/agents.png" width="840" alt="Wake's Agents view with made-up data: agent processes grouped as Claude's daemon, sessions, spares and strays, each with a small oscilloscope trace, its PID, task and project, state, memory and why it looks stale, with Stop buttons on the two stale ones.">
+<img src="assets/projects.png" width="840" alt="Wake's Projects view with made-up data: a card for each of five projects, with its name and colour, its next step in large type, its open sessions, commits to pull, and git loose ends.">
+</div>
+
+<div align="center">
+<img src="assets/agents.png" width="840" alt="Wake's Agents view with made-up data: agents are using 4.0 GB, two look stale; boxes for the stale ones (with Stop buttons), the working ones (each with its readout), and the one waiting for you, each row with its PID, task and project, state, memory and where it runs.">
 </div>
 
 ## Keys
 
 | Key | |
 |---|---|
-| `1` to `6` | Monitor, Agents, Projects, Ideas, History, Questions |
-| `g` or `Ctrl+K` | go to a session by name; `→` looks inside at its subagents |
-| `Enter` | details in the side panel |
+| `1` to `6` | Monitor, Agents, Projects, Ideas, History, Ask |
+| `g` or `Ctrl+K` | find a session by name; `→` looks inside at its subagents |
+| `Enter` | the details; `Esc` goes back a page, then closes them |
 | hold `Space` | peek at the session; let go to come back, `Enter` to stay |
 | `o` | go there |
 | `c` | capture an idea |
@@ -117,7 +127,7 @@ Everything else it does is something you ask for, and it asks again first:
 
 ## Getting it
 
-Wake is built from source for now. It needs GTK 4.14 or newer and Pango 1.56 or newer: Fedora 43
+Wake is in beta, and is built from source for now. It needs GTK 4.14 or newer and Pango 1.56 or newer: Fedora 43
 and later, Debian 13 and Ubuntu 26.04 have them. It also needs Rust through
 [rustup](https://rustup.rs), because `rust-toolchain.toml` pins the version and a distribution's
 own Rust ignores that file.
@@ -146,7 +156,7 @@ wake              # the real thing: it finds git folders under ~/Projects; track
 
 **Agents.** Claude Code is what Wake knows best: live state, background sessions, subagents,
 recaps and questions it is waiting on. Codex sessions are read from their transcripts, without
-live state. Gemini CLI processes appear in Agents, and Questions can ask any of the three that
+live state. Gemini CLI processes appear in Agents, and Ask can use any of the three that
 is installed.
 
 **Desktops.** Go there and Start an agent use Konsole. Switching to a session's tab needs
@@ -164,9 +174,9 @@ Wake works on any desktop, and goes further on
 
 - **Peek and go there** use Slipstream's Look request: the desktop flies to the agent's
   workspace and rings its window, while the keyboard stays with Wake.
-- **The Agents view** draws each agent's trace the way Slipstream's faded desktop does, from the
-  notes [agent-notify](https://github.com/peterwalker78/agent-notify) leaves, in your Slipstream
-  colours.
+- **Monitor and Agents** draw each working agent's trace the way Slipstream's faded desktop does,
+  from the notes [agent-notify](https://github.com/peterwalker78/agent-notify) leaves, in your
+  Slipstream colours: in Agents, the whole readout, smaller.
 - **A card for the plugin panel** (`plugin/`) shows how many sessions are waiting and working,
   with a button to the one waiting longest. Its README says how to install it.
 

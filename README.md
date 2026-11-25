@@ -32,7 +32,7 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
 - **Projects** shows where you left each project, a card each: the next step you wrote down (or
   Claude's last recap), the sessions open in it, commits waiting to be pulled, and git loose ends
   in plain words (uncommitted files, branches and commits not pushed, repos with no remote).
-- **Ideas** keeps what you noticed while working (`c`, the `+` button, or `wake , text` in a
+- **Ideas** keeps what you noticed while working (`c`, the New idea button, or `wake , text` in a
   terminal), as notes to sort into projects. Tick a few and start an agent on them with a brief.
 - **History** lists every session by the day you last used it, and searches everything you asked,
   every session title and every file touched, including sessions Claude has since deleted: Wake
@@ -81,7 +81,7 @@ bar.
 | `Enter` | the details; `Esc` goes back a page, then closes them |
 | hold `Space` | peek at the session; let go to come back, `Enter` to stay |
 | `o` | go there |
-| `c` or `+` | New idea: keep a thought, in the project you choose |
+| `c` | New idea: keep a thought, in the project you choose (also the New idea button) |
 | `p` | pause the project, with a note for next time |
 | `a` | Ask a question |
 | `/` | search everything you asked |

@@ -314,9 +314,8 @@ pub struct Widgets {
     /// Rail, main column and side panel, laid out for the width (layout.rs).
     pub body: crate::layout::Shell,
     pub rail: gtk::Box,
-    /// Find: the search box and its icon form.
-    pub cmd_full: gtk::Widget,
-    pub cmd_icon: gtk::Button,
+    /// Find and New idea, the joined pair at the start of the title bar.
+    pub pair: gtk::Box,
     /// Back, at the start of the title bar, while the details are a page of their own.
     pub back_btn: gtk::Button,
     pub counts: crate::layout::Squeeze,
@@ -521,39 +520,27 @@ fn build(app: &gtk::Application, opts: Opts) {
     back_btn.set_valign(gtk::Align::Center);
     back_btn.set_visible(false);
     start.append(&back_btn);
-    // Find: a search field where there is room, its icon where there isn't. Both open the switcher.
-    let cmd = gtk::Button::new();
-    cmd.add_css_class("cmd");
-    let cmd_in = w::hbox(8, &[]);
-    cmd_in.append(&w::icon(w::icons::FIND));
-    let cmd_label = w::label("Find a session", &[]);
-    cmd_label.set_hexpand(true);
-    cmd_label.set_xalign(0.0);
-    cmd_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    cmd_in.append(&cmd_label);
-    cmd.set_child(Some(&cmd_in));
-    cmd.set_hexpand(true);
-    cmd.set_tooltip_text(Some("Find a session (Ctrl+K)"));
-    cmd.update_property(&[gtk::accessible::Property::Label("Find a session")]);
-    let cmd_holder = w::hbox(0, &[]);
-    cmd_holder.append(&cmd);
-    let cmd_full = w::Fit::new(&cmd_holder, 150, Some(240)).upcast();
-    start.append(&cmd_full);
-    let cmd_icon = gtk::Button::new();
-    cmd_icon.set_child(Some(&w::icon(w::icons::FIND)));
-    cmd_icon.add_css_class("flat");
-    cmd_icon.set_tooltip_text(Some("Find a session (Ctrl+K)"));
-    cmd_icon.update_property(&[gtk::accessible::Property::Label("Find a session")]);
-    cmd_icon.set_valign(gtk::Align::Center);
-    cmd_icon.set_visible(false);
-    start.append(&cmd_icon);
-    let add_btn = gtk::Button::new();
-    add_btn.set_child(Some(&w::icon(w::icons::ADD)));
-    add_btn.add_css_class("flat");
-    add_btn.set_tooltip_text(Some("New idea (c)"));
-    add_btn.update_property(&[gtk::accessible::Property::Label("New idea")]);
-    add_btn.set_valign(gtk::Align::Center);
-    start.append(&add_btn);
+    // Find and New idea: a pair of buttons, joined, opening the two tabs of the one pop-up. Short of
+    // the full width their names make way and the icons stay.
+    let pair_btn = |icon: &[&str], name: &str, tip: &str| {
+        let b = gtk::Button::new();
+        b.add_css_class("pairbtn");
+        let inner = w::hbox(7, &[]);
+        inner.append(&w::icon(icon));
+        inner.append(&w::label(name, &["pairname"]));
+        b.set_child(Some(&inner));
+        b.set_tooltip_text(Some(tip));
+        b.update_property(&[gtk::accessible::Property::Label(name)]);
+        b.set_valign(gtk::Align::Center);
+        b
+    };
+    let cmd = pair_btn(w::icons::FIND, "Find", "Find a session (Ctrl+K)");
+    let add_btn = pair_btn(w::icons::ADD, "New idea", "New idea (c)");
+    let pair = w::hbox(0, &["pair"]);
+    pair.set_valign(gtk::Align::Center);
+    pair.append(&cmd);
+    pair.append(&add_btn);
+    start.append(&pair);
     top.append(&start);
     let gap_l = w::spacer();
     top.append(&gap_l);
@@ -708,8 +695,7 @@ fn build(app: &gtk::Application, opts: Opts) {
             column: column.clone(),
             body: body.clone(),
             rail: rail.clone(),
-            cmd_full: cmd_full.clone(),
-            cmd_icon: cmd_icon.clone(),
+            pair: pair.clone(),
             counts,
             tabs,
             tabs_bottom,
@@ -793,10 +779,6 @@ fn build(app: &gtk::Application, opts: Opts) {
     {
         let ui = ui.clone();
         cmd.connect_clicked(move |_| switcher::open(&ui));
-    }
-    {
-        let ui = ui.clone();
-        cmd_icon.connect_clicked(move |_| switcher::open(&ui));
     }
     {
         let ui2 = ui.clone();
@@ -1780,13 +1762,18 @@ fn relayout(ui: &Ui, lay: crate::layout::Lay) {
         }
         c = x.next_sibling();
     }
-    // The top bar like a phone's: ☰ for the rail, ⌕ for the search box.
     // Back shows while the details fill the window.
     ui.w.back_btn.set_visible(lay.push && ui.st.borrow().drawer.is_some());
-    // Short of the full width, Find is its search icon, so the view switcher keeps its room.
+    // Short of the full width, Find and New idea keep their icons and their names make way, so the
+    // view switcher keeps its room.
     let short_top = lay.rail != Rail::Full;
-    ui.w.cmd_full.set_visible(!short_top);
-    ui.w.cmd_icon.set_visible(short_top);
+    let mut c = ui.w.pair.first_child();
+    while let Some(b) = c {
+        if let Some(name) = b.first_child().and_then(|i| i.last_child()) {
+            name.set_visible(!short_top);
+        }
+        c = b.next_sibling();
+    }
     crate::questions::relayout(lay.narrow);
     // Pushed details that are open when the window narrows: the keyboard follows them.
     let pushed_now = lay.push && !old.push && ui.st.borrow().drawer.is_some();

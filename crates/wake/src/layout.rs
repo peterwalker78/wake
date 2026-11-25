@@ -95,7 +95,14 @@ fn below(cur: Option<bool>, v: i32, t: i32) -> bool {
     }
 }
 
+/// Whether the rail takes a place in the row. It doesn't: the views are tabs in the top bar, and
+/// the rail is only the drawer behind ☰ in a phone-narrow window.
+const RAIL_IN_ROW: bool = false;
+
 pub fn rail_w(rail: Rail) -> i32 {
+    if !RAIL_IN_ROW {
+        return 0;
+    }
     match rail {
         Rail::Full => RAIL_W,
         Rail::Slim => SLIM_W,
@@ -550,7 +557,7 @@ mod shell {
             let at = |w: &gtk::Widget, x: i32, wd: i32| w.size_allocate(&gtk::Allocation::new(x, 0, wd.max(0), height), -1);
             let rail_min = p.rail.measure(gtk::Orientation::Horizontal, -1).0;
             // The rail: in the row, or a drawer over everything, or out of sight.
-            let drawer = lay.rail == Rail::Hidden;
+            let drawer = !RAIL_IN_ROW || lay.rail == Rail::Hidden;
             let rail_open = drawer && self.rail_open.get();
             show(&p.rail, !drawer || rail_open);
             show(&p.scrim, rail_open);
@@ -587,7 +594,7 @@ mod shell {
                 at(&p.rail, 0, rail_min);
             }
             // The slim rail's full form, over the content from the left edge (nothing moves under it).
-            let peek = lay.rail == Rail::Slim && (self.peek_on.get() || self.peek_t.get() > 0.0);
+            let peek = RAIL_IN_ROW && lay.rail == Rail::Slim && (self.peek_on.get() || self.peek_t.get() > 0.0);
             show(&p.peek, peek);
             show(&p.peek_edge, peek);
             if peek {
@@ -816,7 +823,8 @@ mod squeeze {
             let mut order: Vec<usize> = (0..kids.len()).filter(|i| kids[*i].1 != 0).collect();
             order.sort_by_key(|i| (kids[*i].1, *i));
             for i in order {
-                let need = kids[i].3 + sp;
+                // A gap before it only when something is already shown.
+                let need = kids[i].3 + if on.iter().any(|x| *x) { sp } else { 0 };
                 if used + need <= width {
                     used += need;
                     on[i] = true;

@@ -293,41 +293,75 @@ pub fn render_top(ui: &Ui) {
     if let Some(e) = &err {
         ui.w.banner.set_text(&format!("Wake couldn't read everything: {e}"));
     }
-    // The only "needs you" summary: waiting, working, stale agents and what they hold, ideas.
+    // The three places as tabs, and the tools at the right, each saying the one thing that
+    // matters about it: what agents hold and how many look stale, ideas to sort, answers.
     let lay = ui.st.borrow().lay;
-    let short = lay.narrow;
-    // Narrowest, like a phone's app bar: one badge that sums them up.
     let one = lay.rail == crate::layout::Rail::Hidden;
-    let sig = format!("{}/{}/{ideas}/{:?}/{short}{one}", c.working, c.waiting, stale.map(|(n, b)| (n, b / (100 << 20))));
+    let short = lay.rail == crate::layout::Rail::Slim;
+    let (view, mem) = {
+        let st = ui.st.borrow();
+        (st.view, st.procs.as_ref().map(|p| p.total_rss_bytes))
+    };
+    let qbadge = crate::questions::rail_badge();
+    let sig = format!("{}/{}/{ideas}/{:?}/{one}/{view:?}/{:?}/{qbadge:?}/{short}", c.working, c.waiting, stale.map(|(n, b)| (n, b / (100 << 20))), mem.map(|b| b / (100 << 20)));
     if ui.st.borrow().top_drawn == sig {
         return;
     }
     ui.st.borrow_mut().top_drawn = sig;
     ui.w.counts.clear();
-    let stat = |n: u32, word: &str, class: &str, tip: &str, act: Box<dyn Fn()>| {
+    w::clear(&ui.w.tabs);
+    let go = |v: View| {
+        let ui = ui.clone();
+        move || app::set_view(&ui, v)
+    };
+    for v in [View::Monitor, View::Projects, View::History] {
         let b = gtk::Button::new();
-        b.add_css_class("stat");
-        b.add_css_class(if n > 0 { class } else { "zero" });
+        b.add_css_class("tab");
+        if view == v {
+            b.add_css_class("on");
+        }
         let inner = w::hbox(7, &[]);
-        inner.append(&w::dot("d"));
-        inner.append(&w::label(&n.to_string(), &["n"]));
-        inner.append(&w::label(word, &[]));
+        inner.append(&w::label(v.name(), &[]));
+        if v == View::Monitor && c.waiting > 0 {
+            inner.append(&w::label(&c.waiting.to_string(), &["tabn", "amber"]));
+        } else if v == View::Monitor && c.working > 0 {
+            inner.append(&w::dot("working"));
+        }
         b.set_child(Some(&inner));
-        b.set_tooltip_text(Some(tip));
-        b.connect_clicked(move |_| act());
+        let tip = match v {
+            View::Monitor if c.waiting > 0 => format!("Monitor (key 1): {} waiting for you, {} working", c.waiting, c.working),
+            View::Monitor => format!("Monitor (key 1): {} working", c.working),
+            _ => format!("{} (key {})", v.name(), v.key()),
+        };
+        b.set_tooltip_text(Some(&tip));
+        let f = go(v);
+        b.connect_clicked(move |_| f());
+        ui.w.tabs.append(&b);
+    }
+    let tool = |v: View, name: &str, words: &str, class: &str, tip: String| {
+        let icon = name;
+        let b = gtk::Button::new();
+        b.add_css_class("tool");
+        if !class.is_empty() {
+            b.add_css_class(class);
+        }
+        if view == v {
+            b.add_css_class("on");
+        }
+        let inner = w::hbox(7, &[]);
+        inner.append(&w::label(icon, &["tname"]));
+        if !words.is_empty() {
+            inner.append(&w::label(words, &["tnum"]));
+        }
+        b.set_child(Some(&inner));
+        b.set_tooltip_text(Some(&tip));
+        b.update_property(&[gtk::accessible::Property::Label(v.name())]);
+        let f = go(v);
+        b.connect_clicked(move |_| f());
         b
     };
-    let set_filter = |f: Filter| {
-        let ui = ui.clone();
-        Box::new(move || {
-            ui.st.borrow_mut().filter = f;
-            app::set_view(&ui, View::Monitor);
-            app::render_all(&ui);
-        }) as Box<dyn Fn()>
-    };
-    // Only what is there: a zero says nothing, and ideas already have their count in the rail.
-    let _ = ideas;
     if one {
+        // Narrowest, like a phone's app bar: one badge that sums them up; ☰ has the views.
         let n_stale = stale.map_or(0, |(n, _)| n);
         let mut words = Vec::new();
         if c.waiting > 0 {
@@ -339,52 +373,42 @@ pub fn render_top(ui: &Ui) {
         if n_stale > 0 {
             words.push(format!("{n_stale} stale"));
         }
-        let (n, class) = if c.waiting > 0 {
-            (c.waiting, "wait")
-        } else if c.working > 0 {
-            (c.working, "work")
-        } else {
-            (n_stale, "stalec")
-        };
         if words.is_empty() {
             ui.w.counts.add(&w::label("quiet", &["quiet-top"]), 1);
         } else {
-            let tip = format!("{}. Click for the sessions waiting for you.", words.join(", "));
-            let b = stat(n, "", class, &tip, set_filter(if c.waiting > 0 { Filter::Waiting } else { Filter::Live }));
+            let (n, class) = if c.waiting > 0 { (c.waiting, "wait") } else if c.working > 0 { (c.working, "work") } else { (n_stale, "stalec") };
+            let b = gtk::Button::new();
+            b.add_css_class("stat");
+            b.add_css_class(class);
+            let inner = w::hbox(7, &[]);
+            inner.append(&w::dot("d"));
+            inner.append(&w::label(&n.to_string(), &["n"]));
+            b.set_child(Some(&inner));
+            b.set_tooltip_text(Some(&format!("{}.", words.join(", "))));
             b.update_property(&[gtk::accessible::Property::Label(&words.join(", "))]);
+            let f = go(View::Monitor);
+            b.connect_clicked(move |_| f());
             ui.w.counts.add(&b, 0);
         }
         return;
     }
-    if c.waiting > 0 {
-        // In a narrow window the words shorten; what still doesn't fit drops out from the end.
-        let word = if short { "waiting" } else { "waiting for you" };
-        ui.w.counts.add(&stat(c.waiting, word, "wait", "Show the sessions waiting for you", set_filter(Filter::Waiting)), 1);
-    }
-    if c.working > 0 {
-        ui.w.counts.add(&stat(c.working, "working", "work", "Show the sessions at work", set_filter(Filter::Working)), 2);
-    }
-    if let Some((n, bytes)) = stale.filter(|(n, _)| *n > 0) {
-        let ui2 = ui.clone();
-        ui.w.counts.add(
-            &stat(
-                n,
-                "stale",
-                "stalec",
-                &format!("Agents that look stale; they hold {}", fmt::bytes(bytes)),
-                Box::new(move || {
-                    ui2.st.borrow_mut().stale_only = true;
-                    ui2.st.borrow_mut().drawn.remove(&View::Agents);
-                    app::set_view(&ui2, View::Agents);
-                    render_chips(&ui2);
-                }),
-            ),
-            3,
-        );
-    }
-    if c.waiting == 0 && c.working == 0 && stale.is_none_or(|(n, _)| n == 0) {
-        ui.w.counts.add(&w::label("all quiet", &["quiet-top"]), 1);
-    }
+    // Agents: what they hold, and how many look stale (amber).
+    let (agent_words, agent_class, agent_tip) = match (mem, stale.filter(|(n, _)| *n > 0)) {
+        (_, Some((n, b))) => (if short { format!("{n} stale") } else { format!("{n} stale · {}", fmt::bytes(b)) }, "warn", format!("Agents (key 2): {n} look stale and hold {}", fmt::bytes(b))),
+        (Some(m), None) => (fmt::bytes(m), "", format!("Agents (key 2): agents are using {}", fmt::bytes(m))),
+        (None, None) => (String::new(), "", "Agents (key 2)".to_string()),
+    };
+    ui.w.counts.add(&tool(View::Agents, "Agents", &agent_words, agent_class, agent_tip), 1);
+    let idea_words = if ideas > 0 { ideas.to_string() } else { String::new() };
+    ui.w.counts.add(&tool(View::Ideas, "Ideas", &idea_words, "ideas", format!("Ideas (key 4): {}", fmt::pl(ideas, "idea to sort", "ideas to sort"))), 2);
+    let (q_words, q_class, q_tip) = match qbadge {
+        Some((_, true)) => ("answering".to_string(), "live", "Questions (key 6): answering now".to_string()),
+        Some((n, false)) if n > 0 => (format!("{n} new"), "new", format!("Questions (key 6): {}", fmt::pl(n, "new answer", "new answers"))),
+        _ => (String::new(), "", "Questions (key 6): ask your own AI, read-only".to_string()),
+    };
+    ui.w.counts.add(&tool(View::Questions, "Ask", if short { "" } else { &q_words }, q_class, q_tip), 3);
+    let gear = tool(View::Settings, "Settings", "", "", "Settings (,)".to_string());
+    ui.w.counts.add(&gear, 4);
 }
 
 pub fn render_rail(ui: &Ui) {
@@ -744,8 +768,14 @@ fn chips_sig(st: &AppState) -> String {
 }
 
 pub fn render_chips(ui: &Ui) {
-    // Settings has its own title, in its column.
-    ui.w.chips.set_visible(ui.st.borrow().view != View::Settings);
+    // Settings has its own title, in its column; Monitor's headline says what it is, and its
+    // board needs no filters (the row comes back to show a project filter, to clear it).
+    let hide = {
+        let st = ui.st.borrow();
+        // History's search box says what it searches.
+        st.view == View::Settings || st.view == View::History || (st.view == View::Monitor && st.proj_filter.is_none())
+    };
+    ui.w.chips.set_visible(!hide);
     let sig = chips_sig(&ui.st.borrow());
     if ui.st.borrow().chips_drawn == sig {
         return;
@@ -889,7 +919,7 @@ pub fn render_chips(ui: &Ui) {
             }
         }
         View::Projects => {
-            chips.add_next(&w::label("Projects", &["ttl"]));
+            // The tab names the place; the row keeps its tools.
             let removed = ov.projects.iter().filter(|p| p.removed).count();
             if removed > 0 {
                 let ui = ui.clone();
@@ -1103,20 +1133,6 @@ pub fn list_row(key: &str, child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
 
 pub type Col = (&'static str, i32, bool, bool);
 
-/// The session table's columns: what it is and where, on two lines each. With the side panel
-/// open, State · where makes way so the question stays readable beside the panel (the state is
-/// then a dot by the name).
-fn session_cols(now: &'static str, compact: bool) -> Vec<Col> {
-    // With the panel open, State · where narrows to the state in a word: the panel says where.
-    let state: Col = if compact { ("State", 84, false, false) } else { ("State · where", 150, false, false) };
-    vec![("Project · session", 230, false, false), state, (now, 240, true, false), ("Last", 76, false, true)]
-}
-
-/// Which of the session columns sort, lined up with `session_cols`.
-fn session_keys(_compact: bool) -> Vec<Option<&'static str>> {
-    vec![Some("project"), Some("state"), None, Some("last")]
-}
-
 /// The state in one short word, for a narrow column: "waiting", "working", "idle".
 pub fn short_state(s: State) -> &'static str {
     match s {
@@ -1126,163 +1142,6 @@ pub fn short_state(s: State) -> &'static str {
         State::Ended => "ended",
         State::Unknown => "lost track",
     }
-}
-
-/// One session as a table row; `now` is the "Now" cell. In a narrow list, a two-line cell.
-pub fn session_row(ui: &Ui, view: View, s: &SessionSummary, now: gtk::Widget, compact: bool) -> gtk::ListBoxRow {
-    if app::cards(&ui.st.borrow()) {
-        return session_card(ui, view, s, now);
-    }
-    let cols = session_cols("", compact);
-    let pj = w::vbox(1, &["pj"]);
-    let top = w::hbox(7, &[]);
-    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
-        top.append(&tag);
-    }
-    top.append(&w::clip(&crate::disk::project_words(ui, s), &["pname"])); // disk.rs hook: "probably X"
-    if view == View::Monitor
-        && let Some(m) = crate::behind::pill(ui, s.project.as_deref())
-    {
-        top.append(&m);
-    }
-    pj.append(&top);
-    let line = w::hbox(6, &[]);
-    let agent = match s.agent {
-        Agent::Claude => "claude",
-        Agent::Codex => "codex",
-        Agent::Gemini => "gemini",
-    };
-    // Most sessions are Claude's: name the agent only when it is another one.
-    if s.agent != Agent::Claude {
-        line.append(&w::label(agent, &["ag", agent]));
-    }
-    line.append(&w::clip(&s.title, &["title"]));
-    if s.deleted_by_claude {
-        let k = w::label("· kept by Wake", &["kept-by"]);
-        k.set_tooltip_text(Some("Claude deleted its copy; Wake kept this summary"));
-        line.append(&k);
-    }
-    pj.append(&line);
-    let mut cells: Vec<(gtk::Widget, i32, bool)> = vec![(pj.upcast(), cols[0].1, false)];
-    if compact {
-        let (text, ..) = app::loc_for(ui, s);
-        let (class, word) = w::state_word(s.state);
-        let both = w::hbox(6, &["state", class]);
-        both.append(&w::dot(class));
-        let l = w::clip(short_state(s.state), &["loc", "plain"]);
-        l.set_tooltip_text(Some(&format!("{word} · {text}")));
-        both.append(&l);
-        cells.push((both.upcast(), cols[1].1, false));
-    } else {
-        // How Wake knows is in the badge's tooltip, kept current in place.
-        let state = w::state_badge(s.state);
-        state.set_tooltip_text(Some(&s.evidence));
-        let id = s.id.clone();
-        live_tip(ui, view, &state, move |st| session_in(st, &id).map(|s| s.evidence.clone()));
-        let both = w::vbox(3, &[]);
-        both.append(&state);
-        both.append(&loc_cell(ui, s));
-        cells.push((both.upcast(), cols[1].1, false));
-    }
-    let last = w::label(&fmt::ago(s.last_at.as_deref()), &["num"]);
-    last.set_xalign(1.0);
-    last.set_hexpand(true);
-    let id = s.id.clone();
-    live_text(ui, view, &last, move |st| session_in(st, &id).map(|s| fmt::ago(s.last_at.as_deref())));
-    let n = cols.len();
-    cells.push((now, cols[n - 2].1, true));
-    cells.push((last.upcast(), cols[n - 1].1, false));
-    let r = w::row(cells, &["tr"]);
-    list_row(&s.id, &r)
-}
-
-/// A session as a phone's list shows it: the state dot, project and age on the first line, the
-/// title and where it is on the second, then what it is doing now.
-fn session_card(ui: &Ui, view: View, s: &SessionSummary, now: gtk::Widget) -> gtk::ListBoxRow {
-    let card = w::vbox(3, &["pj", "card"]);
-    let top = w::hbox(7, &[]);
-    let (class, word) = w::state_word(s.state);
-    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
-        top.append(&tag);
-    }
-    top.append(&w::clip(&crate::disk::project_words(ui, s), &["pname"]));
-    if view == View::Monitor
-        && let Some(m) = crate::behind::pill(ui, s.project.as_deref())
-    {
-        top.append(&m);
-    }
-    let last = w::label(&fmt::ago(s.last_at.as_deref()), &["num"]);
-    let id = s.id.clone();
-    live_text(ui, view, &last, move |st| session_in(st, &id).map(|s| fmt::ago(s.last_at.as_deref())));
-    top.append(&last);
-    card.append(&top);
-    let line = w::hbox(8, &[]);
-    line.append(&w::clip(&s.title, &["title"]));
-    let (text, ..) = app::loc_for(ui, s);
-    let l = w::label(short_state(s.state), &["loc", "plain", "state", class]);
-    l.set_tooltip_text(Some(&format!("{word} · {text}")));
-    line.append(&l);
-    card.append(&line);
-    now.set_hexpand(true);
-    w::shrinkable(&now);
-    card.append(&now);
-    let r = w::hbox(0, &["tr", "cardrow"]);
-    card.set_hexpand(true);
-    r.append(&card);
-    list_row(&s.id, &r)
-}
-
-/// The table's header, or in a narrow list (two-line rows, no columns) a "Sort ▾" menu with the
-/// same orders.
-pub fn table_head(ui: &Ui, view: View, cols: &[Col], keys: &[Option<&'static str>]) -> gtk::Widget {
-    if !app::cards(&ui.st.borrow()) {
-        return sort_head(ui, view, cols, keys).upcast();
-    }
-    let cur = prefs::sort_of(view);
-    let b = w::hbox(8, &["thead", "cardhead"]);
-    let now = match &cur {
-        Some((k, rev)) => {
-            let name = cols.iter().zip(keys).find(|(_, x)| x.as_deref() == Some(k.as_str())).map_or(k.clone(), |(c, _)| c.0.split(" · ").next().unwrap_or(c.0).to_lowercase());
-            format!("BY {}, {}", name.to_uppercase(), sort::words(k, *rev).to_uppercase())
-        }
-        None => "WAKE'S ORDER".into(),
-    };
-    let l = w::clip(&now, &["th"]);
-    b.append(&l);
-    let menu = w::vbox(2, &["sortmenu"]);
-    let pop = gtk::Popover::new();
-    let add = |label: String, next: Option<(String, bool)>, on: bool| {
-        let item = gtk::Button::with_label(&label);
-        item.add_css_class("menuitem");
-        if on {
-            item.add_css_class("on");
-        }
-        let (ui, pop) = (ui.clone(), pop.clone());
-        item.connect_clicked(move |_| {
-            pop.popdown();
-            prefs::set_sort(&ui, view, &next);
-            ui.st.borrow_mut().drawn.remove(&view);
-            render_view(&ui);
-        });
-        menu.append(&item);
-    };
-    add("Wake's order".into(), None, cur.is_none());
-    for ((title, ..), key) in cols.iter().zip(keys) {
-        let Some(key) = key else { continue };
-        let name = title.split(" · ").next().unwrap_or(title);
-        for rev in [false, true] {
-            let on = cur.as_ref().is_some_and(|(k, r)| k == key && *r == rev);
-            add(format!("{name}: {}", sort::words(key, rev)), Some((key.to_string(), rev)), on);
-        }
-    }
-    pop.set_child(Some(&menu));
-    let mb = gtk::MenuButton::new();
-    mb.set_label("Sort");
-    mb.add_css_class("sortbtn");
-    mb.set_popover(Some(&pop));
-    mb.set_tooltip_text(Some("Change the order"));
-    b.append(&mb);
-    b.upcast()
 }
 
 fn loc_cell(ui: &Ui, s: &SessionSummary) -> gtk::Widget {
@@ -1545,8 +1404,13 @@ fn section_row(title: &str, n: usize, class: &str) -> gtk::ListBoxRow {
 
 /// The project and session on one line: the project's colour, its name, the session's title.
 fn who_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
+    who_line_tagged(ui, s, true)
+}
+
+/// `who_line`, with or without the project's colour dot (the timeline has its own).
+fn who_line_tagged(ui: &Ui, s: &SessionSummary, tag: bool) -> gtk::Box {
     let top = w::hbox(8, &[]);
-    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
+    if tag && let Some(tag) = project_tag(ui, s.project.as_deref()) {
         top.append(&tag);
     }
     let name = w::label(&crate::disk::project_words(ui, s), &["pname"]);
@@ -1718,19 +1582,6 @@ pub fn git_words(p: &ProjectSummary) -> String {
     }
 }
 
-/// The projects table's columns and which of them sort; "Open" only while some project has a
-/// session open.
-fn project_cols(compact: bool, any_open: bool) -> (Vec<Col>, Vec<Option<&'static str>>) {
-    let all: [(Col, Option<&'static str>); 5] = [
-        (("Project", 220, false, false), Some("project")),
-        (("Next step", 220, true, false), None),
-        (("Sessions", 130, false, false), Some("open")),
-        (("Loose ends in git", 230, false, false), Some("git")),
-        (("Last touched", 96, false, true), Some("last")),
-    ];
-    all.into_iter().enumerate().filter(|(i, _)| !(compact && matches!(i, 2 | 3)) && (any_open || *i != 2)).map(|(_, c)| c).unzip()
-}
-
 fn projects(ui: &Ui) {
     let (list, adding, compact) = {
         let st = ui.st.borrow();
@@ -1816,93 +1667,164 @@ fn projects(ui: &Ui) {
         vw.empty.append(&w::empty("No projects yet.", "Wake finds git folders under ~/Projects and the folders your sessions ran in. Track any other folder with the button above."));
         return;
     }
-    let any_open = list.iter().any(|p| p.live.waiting + p.live.working + p.live.idle > 0);
-    let (cols, keys) = project_cols(compact, any_open);
-    vw.head.append(&table_head(ui, View::Projects, &cols, &keys));
-    let cards = app::cards(&ui.st.borrow());
+    // A grid of cards, one per project, in its colour: the next step first, then what is open and
+    // what is loose in git. Arrows, Enter, p and the panel work on it as on any list.
+    let grid = card_grid(ui, "pgrid", 4);
     for p in &list {
-        let pj = w::vbox(1, &["pj"]);
-        let line = w::hbox(7, &[]);
-        line.append(&project_dot(p));
-        line.append(&w::clip(&p.name, &["pname"]));
-        if let Some(pause) = &p.paused {
-            let pill = w::label(&format!("paused {}", fmt::short_when(Some(&pause.at))), &["pill", "paused"]);
-            pill.set_tooltip_text(Some(&pause.note));
-            line.append(&pill);
-        }
-        pj.append(&line);
-        let sub = if p.desc.is_empty() { p.roots.first().map(|r| fmt::folder_hint(r, &p.name)).unwrap_or_default() } else { p.desc.clone() };
-        if let Some(l) = crate::behind::row_line(ui, &p.id) {
-            pj.append(&l);
-        } else if !sub.is_empty() {
-            pj.append(&w::clip(&sub, &["desc"]));
-        }
-        let next: gtk::Widget = if p.removed {
-            let ui = ui.clone();
-            let id = p.id.clone();
-            w::button("Track again", None, &["sm"], move || restore_project(&ui, &id)).upcast()
-        } else if !p.next.is_empty() {
-            w::clip(&p.next, &["happ"]).upcast()
-        } else if let Some(sum) = p.last_summary.as_deref().map(fmt::recap).filter(|s| !s.is_empty()) {
-            let l = w::clip(&sum, &["happ"]);
-            l.set_markup(&format!("{} {}", dim("last time:"), w::esc(&fmt::clip(&sum, 300))));
-            l.upcast()
-        } else {
-            w::label("", &["happ"]).upcast()
-        };
-        if cards {
-            // Two lines, as a phone's list: the name and its age, then the next step (or the line
-            // under the name when there is none).
-            let last = w::label(&fmt::ago(p.last_at.as_deref()), &["num"]);
-            let id = p.id.clone();
-            live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
-            line.append(&last);
-            if !p.next.is_empty() || p.removed {
-                w::shrinkable(&next);
-                pj.append(&next);
-            }
-            pj.set_hexpand(true);
-            let r = w::hbox(0, &["tr", "cardrow"]);
-            pj.add_css_class("card");
-            r.append(&pj);
-            if p.removed {
-                r.add_css_class("gone");
-            }
-            vw.list.append(&list_row(&p.id, &r));
-            continue;
-        }
-        let mut cells: Vec<(gtk::Widget, i32, bool)> = vec![(pj.upcast(), cols[0].1, false), (next, cols[1].1, true)];
-        if !compact {
-            // Plain words; amber only for the one that needs you. The row's dot already has the colour.
-            let mut open = Vec::new();
-            if p.live.waiting > 0 {
-                open.push(amber(&format!("{} waiting", p.live.waiting)));
-            }
-            if p.live.working > 0 {
-                open.push(format!("{} working", p.live.working));
-            }
-            if p.live.idle > 0 {
-                open.push(format!("{} idle", p.live.idle));
-            }
-            let words = if p.git_checked { git_words(p) } else { dim("checking git…") };
-            if any_open {
-                cells.push((w::markup(&open.join(" · "), &["gitc"]).upcast(), cols[2].1, false));
-            }
-            cells.push((w::markup(&words, &["gitc"]).upcast(), cols[if any_open { 3 } else { 2 }].1, false));
-        }
-        let last = w::label(&fmt::ago(p.last_at.as_deref()), &["num"]);
-        last.set_xalign(1.0);
-        last.set_hexpand(true);
-        let id = p.id.clone();
-        live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
-        cells.push((last.upcast(), cols[cols.len() - 1].1, false));
-        let r = w::row(cells, &["tr"]);
-        if p.removed {
-            r.add_css_class("gone");
-        }
-        vw.list.append(&list_row(&p.id, &r));
+        grid.insert(&project_card(ui, p), -1);
     }
+    vw.list.append(&grid_row(&grid));
     finish(ui, View::Projects, had_focus);
+}
+
+/// A grid of cards that keeps the list's ways: selecting one is selecting it (`sel`), and a double
+/// click or Enter does what Enter does. Each card is a `FlowBoxChild` named by its key.
+fn card_grid(ui: &Ui, class: &str, max: u32) -> gtk::FlowBox {
+    let grid = gtk::FlowBox::new();
+    grid.add_css_class(class);
+    grid.set_homogeneous(true);
+    grid.set_min_children_per_line(1);
+    grid.set_max_children_per_line(max);
+    grid.set_column_spacing(16);
+    grid.set_row_spacing(16);
+    grid.set_selection_mode(gtk::SelectionMode::Single);
+    grid.set_activate_on_single_click(false);
+    grid.set_valign(gtk::Align::Start);
+    {
+        let ui = ui.clone();
+        grid.connect_selected_children_changed(move |g| {
+            if let Some(c) = g.selected_children().first()
+                && let Ok(mut st) = ui.st.try_borrow_mut()
+            {
+                st.sel = Some(c.widget_name().to_string());
+            }
+        });
+    }
+    {
+        let ui = ui.clone();
+        grid.connect_child_activated(move |_, c| {
+            ui.st.borrow_mut().sel = Some(c.widget_name().to_string());
+            app::open_sel(&ui);
+        });
+    }
+    grid
+}
+
+/// The list's one row holding a grid (app.rs finds it by its class to move through the cards).
+fn grid_row(grid: &gtk::FlowBox) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+    row.set_focusable(false);
+    row.add_css_class("grouprow");
+    row.add_css_class("gridrow");
+    row.set_child(Some(grid));
+    row
+}
+
+/// One project as a card: its colour along the top, its name, the next step in large type (or
+/// where it was left), its open sessions, and its loose ends in git.
+fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
+    let colour = crate::setview::colour_of(p);
+    let card = w::vbox(0, &["pcard"]);
+    if p.live.waiting > 0 {
+        card.add_css_class("needs");
+    }
+    let band = w::hbox(0, &["band", &format!("pc-{colour}")]);
+    band.set_size_request(-1, 5);
+    card.append(&band);
+    let body = w::vbox(8, &["pbody"]);
+    let head = w::hbox(8, &[]);
+    let name = w::clip(&p.name, &["pcname"]);
+    head.append(&name);
+    if let Some(pause) = &p.paused {
+        let pill = w::label(&format!("paused {}", fmt::short_when(Some(&pause.at))), &["pill", "paused"]);
+        pill.set_tooltip_text(Some(&pause.note));
+        pill.set_valign(gtk::Align::Center);
+        head.append(&pill);
+    }
+    let last = w::label(&fmt::ago(p.last_at.as_deref()), &["num"]);
+    last.set_valign(gtk::Align::Center);
+    let id = p.id.clone();
+    live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
+    head.append(&last);
+    body.append(&head);
+    let sub = if p.desc.is_empty() { p.roots.first().map(|r| fmt::folder_hint(r, &p.name)).unwrap_or_default() } else { p.desc.clone() };
+    if !sub.is_empty() {
+        body.append(&w::clip(&sub, &["desc"]));
+    }
+    // The next step, or where it was left.
+    let (lead, text, class) = if !p.next.is_empty() {
+        ("NEXT STEP", p.next.clone(), "pcnext")
+    } else if let Some(pause) = &p.paused {
+        ("PAUSED WITH A NOTE", pause.note.clone(), "pcnext")
+    } else if let Some(sum) = p.last_summary.as_deref().map(fmt::recap).filter(|s| !s.is_empty()) {
+        ("LAST TIME", sum, "pclast")
+    } else {
+        ("NEXT STEP", "None written yet. Open it (Enter) to write one.".to_string(), "pcnone")
+    };
+    let l = w::label(lead, &["pclead"]);
+    l.set_xalign(0.0);
+    l.set_margin_top(6);
+    body.append(&l);
+    let t = w::wrap(&fmt::clip(&text, 400), &[class]);
+    t.set_xalign(0.0);
+    t.set_lines(3);
+    t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    t.set_tooltip_text(Some(&text));
+    t.set_vexpand(true);
+    t.set_valign(gtk::Align::Start);
+    body.append(&t);
+    // What is open, and what has come in.
+    let chips = w::hbox(6, &["pchips"]);
+    chips.set_margin_top(6);
+    let chip = |n: u32, word: &str, class: &str| {
+        let b = w::hbox(6, &["pchip", class]);
+        b.append(&w::dot(class));
+        b.append(&w::label(&format!("{n} {word}"), &[]));
+        b
+    };
+    if p.live.waiting > 0 {
+        chips.append(&chip(p.live.waiting, "waiting", "waiting"));
+    }
+    if p.live.working > 0 {
+        chips.append(&chip(p.live.working, "working", "working"));
+    }
+    if p.live.idle > 0 {
+        chips.append(&chip(p.live.idle, "idle", "idle"));
+    }
+    if let Some(l) = crate::behind::row_line(ui, &p.id) {
+        l.add_css_class("pchip");
+        l.set_hexpand(false);
+        // Its whole words: the card has the room.
+        l.set_max_width_chars(-1);
+        chips.append(&l);
+    }
+    if chips.first_child().is_some() {
+        body.append(&chips);
+    }
+    if p.removed {
+        let ui = ui.clone();
+        let id = p.id.clone();
+        body.append(&w::button("Track again", None, &["sm"], move || restore_project(&ui, &id)));
+    } else {
+        let words = if p.git_checked { git_words(p) } else { dim("checking git…") };
+        let g = w::markup(&words.replace("\n(", " (").replace('\n', " · "), &["gitc", "pcgit"]);
+        g.set_wrap(true);
+        g.set_xalign(0.0);
+        g.set_max_width_chars(1);
+        g.set_hexpand(true);
+        body.append(&g);
+    }
+    card.append(&body);
+    let c = gtk::FlowBoxChild::new();
+    c.set_widget_name(&p.id);
+    c.set_child(Some(&card));
+    c.set_tooltip_text(Some("Double-click for details · Enter"));
+    if p.removed {
+        c.add_css_class("gone");
+    }
+    c
 }
 
 pub fn restore_project(ui: &Ui, id: &str) {
@@ -1952,7 +1874,10 @@ fn ideas(ui: &Ui) {
             st.ov.as_ref().map(|ov| ov.projects.iter().filter(|p| !p.removed).map(|p| (p.id.clone(), p.name.clone())).collect::<Vec<_>>()).unwrap_or_default(),
         )
     };
-    let sig = format!("{tab:?}{pf:?}{picked:?}{brief}{}", serde_json::to_string(&idea_list).unwrap_or_default());
+    // The projects too: each note's colour and project list come from them, and they may arrive
+    // after the ideas.
+    let colours: Vec<String> = ui.st.borrow().ov.as_ref().map(|o| o.projects.iter().map(crate::setview::colour_of).collect()).unwrap_or_default();
+    let sig = format!("{tab:?}{pf:?}{picked:?}{brief}{}{projects:?}{colours:?}", serde_json::to_string(&idea_list).unwrap_or_default());
     let Some(had_focus) = begin(ui, View::Ideas, sig) else { return };
     let vw = &ui.w.views[&View::Ideas];
     w::clear(&vw.top);
@@ -1997,14 +1922,20 @@ fn ideas(ui: &Ui) {
     let mut names = vec!["Unsorted".to_string()];
     names.extend(projects.iter().map(|p| p.1.clone()));
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    // Sticky notes, each in its project's colour (violet while unsorted).
+    let grid = card_grid(ui, "notegrid", 4);
     for i in list {
-        let card = w::hbox(10, &["idea"]);
+        let note = w::vbox(10, &["note"]);
+        let colour = i.project.as_deref().and_then(|id| colour_by_id(ui, id));
+        note.add_css_class(&colour.map_or_else(|| "unsorted".to_string(), |c| format!("pc-{c}")));
         if i.state == "done" {
-            card.add_css_class("done");
+            note.add_css_class("done");
         }
         if i.state == "sent" {
-            card.add_css_class("sent");
+            note.add_css_class("sent");
         }
+        // The top: tick it for a brief, and its project.
+        let top = w::hbox(8, &[]);
         if tab == IdeaTab::Sort {
             let check = gtk::CheckButton::new();
             check.set_active(picked.contains(&i.id));
@@ -2015,47 +1946,14 @@ fn ideas(ui: &Ui) {
                 let id = i.id.clone();
                 check.connect_toggled(move |_| toggle_pick(&ui, &id));
             }
-            card.append(&check);
+            top.append(&check);
         }
-        let text = w::vbox(2, &[]);
-        text.set_hexpand(true);
-        text.append(&w::wrap(&i.text, &["tx"]));
-        let source = match i.source.as_str() {
-            "typed" => "typed",
-            "shell" => "from the shell",
-            "prompt" => "from a prompt",
-            s => s,
-        };
-        let meta = match (&i.sent_at, i.state.as_str()) {
-            (Some(at), "sent") => format!("sent to an agent {} · {} · noted {}", fmt::when(Some(at)), i.project_name.as_deref().unwrap_or("no project"), fmt::when(Some(&i.at))),
-            _ => format!("{} · {}", fmt::when(Some(&i.at)), source),
-        };
-        let meta_l = w::label(&meta, &["mt"]);
-        meta_l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        match i.brief.clone().filter(|_| i.state == "sent") {
-            // The brief it was sent in, opened in the desktop's default app.
-            Some(brief) => {
-                let line = w::hbox(8, &[]);
-                line.append(&meta_l);
-                let b = gtk::Button::with_label("brief");
-                b.add_css_class("link");
-                b.set_widget_name("open-brief");
-                b.set_tooltip_text(Some("Open the brief Wake sent the agent"));
-                let ui2 = ui.clone();
-                b.connect_clicked(move |_| open_brief(&ui2, &brief));
-                line.append(&b);
-                text.append(&line);
-            }
-            None => text.append(&meta_l),
-        }
-        card.append(&text);
-        // A narrow list puts the project and the button on a line of their own under the idea.
-        let narrow = app::cards(&ui.st.borrow());
-        let tools = if narrow { w::hbox(10, &["ideatools"]) } else { card.clone() };
         let dd = gtk::DropDown::from_strings(&refs);
         dd.update_property(&[gtk::accessible::Property::Label(&format!("Project for: {}", fmt::clip(&i.text, 60)))]);
         dd.add_css_class("mini");
-        dd.set_valign(gtk::Align::Center);
+        dd.add_css_class("notedd");
+        dd.set_hexpand(true);
+        dd.set_halign(gtk::Align::End);
         let at = i.project.as_ref().and_then(|p| projects.iter().position(|x| &x.0 == p)).map_or(0, |n| n + 1);
         dd.set_selected(at as u32);
         {
@@ -2069,37 +1967,54 @@ fn ideas(ui: &Ui) {
                 set_idea(&ui, &id, None, Some(project), format!("Moved to {name}."));
             });
         }
-        tools.append(&dd);
+        top.append(&dd);
+        note.append(&top);
+        // The idea itself, large.
+        let tx = w::wrap(&i.text, &["notetx"]);
+        tx.set_xalign(0.0);
+        tx.set_vexpand(true);
+        tx.set_valign(gtk::Align::Start);
+        note.append(&tx);
+        // When and how it came, and what to do with it.
+        let source = match i.source.as_str() {
+            "typed" => "typed",
+            "shell" => "from the shell",
+            "prompt" => "from a prompt",
+            s => s,
+        };
+        let meta = match (&i.sent_at, i.state.as_str()) {
+            (Some(at), "sent") => format!("sent {} · noted {}", fmt::short_when(Some(at)), fmt::short_when(Some(&i.at))),
+            _ => format!("{} · {}", fmt::short_when(Some(&i.at)), source),
+        };
+        let foot = w::hbox(8, &[]);
+        let meta_l = w::clip(&meta, &["mt"]);
+        foot.append(&meta_l);
+        if let Some(brief) = i.brief.clone().filter(|_| i.state == "sent") {
+            // The brief it was sent in, opened in the desktop's default app.
+            let b = gtk::Button::with_label("brief");
+            b.add_css_class("link");
+            b.set_widget_name("open-brief");
+            b.set_tooltip_text(Some("Open the brief Wake sent the agent"));
+            let ui2 = ui.clone();
+            b.connect_clicked(move |_| open_brief(&ui2, &brief));
+            foot.append(&b);
+        }
         let ui2 = ui.clone();
         let id = i.id.clone();
         let btn = if i.state != "inbox" {
-            w::button("Back to sort", None, &["sm"], move || set_idea(&ui2, &id, Some("inbox"), None, "Back in the list to sort.".into()))
+            w::button("Back to sort", None, &["sm", "ghost"], move || set_idea(&ui2, &id, Some("inbox"), None, "Back in the list to sort.".into()))
         } else {
-            // The d key cap shows on the selected row only (style.css).
             w::button("Done", Some("d"), &["sm", "ghost", "done"], move || set_idea(&ui2, &id, Some("done"), None, "Marked done.".into()))
         };
         btn.set_valign(gtk::Align::Center);
-        tools.append(&btn);
-        let row = if narrow {
-            let both = w::vbox(8, &[]);
-            card.set_css_classes(&["ideatop"]);
-            tools.set_halign(gtk::Align::End);
-            let outer = w::vbox(0, &["idea"]);
-            for c in ["done", "sent"] {
-                if i.state == c {
-                    outer.add_css_class(c);
-                }
-            }
-            both.append(&card);
-            both.append(&tools);
-            outer.append(&both);
-            list_row(&i.id, &outer)
-        } else {
-            list_row(&i.id, &card)
-        };
-        row.add_css_class("idea-row");
-        vw.list.append(&row);
+        foot.append(&btn);
+        note.append(&foot);
+        let c = gtk::FlowBoxChild::new();
+        c.set_widget_name(&i.id);
+        c.set_child(Some(&note));
+        grid.insert(&c, -1);
     }
+    vw.list.append(&grid_row(&grid));
     finish(ui, View::Ideas, had_focus);
 }
 
@@ -2239,32 +2154,18 @@ fn highlight(text: &str, q: &str) -> String {
 }
 
 fn history(ui: &Ui) {
+    // A timeline: by the day each session was last used, newest first. Search shows the matches
+    // the same way, each with what matched.
     let (q, results, recent, compact) = {
         let st = ui.st.borrow();
         let mut recent: Vec<SessionSummary> = st.ov.as_ref().map(|ov| ov.sessions.clone()).unwrap_or_default();
         recent.sort_by(by_recent_day);
-        let mut search = st.search.clone();
-        if let Some((k, rev)) = prefs::sort_of(View::History) {
-            sort::sessions(&mut recent, &k, rev, by_recent_day);
-            if let Some(found) = search.as_mut() {
-                // Matches keep their snippet; their order is the column's.
-                let mut rows: Vec<SessionSummary> = found.iter().map(|(s, _)| s.clone()).collect();
-                sort::sessions(&mut rows, &k, rev, by_recent_day);
-                let mut by_id: std::collections::HashMap<String, String> = found.drain(..).map(|(s, m)| (s.id, m)).collect();
-                *found = rows
-                    .into_iter()
-                    .map(|s| {
-                        let m = by_id.remove(&s.id).unwrap_or_default();
-                        (s, m)
-                    })
-                    .collect();
-            }
-        }
-        (st.search_q.trim().to_string(), search, recent, app::compact(&st))
+        (st.search_q.trim().to_string(), st.search.clone(), recent, app::compact(&st))
     };
     let stable: Vec<String> = recent.iter().map(stable_key).collect();
     let found: Option<Vec<(String, &String)>> = results.as_ref().map(|r| r.iter().map(|(s, m)| (stable_key(s), m)).collect());
-    let sig = format!("{q}{compact}{found:?}{stable:?}{:?}{}", prefs::sort_of(View::History), loc_sig(ui));
+    let colours: Vec<String> = ui.st.borrow().ov.as_ref().map(|o| o.projects.iter().map(crate::setview::colour_of).collect()).unwrap_or_default();
+    let sig = format!("{q}{compact}{found:?}{stable:?}{colours:?}{}", loc_sig(ui));
     let Some(had_focus) = begin(ui, View::History, sig) else { return };
     let vw = &ui.w.views[&View::History];
     if q.is_empty() {
@@ -2272,34 +2173,14 @@ fn history(ui: &Ui) {
             vw.empty.append(&w::empty("Nothing to search yet.", "Sessions appear here once Wake has read them."));
             return;
         }
-        let h = w::vbox(0, &[]);
-        let order = match prefs::sort_of(View::History) {
-            None => "BY DAY LAST USED".to_string(),
-            Some((k, rev)) => format!(
-                "BY {}, {}",
-                match k.as_str() {
-                    "project" => "PROJECT",
-                    "state" => "STATE",
-                    _ => "LAST USED",
-                },
-                sort::words(&k, rev).to_uppercase()
-            ),
-        };
-        h.append(&w::label(&format!("{order} · TYPE ABOVE TO SEARCH"), &["isec"]));
-        h.append(&table_head(ui, View::History, &session_cols("Last asked / recap", compact), &session_keys(compact)));
-        vw.head.append(&h);
-        // In Wake's own order the list is by day: each day gets its heading.
-        let by_day = prefs::sort_of(View::History).is_none();
         let mut day = String::new();
         for s in &recent {
-            if by_day {
-                let d = fmt::day(s.last_at.as_deref());
-                if d != day {
-                    vw.list.append(&group_row(&d, None));
-                    day = d;
-                }
+            let d = fmt::day(s.last_at.as_deref());
+            if d != day {
+                vw.list.append(&day_row(&d, s.last_at.as_deref()));
+                day = d;
             }
-            vw.list.append(&session_row(ui, View::History, s, now_cell(s), compact));
+            vw.list.append(&timeline_row(ui, s, now_cell(s), compact));
         }
     } else {
         let Some(results) = results else {
@@ -2310,22 +2191,82 @@ fn history(ui: &Ui) {
             vw.empty.append(&w::empty(&format!("Nothing matches “{q}”."), "Try a shorter word, a file name, or something you typed to Claude."));
             return;
         }
-        let h = w::vbox(0, &[]);
-        h.append(&w::label(&format!("{} MATCH", fmt::pl(results.len() as u64, "SESSION", "SESSIONS")), &["isec"]));
-        h.append(&table_head(ui, View::History, &session_cols("What matched", compact), &session_keys(compact)));
-        vw.head.append(&h);
+        vw.list.append(&day_row(&fmt::pl(results.len() as u64, "session matches", "sessions match"), None));
         for (s, m) in &results {
             let l = w::clip("", &["snip"]);
             l.set_markup(&highlight(m, &q));
-            vw.list.append(&session_row(ui, View::History, s, l.upcast(), compact));
+            vw.list.append(&timeline_row(ui, s, l.upcast(), compact));
         }
     }
     finish(ui, View::History, had_focus);
 }
 
+/// A day on the timeline, in large type: "Today", "Yesterday", "Mon 23 Nov".
+fn day_row(title: &str, _at: Option<&str>) -> gtk::ListBoxRow {
+    let r = gtk::ListBoxRow::new();
+    r.set_selectable(false);
+    r.set_activatable(false);
+    r.set_focusable(false);
+    r.add_css_class("grouprow");
+    r.add_css_class("dayrow");
+    let l = w::label(title, &["tlday"]);
+    l.set_xalign(0.0);
+    r.set_child(Some(&l));
+    r
+}
+
+/// One session on the timeline: the time, a dot on the line in its project's colour, who, and
+/// what you asked (or what matched); its state at the right.
+fn timeline_row(ui: &Ui, s: &SessionSummary, second: gtk::Widget, compact: bool) -> gtk::ListBoxRow {
+    let row = w::hbox(0, &["tlrow"]);
+    let when = fmt::when(s.last_at.as_deref());
+    let time = w::label(when.rsplit_once(' ').map_or(when.as_str(), |(_, t)| t), &["tltime"]);
+    time.set_xalign(1.0);
+    time.set_valign(gtk::Align::Start);
+    time.set_size_request(54, -1);
+    row.append(&time);
+    // The line through the day, with this session's dot on it.
+    let rail = w::vbox(0, &["tlrail"]);
+    rail.set_size_request(30, -1);
+    let top = w::hbox(0, &["tlline"]);
+    top.set_size_request(2, 14);
+    top.set_halign(gtk::Align::Center);
+    rail.append(&top);
+    let colour = s.project.as_deref().and_then(|id| colour_by_id(ui, id));
+    let (state_class, word) = w::state_word(s.state);
+    let dot = w::dot(&colour.map_or_else(|| state_class.to_string(), |c| format!("pc-{c}")));
+    dot.add_css_class("tldot");
+    dot.set_halign(gtk::Align::Center);
+    rail.append(&dot);
+    let rest = w::hbox(0, &["tlline"]);
+    rest.set_size_request(2, -1);
+    rest.set_vexpand(true);
+    rest.set_halign(gtk::Align::Center);
+    rail.append(&rest);
+    row.append(&rail);
+    let mid = w::vbox(4, &["tlbody"]);
+    mid.set_hexpand(true);
+    mid.append(&who_line_tagged(ui, s, false));
+    w::shrinkable(&second);
+    mid.append(&second);
+    row.append(&mid);
+    if !compact {
+        let st = w::label(word, &["state", state_class, "tlstate"]);
+        st.set_valign(gtk::Align::Start);
+        st.set_tooltip_text(Some(&s.evidence));
+        row.append(&st);
+    }
+    let r = list_row(&s.id, &row);
+    r.add_css_class("tlrow-r");
+    r
+}
+
 /// Enter on an idea: the keyboard goes to its project list, to sort it.
 pub fn focus_idea_project(ui: &Ui, id: &str) {
-    let list = &ui.w.views[&View::Ideas].list;
+    let list: gtk::Widget = match app::grid_of(ui, View::Ideas) {
+        Some(g) => g.upcast(),
+        None => ui.w.views[&View::Ideas].list.clone().upcast(),
+    };
     let mut child = list.first_child();
     while let Some(c) = child {
         if c.widget_name() == id {

@@ -316,8 +316,12 @@ pub struct Widgets {
     pub cmd_full: gtk::Widget,
     pub cmd_icon: gtk::Button,
     pub counts: crate::layout::Squeeze,
+    /// The three places, as tabs in the top bar: Monitor, Projects, History.
+    pub tabs: gtk::Box,
     pub indexing: gtk::Label,
     pub clock: gtk::Label,
+    /// "DEMO DATA" in the top bar (the status bar says it too).
+    pub badge: gtk::Label,
     pub nav: gtk::Box,
     pub plist: gtk::Box,
     /// The slim rail's full form, sliding out over the content (layout.rs), and its lists.
@@ -478,7 +482,7 @@ fn build(app: &gtk::Application, opts: Opts) {
 
     // Top bar: what doesn't fit drops out, least important first (the badge, the clock, then the
     // counts from the end); the search button narrows down to its keys.
-    let top = crate::layout::Squeeze::new(16, &["top"]);
+    let top = crate::layout::Squeeze::new(12, &["top"]);
     // ☰: the rail, when the window is too narrow to keep it (a drawer over everything).
     let menu_btn = gtk::Button::with_label("☰");
     menu_btn.add_css_class("iconbtn");
@@ -488,6 +492,10 @@ fn build(app: &gtk::Application, opts: Opts) {
     menu_btn.set_visible(false);
     top.add(&menu_btn, 0);
     top.add(&w::label("WAKE", &["logo"]), 0);
+    // The three places you go, as tabs; the tools (Agents, Ideas, Ask, Settings) sit at the right.
+    let tabs = w::hbox(2, &["tabs"]);
+    tabs.update_property(&[gtk::accessible::Property::Label("Views")]);
+    top.add(&tabs, 0);
     let cmd = gtk::Button::new();
     cmd.add_css_class("cmd");
     let cmd_in = w::hbox(8, &[]);
@@ -504,7 +512,7 @@ fn build(app: &gtk::Application, opts: Opts) {
     // 380 px when there is room, down to 150 in a narrow window.
     let cmd_holder = w::hbox(0, &[]);
     cmd_holder.append(&cmd);
-    let cmd_full = w::Fit::new(&cmd_holder, 150, Some(380)).upcast();
+    let cmd_full = w::Fit::new(&cmd_holder, 150, Some(300)).upcast();
     top.add(&cmd_full, 0);
     // Narrow, the search box is a 🔍 button (it opens the same switcher over the window).
     let cmd_icon = gtk::Button::new();
@@ -520,8 +528,10 @@ fn build(app: &gtk::Application, opts: Opts) {
     indexing.set_visible(false);
     top.add(&indexing, 5);
     // Each count drops out on its own when there is no room (the first, waiting, last).
-    let counts = crate::layout::Squeeze::new(16, &["counts"]);
+    let counts = crate::layout::Squeeze::new(10, &["counts"]);
     counts.set_valign(gtk::Align::Center);
+    // The tools that don't fit go under "More ▾".
+    counts.with_more();
     top.add(&counts, 0);
     let badge = w::label("DEMO DATA", &["badge"]);
     badge.set_visible(demo);
@@ -584,7 +594,7 @@ fn build(app: &gtk::Application, opts: Opts) {
         stack.add_named(&vw.root, Some(v.id()));
         views.insert(v, vw);
     }
-    let history_entry = gtk::Entry::builder().placeholder_text("Search everything you and your agents did…").hexpand(true).build();
+    let history_entry = gtk::Entry::builder().placeholder_text("Search everything you asked, every title, every file touched and every recap…").hexpand(true).build();
     history_entry.add_css_class("search");
     {
         let sb = w::hbox(10, &["searchbox"]);
@@ -680,6 +690,8 @@ fn build(app: &gtk::Application, opts: Opts) {
             cmd_full: cmd_full.clone(),
             cmd_icon: cmd_icon.clone(),
             counts,
+            tabs,
+            badge: badge.clone(),
             indexing,
             clock,
             nav,
@@ -1747,8 +1759,14 @@ fn relayout(ui: &Ui, lay: crate::layout::Lay) {
     // The top bar like a phone's: ☰ for the rail, ⌕ for the search box.
     let tiny = lay.rail == Rail::Hidden;
     ui.w.menu_btn.set_visible(tiny);
-    ui.w.cmd_full.set_visible(!tiny);
-    ui.w.cmd_icon.set_visible(tiny);
+    ui.w.tabs.set_visible(!tiny);
+    // Short of the full width, the search box is its ⌕ button, so the tabs and tools keep room.
+    let short_top = lay.rail != Rail::Full;
+    ui.w.cmd_full.set_visible(!short_top);
+    ui.w.cmd_icon.set_visible(short_top);
+    // The clock and the demo badge give way before the tools do (the status bar says "demo data").
+    ui.w.clock.set_visible(!short_top);
+    ui.w.badge.set_visible(ui.demo && !short_top);
     // The capture bar keeps its entry and project; its label makes way.
     if let Some(cap) = ui.w.cap_entry.parent() {
         let mut c = cap.first_child();
@@ -1902,9 +1920,52 @@ fn rows(ui: &Ui) -> Vec<gtk::ListBoxRow> {
     out
 }
 
+/// A view drawn as a grid of cards (Projects): the grid, in the list's one row.
+pub fn grid_of(ui: &Ui, view: View) -> Option<gtk::FlowBox> {
+    let mut c = ui.w.views[&view].list.first_child();
+    while let Some(x) = c {
+        if x.has_css_class("gridrow") {
+            return x.downcast::<gtk::ListBoxRow>().ok()?.child()?.downcast::<gtk::FlowBox>().ok();
+        }
+        c = x.next_sibling();
+    }
+    None
+}
+
+fn grid_cards(g: &gtk::FlowBox) -> Vec<gtk::FlowBoxChild> {
+    (0..).map_while(|i| g.child_at_index(i)).collect()
+}
+
+/// j/k and the arrows in a grid: the next or previous card, in reading order.
+fn grid_step(ui: &Ui, g: &gtk::FlowBox, d: i32) {
+    let cards = grid_cards(g);
+    if cards.is_empty() {
+        return;
+    }
+    let sel = ui.st.borrow().sel.clone();
+    let i = match cards.iter().position(|c| Some(c.widget_name().as_str()) == sel.as_deref()) {
+        None if d > 0 => 0,
+        None => cards.len() - 1,
+        Some(i) => (i as i32 + d).clamp(0, cards.len() as i32 - 1) as usize,
+    };
+    let key = cards[i].widget_name().to_string();
+    ui.st.borrow_mut().sel = Some(key.clone());
+    g.select_child(&cards[i]);
+    cards[i].grab_focus();
+    let open = matches!(ui.st.borrow().drawer, Some(Drawer::Project(_)));
+    if open {
+        panel::open_project(ui, &key, false);
+    }
+}
+
 pub fn move_sel(ui: &Ui, d: i32) {
     if ui.st.borrow().view == View::Settings {
         setview::keyboard(ui, true);
+    }
+    let view = ui.st.borrow().view;
+    if let Some(g) = grid_of(ui, view) {
+        grid_step(ui, &g, d);
+        return;
     }
     let rows = rows(ui);
     if rows.is_empty() {
@@ -1941,6 +2002,15 @@ pub fn restore_sel(ui: &Ui, view: View, had_focus: bool) {
     let sel = ui.st.borrow().sel.clone();
     let list = &ui.w.views[&view].list;
     let Some(sel) = sel else { return };
+    if let Some(g) = grid_of(ui, view) {
+        if let Some(c) = grid_cards(&g).into_iter().find(|c| c.widget_name() == sel) {
+            g.select_child(&c);
+            if had_focus {
+                c.grab_focus();
+            }
+        }
+        return;
+    }
     let mut child = list.first_child();
     while let Some(c) = child {
         if let Ok(row) = c.clone().downcast::<gtk::ListBoxRow>()

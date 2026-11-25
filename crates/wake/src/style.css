@@ -693,3 +693,99 @@ window.wake .notitle, window.wake .titlebar.notitle { min-height: 0; padding: 0;
 .qstate { min-width: 74px; font-weight: 500; }
 window.wake button.cmd { margin: 7px 0; padding: 5px 10px; }
 list.table > row.herorow, list.table > row.herorow:hover { border-bottom: none; background-color: transparent; }
+
+/* The top bar's tabs (the three places) and tools (Agents, Ideas, Ask, Settings). */
+.tabs { margin-left: 18px; }
+window.wake button.tab { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 14px; letter-spacing: .3px; color: @muted; padding: 6px 14px; border-radius: 8px; }
+window.wake button.tab:hover { color: @ink; background-color: @row; }
+window.wake button.tab.on { color: @ink; background-color: @rowhi; box-shadow: inset 0 -2px @accent; }
+.tabn { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11px; }
+.tabn.amber { color: @bg; background-color: @amber; border-radius: 999px; padding: 0 6px; }
+window.wake button.tool { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: @muted; padding: 5px 10px; border-radius: 999px; border: 1px solid @line2; }
+window.wake button.tool:hover { color: @ink; border-color: @muted; }
+window.wake button.tool.on { color: @ink; border-color: @accent; background-color: alpha(@accent, .1); }
+window.wake button.tool.warn { color: @amber; border-color: alpha(@amber, .5); }
+window.wake button.tool.ideas { color: @violet; border-color: alpha(@violet, .4); }
+window.wake button.tool.new, window.wake button.tool.live { color: @cyan; border-color: alpha(@cyan, .45); }
+.tname { font-family: "Atkinson Hyperlegible", sans-serif; font-weight: 700; font-size: 12.5px; }
+.tnum { font-family: "JetBrains Mono", monospace; font-size: 11px; }
+window.wake button.tool.gear { padding: 2px 9px; }
+window.wake button.tool.gear .tname { font-family: "DejaVu Sans", sans-serif; font-size: 18px; font-weight: 400; }
+
+/* Projects: a grid of cards, each in its project's colour. */
+.pgrid { padding: 22px 26px 30px; }
+.pgrid > flowboxchild { padding: 0; border-radius: 14px; }
+.pgrid > flowboxchild:focus-visible { outline: none; }
+.pcard { background-color: @panel; border: 1px solid @line2; border-radius: 14px; min-width: 300px; }
+.pgrid > flowboxchild:hover .pcard { border-color: @muted; background-color: @row; }
+.pgrid > flowboxchild:selected .pcard { border-color: @accent; box-shadow: 0 0 0 1px @accent; }
+.pcard.needs { border-color: alpha(@amber, .55); }
+.band { border-radius: 14px 14px 0 0; min-height: 5px; background-color: @faint; }
+.pbody { padding: 16px 18px 18px; }
+.pcname { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 19px; color: @ink; }
+.pclead { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 9.5px; letter-spacing: 1.5px; color: @dim; }
+.pcnext { font-size: 16.5px; color: @ink; }
+.pclast { font-size: 14px; color: @muted; }
+.pcnone { font-size: 13.5px; color: @dim; }
+.pchip { font-family: "JetBrains Mono", monospace; font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid @line2; color: @muted; }
+.pchip.waiting { color: @amber; border-color: alpha(@amber, .5); background-color: alpha(@amber, .08); }
+.pchip.working { color: @mint; border-color: alpha(@mint, .45); background-color: alpha(@mint, .07); }
+.pchip .d { min-width: 6px; min-height: 6px; }
+.pcgit { font-size: 11px; margin-top: 2px; }
+list.table > row.gridrow, list.table > row.gridrow:hover { border-bottom: none; background-color: transparent; }
+.band.pc-red { background-color: @pc_red; }
+.band.pc-orange { background-color: @pc_orange; }
+.band.pc-wine { background-color: @pc_wine; }
+.band.pc-pink { background-color: @pc_pink; }
+.band.pc-magenta { background-color: @pc_magenta; }
+.band.pc-purple { background-color: @pc_purple; }
+.band.pc-indigo { background-color: @pc_indigo; }
+.band.pc-blue { background-color: @pc_blue; }
+.band.pc-sky { background-color: @pc_sky; }
+.band.pc-teal { background-color: @pc_teal; }
+.band.pc-mint { background-color: @pc_mint; }
+.band.pc-green { background-color: @pc_green; }
+.band.pc-lime { background-color: @pc_lime; }
+.band.pc-slate { background-color: @pc_slate; }
+
+/* History: a timeline. */
+list.table > row.dayrow { border-bottom: none; }
+.tlday { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 21px; color: @ink; padding: 22px 30px 8px 30px; }
+list.table > row.tlrow-r { border-bottom: none; padding: 0 20px; }
+list.table > row.tlrow-r:hover, list.table > row.tlrow-r:selected { background-color: transparent; box-shadow: none; }
+.tlrow { border-radius: 10px; padding: 0 10px 0 0; }
+list.table > row.tlrow-r:hover .tlrow { background-color: @row; }
+list.table > row.tlrow-r:selected .tlrow { background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
+.tltime { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; padding-top: 14px; }
+.tlline { background-color: @line2; min-width: 2px; }
+.d.tldot { min-width: 10px; min-height: 10px; margin: 2px 0; box-shadow: 0 0 0 3px @bg; }
+.tlbody { padding: 10px 0 12px 4px; }
+.tlstate { padding-top: 12px; margin-left: 12px; font-weight: 500; }
+
+/* Ideas: sticky notes, each in its project's colour (violet while unsorted). */
+.notegrid { padding: 22px 26px 30px; }
+.notegrid > flowboxchild { padding: 0; border-radius: 12px; }
+.notegrid > flowboxchild:focus-visible { outline: none; }
+.note { min-width: 260px; min-height: 150px; padding: 14px 16px 12px; border-radius: 12px; border: 1px solid alpha(@violet, .35); background-color: alpha(@violet, .09); }
+.notegrid > flowboxchild:hover .note { border-color: @muted; }
+.notegrid > flowboxchild:selected .note { border-color: @accent; box-shadow: 0 0 0 1px @accent; }
+.note.done, .note.sent { opacity: .7; }
+.notetx { font-size: 16.5px; color: @ink; }
+.note.done .notetx { text-decoration-line: line-through; color: @muted; }
+.note .mt { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; }
+window.wake dropdown.notedd > button { min-width: 0; background-color: transparent; border-color: transparent; font-size: 11px; }
+window.wake dropdown.notedd > button:hover { border-color: @line2; }
+.note.pc-red { background-color: alpha(@pc_red, .10); border-color: alpha(@pc_red, .38); }
+.note.pc-orange { background-color: alpha(@pc_orange, .10); border-color: alpha(@pc_orange, .38); }
+.note.pc-wine { background-color: alpha(@pc_wine, .10); border-color: alpha(@pc_wine, .38); }
+.note.pc-pink { background-color: alpha(@pc_pink, .10); border-color: alpha(@pc_pink, .38); }
+.note.pc-magenta { background-color: alpha(@pc_magenta, .10); border-color: alpha(@pc_magenta, .38); }
+.note.pc-purple { background-color: alpha(@pc_purple, .10); border-color: alpha(@pc_purple, .38); }
+.note.pc-indigo { background-color: alpha(@pc_indigo, .10); border-color: alpha(@pc_indigo, .38); }
+.note.pc-blue { background-color: alpha(@pc_blue, .10); border-color: alpha(@pc_blue, .38); }
+.note.pc-sky { background-color: alpha(@pc_sky, .10); border-color: alpha(@pc_sky, .38); }
+.note.pc-teal { background-color: alpha(@pc_teal, .10); border-color: alpha(@pc_teal, .38); }
+.note.pc-mint { background-color: alpha(@pc_mint, .10); border-color: alpha(@pc_mint, .38); }
+.note.pc-green { background-color: alpha(@pc_green, .10); border-color: alpha(@pc_green, .38); }
+.note.pc-lime { background-color: alpha(@pc_lime, .10); border-color: alpha(@pc_lime, .38); }
+.note.pc-slate { background-color: alpha(@pc_slate, .10); border-color: alpha(@pc_slate, .38); }

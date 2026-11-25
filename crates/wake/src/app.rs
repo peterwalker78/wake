@@ -31,6 +31,8 @@ pub struct Opts {
     /// For screenshots: `switcher`, `switcher-subs`, `session[:id]`, `project[:id]`, `pause`,
     /// `stale` (the "Stop all stale" confirmation), `stop` (one agent's).
     pub show: Option<String>,
+    /// `wake find`: bring Wake forward with Find (the switcher) open, starting it if need be.
+    pub find: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -392,6 +394,12 @@ pub fn run(opts: Opts) -> glib::ExitCode {
         app.set_flags(gio::ApplicationFlags::NON_UNIQUE);
     }
     app.connect_startup(|_| theme::load());
+    // `wake find` with Wake already open: ask that window to open Find, and go.
+    // Running on then just raises that window too, and exits cleanly.
+    if opts.find && app.register(gio::Cancellable::NONE).is_ok() && app.is_remote() {
+        app.activate_action("find", None);
+        return app.run_with_args::<&str>(&[]);
+    }
     app.connect_activate(move |app| {
         // A second `wake` raises the first.
         if let Some(window) = app.active_window() {
@@ -932,6 +940,16 @@ fn build(app: &gtk::Application, opts: Opts) {
                 poll(&ui);
             }
         });
+    }
+    {
+        // `wake find` from a desktop shortcut lands here when Wake is already open.
+        let find = gio::SimpleAction::new("find", None);
+        let ui = ui.clone();
+        find.connect_activate(move |_, _| {
+            ui.window.present();
+            switcher::open(&ui);
+        });
+        app.add_action(&find);
     }
     window.present();
     let first = ui.st.borrow().view;

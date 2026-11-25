@@ -83,6 +83,7 @@ From a terminal:
 
 ```sh
 wake              # open the window (also "Wake" in the app launcher)
+wake find         # bring Wake forward with Find open: bind it to a key in your desktop's shortcuts
 wake , idea       # keep an idea; the project comes from the folder you're in
 wake ps           # agent processes: which PID is which task, memory, which look stale
 wake disk         # what takes disk space, in plain words

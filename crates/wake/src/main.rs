@@ -56,6 +56,10 @@ fn app_main(args: &[String]) -> std::process::ExitCode {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--demo" => opts.demo = true,
+            "find" => {
+                opts.find = true;
+                opts.show = Some("switcher".into());
+            }
             "--screenshot" => match it.next() {
                 Some(p) => opts.screenshot = Some(p.into()),
                 None => return usage(),

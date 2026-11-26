@@ -4,6 +4,7 @@
 # details (in Ideas, the idea's project; in Ask, the question box), then Tab (and, in a second run, Shift+Tab) goes round the whole window:
 #   - one press, one area: every press moves the keyboard to the next area;
 #   - never lost: the keyboard is always somewhere on screen;
+#   - seen: after every press the focus is drawn (focus-visible is on; the replay never fakes it);
 #   - in screen order: title bar, filters, list, details, the view tabs (and back the other way);
 #   - a list is one area: Tab lands on its selected item and never walks along its rows or cards;
 # and Esc from the details puts the keyboard back on the row it came from.
@@ -45,7 +46,7 @@ done
 python3 - "$tmp" <<'EOF'
 import glob, os, re, sys
 d = sys.argv[1]
-line = re.compile(r'keys: after step (\d+): focus (.*) in (?:Some\("([^"]*)"\)|None) label (.*) drawer (\w+)')
+line = re.compile(r'keys: after step (\d+): focus (.*) in (?:Some\("([^"]*)"\)|None) label (.*) drawer (\w+) visible (\w+)')
 flags = re.compile(r'StateFlags\([^)]*\)')
 def steps(path):
     out = {}
@@ -53,7 +54,7 @@ def steps(path):
         m = line.search(l)
         if m:
             # What the keyboard is on (its kind, name, style and words), the part, the details' state.
-            out[int(m.group(1))] = (flags.sub('', m.group(2)) + m.group(4), m.group(3) or "", m.group(5))
+            out[int(m.group(1))] = (flags.sub('', m.group(2)) + m.group(4), m.group(3) or "", m.group(5), m.group(6))
     return out
 item = re.compile(r'Some\(\("(GtkListBoxRow|GtkFlowBoxChild)", "([^"]*)"')
 bad = 0
@@ -73,6 +74,8 @@ for path in sorted(glob.glob(d + '/*-fwd.txt') + glob.glob(d + '/*-back.txt')):
     stayed = sum(1 for a, b in zip(tabs, tabs[1:]) if a[1] == b[1])
     if stayed:
         probs.append(f"{stayed} presses stayed in the same area")
+    if any(t[3] != "true" for t in tabs):
+        probs.append("the focus wasn't drawn after a press")
     if any(t[1] == "" for t in tabs):
         probs.append("the keyboard went somewhere off screen")
     rows = {m.group(2) for t in tabs if t[1] == 'list' for m in [item.match(t[0])] if m}

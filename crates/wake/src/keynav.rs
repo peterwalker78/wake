@@ -9,6 +9,13 @@
 //! quiet accent edge, but only after keyboard use (GTK's focus-visible). Esc in the filters or the
 //! title bar steps back to the list.
 //!
+//! Wake owns where the keyboard is. GTK shows focus only after its own handlers see a Tab or an
+//! arrow, and Wake takes those keys first, so `note_key` turns focus-visible on itself. And the
+//! board redraws under the keyboard all the time (live counts, rows, details): a redraw that moves
+//! the focus to another area, or onto nothing, or onto a scroller, without the person pressing or
+//! clicking anything, is put back where the keyboard was (`settle`). So Tab always starts from the
+//! area the person last saw it in.
+//!
 //! `--show keys:<sequence>` replays keys through the same handler, for focus screenshots.
 
 use std::time::Duration;
@@ -193,6 +200,8 @@ pub fn home(ui: &Ui, r: Region) {
     if (r != Region::List || ask)
         && let Some(last) = LAST.with(|l| l.borrow().get(&r).and_then(|x| x.upgrade()))
         && last.is_ancestor(&w)
+        // Another view's tab: the bar's place is the current view's tab.
+        && !(last.has_css_class("tab") && !last.has_css_class("on"))
         && last.is_mapped()
         && last.is_sensitive()
         && last.grab_focus()
@@ -246,12 +255,221 @@ thread_local! {
     static LAST: std::cell::RefCell<std::collections::HashMap<Region, glib::WeakRef<gtk::Widget>>> = Default::default();
 }
 
-/// To the next (or previous) region.
+/// To the next (or previous) region. From where the keyboard is, else from the area it was last in
+/// (a redraw may have taken the focus away a moment ago). An area that can't take the keyboard
+/// now is passed over, so every press lands somewhere new.
 pub fn cycle(ui: &Ui, forward: bool) {
-    let cur = focus(ui).and_then(|f| region_of(ui, &f));
-    if let Some(r) = next_region(&regions_shown(ui), cur, forward) {
+    let shown = regions_shown(ui);
+    let mut from = focus(ui).filter(|f| f.is_mapped()).and_then(|f| region_of(ui, &f)).or_else(|| CURRENT.with(|c| c.get()));
+    for _ in 0..shown.len() {
+        let Some(r) = next_region(&shown, from, forward) else { return };
         home(ui, r);
+        // The rail's drawer and slim form take the keyboard once they have slid out.
+        let opening = r == Region::Rail && (ui.w.body.rail_open() || ui.w.body.peek_open());
+        if opening || focus(ui).is_some_and(|f| region_of(ui, &f) == Some(r)) {
+            CURRENT.with(|c| c.set(Some(r)));
+            return;
+        }
+        from = Some(r);
     }
+}
+
+// ---------- keeping the keyboard where the person put it ----------
+
+thread_local! {
+    /// The area the keyboard is in, as the person last put it there.
+    static CURRENT: std::cell::Cell<Option<Region>> = const { std::cell::Cell::new(None) };
+    /// When the person last pressed a key or clicked (monotonic µs); None before the first time.
+    static INPUT_AT: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+    /// A settle is queued, or running (its own focus moves are not redraws).
+    static SETTLE_QUEUED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SETTLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Focus moves this soon after a key or a click are the person's (directly, or a moment later
+/// once what they opened has drawn).
+const INPUT_GRACE_US: i64 = 1_000_000;
+
+/// The navigation keys: GTK shows where the focus is once one of these is pressed.
+pub fn is_nav_key(key: gdk::Key) -> bool {
+    use gdk::Key as K;
+    matches!(
+        key,
+        K::Tab
+            | K::KP_Tab
+            | K::ISO_Left_Tab
+            | K::Up
+            | K::Down
+            | K::Left
+            | K::Right
+            | K::KP_Up
+            | K::KP_Down
+            | K::KP_Left
+            | K::KP_Right
+            | K::Home
+            | K::End
+            | K::KP_Home
+            | K::KP_End
+            | K::Page_Up
+            | K::Page_Down
+            | K::KP_Page_Up
+            | K::KP_Page_Down
+            | K::F6
+    )
+}
+
+/// A key was pressed: the person is moving the keyboard. A navigation key shows where it is, as
+/// GTK would if it had seen the key (Wake handles them before GTK does).
+pub fn note_key(ui: &Ui, key: gdk::Key) {
+    note_input();
+    if is_nav_key(key) {
+        ui.window.set_focus_visible(true);
+    }
+}
+
+/// A key or a click: focus moves for the next moment are the person's.
+pub fn note_input() {
+    INPUT_AT.with(|t| t.set(Some(glib::monotonic_time())));
+}
+
+/// Whether the person has pressed or clicked anything yet.
+pub fn person_moved() -> bool {
+    INPUT_AT.with(|t| t.get()).is_some()
+}
+
+fn input_recent() -> bool {
+    INPUT_AT.with(|t| t.get()).is_some_and(|at| glib::monotonic_time() - at < INPUT_GRACE_US)
+}
+
+/// Something the keyboard can rest on: a control, a list's item, or a list with nothing in it.
+fn is_resting_place(f: &gtk::Widget) -> bool {
+    f.is::<gtk::Button>()
+        || f.is::<gtk::CheckButton>()
+        || f.is::<gtk::Switch>()
+        || f.is::<gtk::ListBoxRow>()
+        || f.is::<gtk::FlowBoxChild>()
+        || f.is::<gtk::ListBox>()
+        || f.is::<gtk::FlowBox>()
+        || f.is::<gtk::Text>()
+        || f.is::<gtk::TextView>()
+        || f.ancestor(gtk::DropDown::static_type()).is_some()
+}
+
+/// While a dialog, the Find pop-up or a menu has the keyboard, its focus is its own.
+fn others_own_it(ui: &Ui) -> bool {
+    let st = ui.st.borrow();
+    st.modal_open || st.sw.open || focus(ui).is_some_and(|f| f.ancestor(gtk::Popover::static_type()).is_some())
+}
+
+/// The focus moved. The person's moves are remembered; a move made by a redraw is checked once
+/// things settle and, if it took the keyboard out of its area, put back.
+fn focus_moved(ui: &Ui) {
+    if SETTLING.with(|s| s.get()) {
+        return;
+    }
+    let persons = !person_moved() || input_recent();
+    // In the middle of an update: decide once it is done.
+    if ui.st.try_borrow_mut().is_err() {
+        let ui = ui.clone();
+        glib::idle_add_local_once(move || {
+            if others_own_it(&ui) {
+                return;
+            }
+            if persons {
+                remember(&ui);
+            } else {
+                queue_settle(&ui);
+            }
+        });
+        return;
+    }
+    if others_own_it(ui) {
+        return;
+    }
+    if persons {
+        remember(ui);
+    } else {
+        queue_settle(ui);
+    }
+}
+
+/// Remembers where the keyboard is now, as the place to come back to in its area.
+fn remember(ui: &Ui) {
+    if let Some(f) = focus(ui)
+        && f.is_mapped()
+        && let Some(r) = region_of(ui, &f)
+    {
+        CURRENT.with(|c| c.set(Some(r)));
+        if is_resting_place(&f) {
+            LAST.with(|l| l.borrow_mut().insert(r, f.downgrade()));
+        }
+    }
+}
+
+fn queue_settle(ui: &Ui) {
+    if SETTLE_QUEUED.with(|q| q.replace(true)) {
+        return;
+    }
+    let ui = ui.clone();
+    glib::idle_add_local_once(move || {
+        SETTLE_QUEUED.with(|q| q.set(false));
+        settle(&ui);
+    });
+}
+
+/// After a redraw: the keyboard stays in the area it was in, on something it can rest on. If that
+/// area has gone (the details closed), it goes to the list.
+pub fn settle(ui: &Ui) {
+    if ui.st.try_borrow_mut().is_err() || others_own_it(ui) {
+        return;
+    }
+    let Some(want) = CURRENT.with(|c| c.get()) else { return };
+    let f = focus(ui);
+    if f.as_ref().is_some_and(|f| f.is_mapped() && is_resting_place(f) && region_of(ui, f) == Some(want)) {
+        remember(ui);
+        return;
+    }
+    let shown = regions_shown(ui);
+    let to = if shown.contains(&want) {
+        want
+    } else if shown.contains(&Region::List) {
+        Region::List
+    } else {
+        match shown.first() {
+            Some(r) => *r,
+            None => return,
+        }
+    };
+    SETTLING.with(|s| s.set(true));
+    home(ui, to);
+    SETTLING.with(|s| s.set(false));
+    remember(ui);
+}
+
+/// The view changed: the keyboard goes to the new view's list, or, if it was on the title bar or
+/// the view tabs, to the new view's tab there.
+pub fn view_changed(ui: &Ui) {
+    let was = focus(ui).filter(|f| f.is_mapped()).and_then(|f| region_of(ui, &f)).or_else(|| CURRENT.with(|c| c.get()));
+    let to = match was {
+        Some(r @ (Region::Top | Region::Tabs | Region::Rail)) => r,
+        _ => Region::List,
+    };
+    CURRENT.with(|c| c.set(Some(to)));
+    let ui = ui.clone();
+    // Once the new view has drawn.
+    glib::idle_add_local_once(move || {
+        if others_own_it(&ui) {
+            return;
+        }
+        let f = focus(&ui);
+        let fine = f.as_ref().is_some_and(|f| f.is_mapped() && is_resting_place(f) && region_of(&ui, f) == Some(to) && !(f.has_css_class("tab") && !f.has_css_class("on")));
+        if !fine {
+            SETTLING.with(|s| s.set(true));
+            home(&ui, to);
+            SETTLING.with(|s| s.set(false));
+        }
+        remember(&ui);
+    });
 }
 
 /// The words on a control (its label, else its tooltip), for the replay's log.
@@ -281,10 +499,11 @@ fn label_of(w: &gtk::Widget) -> Option<String> {
 pub fn log_focus(ui: &Ui, after: &str) {
     let f = focus(ui);
     eprintln!(
-        "key: after {after}: {} {:?} in {}",
+        "key: after {after}: {} {:?} in {} visible={}",
         f.as_ref().map_or("nothing".to_string(), |f| f.type_().name().to_string()),
         f.as_ref().and_then(label_of).unwrap_or_default(),
-        f.as_ref().and_then(|f| region_of(ui, f)).map_or("?", Region::name)
+        f.as_ref().and_then(|f| region_of(ui, f)).map_or("?", Region::name),
+        ui.window.gets_focus_visible()
     );
 }
 
@@ -566,18 +785,26 @@ fn mark(ui: &Ui) {
 pub fn build(ui: &Ui) {
     {
         let ui2 = ui.clone();
-        ui.window.connect_focus_widget_notify(move |win| {
-            if let Some(f) = gtk::prelude::GtkWindowExt::focus(win)
-                && let Some(r) = region_of(&ui2, &f)
-            {
-                LAST.with(|l| l.borrow_mut().insert(r, f.downgrade()));
+        ui.window.connect_focus_widget_notify(move |_| {
+            if std::env::var_os("WAKE_KEY_DEBUG").is_some() {
+                log_focus(&ui2, "focus change");
             }
+            focus_moved(&ui2);
             mark(&ui2);
         });
     }
     {
         let ui2 = ui.clone();
         ui.window.connect_focus_visible_notify(move |_| mark(&ui2));
+    }
+    {
+        // A click is the person's too (a press or a release), wherever it lands.
+        let click = gtk::GestureClick::new();
+        click.set_button(0);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        click.connect_pressed(|_, _, _, _| note_input());
+        click.connect_released(|_, _, _, _| note_input());
+        ui.window.add_controller(click);
     }
 }
 
@@ -713,13 +940,16 @@ pub fn replay(ui: &Ui, seq: &str) {
     for (i, step) in steps.into_iter().enumerate() {
         let ui = ui.clone();
         glib::timeout_add_local_once(Duration::from_millis(150 * (i as u64 + 1)), move || {
-            ui.window.set_focus_visible(true);
             match step {
-                Step::Type(t) => type_text(&ui, &t),
+                Step::Type(t) => {
+                    note_input();
+                    type_text(&ui, &t);
+                }
                 Step::Wait => {}
                 // As when new data arrives: the details and the list are drawn again.
                 // A click in the middle of the details (what the click handler does after it).
                 Step::ClickDetails => {
+                    note_input();
                     let d = &ui.w.drawer;
                     crate::panel::focus_near(&ui, f64::from(d.width()) / 2.0, f64::from(d.height()) / 2.0);
                 }
@@ -741,11 +971,12 @@ pub fn replay(ui: &Ui, seq: &str) {
                 let v = ui.st.borrow().view;
                 eprintln!("keys: step {i}: scroll {:.0}", ui.w.views[&v].scroll.vadjustment().value());
                 eprintln!(
-                    "keys: after step {i}: focus {:?} in {:?} label {:?} drawer {}",
+                    "keys: after step {i}: focus {:?} in {:?} label {:?} drawer {} visible {}",
                     f.as_ref().map(|f| (f.type_().name(), f.widget_name().to_string(), f.state_flags(), f.css_classes())),
                     f.as_ref().and_then(|f| region_of(&ui, f)).map(Region::name),
                     f.as_ref().and_then(label_of),
-                    ui.st.borrow().drawer.is_some()
+                    ui.st.borrow().drawer.is_some(),
+                    ui.window.gets_focus_visible()
                 );
             }
         });

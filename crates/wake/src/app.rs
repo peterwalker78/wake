@@ -1621,8 +1621,9 @@ pub fn refresh(ui: &Ui) {
             ui.st.borrow_mut().started = true;
             render_all(ui);
             panel::tick_procs(ui);
-            // On opening, the keyboard starts in the list (not on the title bar's first button).
-            if first {
+            // On opening, the keyboard starts in the list (not on the title bar's first button),
+            // unless the person has already put it somewhere.
+            if first && !crate::keynav::person_moved() {
                 let ui = ui.clone();
                 glib::idle_add_local_once(move || focus_list(&ui));
             }
@@ -1884,6 +1885,7 @@ pub fn set_view(ui: &Ui, v: View) {
     let list = &ui.w.views[&v].list;
     list.unselect_all();
     ui.w.views[&v].scroll.vadjustment().set_value(0.0);
+    crate::keynav::view_changed(ui);
 }
 
 /// Keys of the selectable rows in the current view, in order.
@@ -2432,6 +2434,7 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
 }
 
 pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagation {
+    crate::keynav::note_key(ui, key);
     // WAKE_KEY_DEBUG=1: every key the window gets, and where the keyboard is after it.
     if std::env::var_os("WAKE_KEY_DEBUG").is_some() {
         let r = on_key_inner(ui, key, mods);

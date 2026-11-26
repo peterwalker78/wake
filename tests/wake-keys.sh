@@ -2,10 +2,10 @@
 # Asserts Wake's keyboard works as on any desktop: in every view, at the three layouts (details
 # beside the list, over it, or in its place), Enter on the selected item puts the keyboard in its
 # details (in Ideas, the idea's project; in Ask, the question box), then Tab (and, in a second run, Shift+Tab) goes round the whole window:
-#   - never stuck: every press moves the keyboard on;
+#   - one press, one area: every press moves the keyboard to the next area;
 #   - never lost: the keyboard is always somewhere on screen;
 #   - in screen order: title bar, filters, list, details, the view tabs (and back the other way);
-#   - a list is one stop: Tab never walks along its rows or cards;
+#   - a list is one area: Tab lands on its selected item and never walks along its rows or cards;
 # and Esc from the details puts the keyboard back on the row it came from.
 #
 # Runs on headless Weston with a fake seat, so the window is active and frames come at real speed,
@@ -70,6 +70,9 @@ for path in sorted(glob.glob(d + '/*-fwd.txt') + glob.glob(d + '/*-back.txt')):
     stuck = sum(1 for a, b in zip(tabs, tabs[1:]) if a[:2] == b[:2])
     if stuck:
         probs.append(f"stuck {stuck} times")
+    stayed = sum(1 for a, b in zip(tabs, tabs[1:]) if a[1] == b[1])
+    if stayed:
+        probs.append(f"{stayed} presses stayed in the same area")
     if any(t[1] == "" for t in tabs):
         probs.append("the keyboard went somewhere off screen")
     rows = {m.group(2) for t in tabs if t[1] == 'list' for m in [item.match(t[0])] if m}

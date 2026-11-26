@@ -2432,6 +2432,19 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
 }
 
 pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagation {
+    // WAKE_KEY_DEBUG=1: every key the window gets, and where the keyboard is after it.
+    if std::env::var_os("WAKE_KEY_DEBUG").is_some() {
+        let r = on_key_inner(ui, key, mods);
+        let ui2 = ui.clone();
+        let name = key.name().map(|n| n.to_string()).unwrap_or_default();
+        eprintln!("key: {name} mods {mods:?} -> {r:?}");
+        glib::idle_add_local_once(move || crate::keynav::log_focus(&ui2, &name));
+        return r;
+    }
+    on_key_inner(ui, key, mods)
+}
+
+fn on_key_inner(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagation {
     use glib::Propagation::{Proceed, Stop};
     // Hold-to-peek first: while a peek is on, every key is its own.
     if let Some(p) = peek::on_press(ui, key, mods) {

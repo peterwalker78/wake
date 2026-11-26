@@ -1026,7 +1026,7 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
     Some(Stop)
 }
 
-fn focus_list(ui: &Ui) {
+pub fn focus_list(ui: &Ui) {
     let _ = ui;
     let Some(wd) = ws() else { return };
     if let Some(r) = wd.list.selected_row() {

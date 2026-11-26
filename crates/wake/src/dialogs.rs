@@ -246,9 +246,8 @@ pub fn keys(ui: &Ui) {
         (
             "Moving around",
             vec![
-                ("Tab  Shift+Tab", "the next or previous control".into()),
-                ("F6", "jump to the next area: the list, the details, the top".into()),
-                ("↑ ↓ ← →", "move in the list, the details or a menu".into()),
+                ("Tab  Shift+Tab", "the next or previous area: the top, the list, the details".into()),
+                ("↑ ↓ ← →", "move within the area you're in".into()),
                 ("Home  End", "the first or last".into()),
                 ("Enter", "open the details, or press the button".into()),
                 ("Esc", "go back, or close".into()),

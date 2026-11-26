@@ -74,9 +74,9 @@ bar.
 
 ## Keys
 
-Wake works like any desktop app: `Tab` and `Shift+Tab` go from part to part of the window (a list
-is one stop), the arrow keys move within the part you're in, `Enter` opens the details or presses
-a button, and `Esc` goes back. `F6` jumps straight to the next area (the details, say), and a click
+Wake works like a file manager or a mail app: `Tab` and `Shift+Tab` go from area to area (the
+title bar, the filters, the list, the details), one press each, and the arrow keys move within the
+area you're in. `Enter` opens the details or presses a button, `Esc` goes back, and a click
 anywhere in the details puts the keyboard there. Every action is a button or in an item's ⋯ menu.
 
 | Key | |

@@ -188,6 +188,10 @@ pub struct AppState {
     /// to when it closes.
     pub modal_submit: Option<Rc<dyn Fn()>>,
     pub modal_return: Option<gtk::Widget>,
+    /// The open dialog's own Esc: true when it handled the key (asked first) and stays open.
+    pub modal_esc: Option<Rc<dyn Fn() -> bool>>,
+    /// Run once when the open dialog closes, however it closes.
+    pub modal_closed: Option<Rc<dyn Fn()>>,
     /// Projects: a project is being dragged; the view waits to draw again until it is dropped.
     pub dragging: bool,
     pub busy_ov: bool,
@@ -266,6 +270,8 @@ impl Default for AppState {
             modal_open: false,
             modal_submit: None,
             modal_return: None,
+            modal_esc: None,
+            modal_closed: None,
             dragging: false,
             busy_ov: false,
             busy_procs: false,

@@ -804,12 +804,13 @@ pub fn render_chips(ui: &Ui) {
             chips.add_next(&crate::projects::new_group_button(ui));
             chips.add_next(&crate::projects::layout_switch(ui));
             chips.add_next(&crate::disk::details_button(ui));
-            let ui = ui.clone();
+            let ui2 = ui.clone();
             chips.add_next(&w::button("+ Track a folder", None, &["sm"], move || {
-                ui.st.borrow_mut().adding = true;
-                ui.st.borrow_mut().drawn.remove(&View::Projects);
-                render_view(&ui);
+                ui2.st.borrow_mut().adding = true;
+                ui2.st.borrow_mut().drawn.remove(&View::Projects);
+                render_view(&ui2);
             }));
+            chips.add_next(&crate::newproject::button(ui));
         }
         View::History => {
             chips.add_next(&w::label("History", &["ttl"]));

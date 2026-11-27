@@ -570,7 +570,7 @@ fn render_thread(ui: &Ui) {
 }
 
 /// Draws an answer's Markdown into `bx`: text blocks as Pango markup, code in monospace boxes.
-fn fill_answer(bx: &gtk::Box, text: &str) {
+pub(crate) fn fill_answer(bx: &gtk::Box, text: &str) {
     w::clear(bx);
     let mut list: Option<gtk::Box> = None;
     for b in md::blocks(text) {
@@ -1098,6 +1098,7 @@ impl Demo {
             turns,
             // One made-up thread was answered by Codex, to show how that reads.
             ai: (id == "qdemo-git").then(|| "codex".to_string()),
+            kind: None,
         };
         let threads = vec![
             thread("qdemo-cache", None, vec![turn("What's the best way to cache a Rust build inside a distrobox?", "", 20, false, None)]),

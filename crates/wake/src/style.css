@@ -417,6 +417,9 @@ list.qlist > row:selected .qrow .qt { color: @ink; }
 .qerr { font-size: 12.5px; color: @err; }
 .qbarwrap { border-top: 1px solid @line; background-color: @panel; padding: 10px 24px 8px; }
 window.wake textview.qinput { font-size: 14px; }
+/* New project: the description the agent reads first, as code text. */
+window.wake textview.area.code { font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
+.nptalk { padding: 4px 2px 8px; }
 .qfoot { padding: 0 2px; }
 .qmark { color: @dim; }
 /* questions: Markdown tables */

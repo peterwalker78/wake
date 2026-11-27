@@ -2,7 +2,7 @@
 //! starting GTK (so `wake , idea` is instant from any shell).
 //!
 //! The window's own options: `--demo` (made-up data), `--view <monitor|agents|projects|ideas|
-//! history|questions|settings>`, `--show <switcher|switcher-subs|session[:id]|project[:id]|pause|crash|menu|stale|stop[:pid]|peek[:session]|questions[:thread]|measure[:width]|behind[:project]|behind-pull[:project]>`,
+//! history|questions|settings>`, `--show <switcher|switcher-subs|session[:id]|project[:id]|pause|crash|menu|stale|stop[:pid]|peek[:session]|questions[:thread]|newproject[:review]|measure[:width]|behind[:project]|behind-pull[:project]>`,
 //! and `--screenshot <png>`, which draws the window into a PNG and quits (run it on GTK's
 //! Broadway backend to check the look without opening anything on screen).
 
@@ -18,6 +18,7 @@ mod hooks;
 mod keynav;
 mod layout;
 mod motion;
+mod newproject;
 mod panel;
 mod peek;
 mod prefs;

@@ -129,6 +129,11 @@ pub fn apply_show(ui: &Ui, show: &str) {
             }
         }
         "questions" => crate::questions::show(ui, arg),
+        // New project: the interview two answers in (demo), or (newproject:review) the plan.
+        "newproject" => {
+            set_view(ui, View::Projects);
+            crate::newproject::show(ui, arg.as_deref() == Some("review"));
+        }
         "behind" | "behind-pull" | "behind-wait" => crate::behind::show(ui, what, arg),
         "disk" | "disk-machine" | "disk-clear" | "disk-remove" | "set-project" => crate::disk::show(ui, what, arg), // disk.rs hook
         // Projects with "Track a folder" open.
@@ -399,7 +404,9 @@ pub fn screenshot(ui: &Ui, path: PathBuf, show: Option<String>) {
         }
         // One more overview just before the shot, so it shows the settled state (git included).
         // A scroll test needs longer: the hook waits for the list to load, then rebuilds it.
-        let long = show.as_deref().is_some_and(|s| s.starts_with("measure") || s.starts_with("peek") || s.starts_with("scroll") || s.starts_with("panel-scroll") || s.starts_with("agents-open"));
+        let long = show.as_deref().is_some_and(|s| {
+            s.starts_with("measure") || s.starts_with("newproject") || s.starts_with("peek") || s.starts_with("scroll") || s.starts_with("panel-scroll") || s.starts_with("agents-open")
+        });
         // Behind-the-remote shots of real data wait for the first ls-remote pass.
         let slow = show.as_deref().is_some_and(|s| s.starts_with("behind"));
         // A key replay: its keys (150 ms apart) and a beat for what they open.

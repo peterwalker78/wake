@@ -46,6 +46,12 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
 - **Ask** (the speech bubble) asks your own `claude`, `codex` or `gemini` a quick question
   without opening a terminal, in threads you can come back to. They may only search and read;
   nothing that changes files is allowed.
+- **New project** (in Projects) starts something from nothing. Your own AI asks a few questions,
+  one at a time: what you want to make and who it's for, whether it's code or something else like
+  writing or planning, which tech (it suggests one if you don't know), and whether to track changes
+  with git. You check and change the plan, then Wake makes the folder, writes the notes the agent
+  reads first (`CLAUDE.md`, or `AGENTS.md` for Codex) and opens a new terminal with the agent,
+  which sets up the rest and asks before installing anything.
 - **Peek**: hold `Space` on a session to see it without leaving Wake, and let go to come back.
   The selected session says what holding `Space` will do: zoom to its window, or a preview.
   On Slipstream the desktop slides to the agent's window, idle or working, in whatever terminal
@@ -130,6 +136,9 @@ Everything else it does is something you ask for, and it asks again first:
 - **Remove** an agent's worktree whose branch is merged and whose tree is clean
   (`git worktree remove`, never `--force`).
 - **Go to** and **Start an agent** open a new window of your default terminal app.
+- **New project** makes one new folder in `~/Projects` (never over an existing one), runs
+  `git init` there if you chose git, writes `CLAUDE.md` or `AGENTS.md` in it, and opens a new
+  terminal window there. The interview before it runs with no tools at all: it reads nothing.
 
 ## Getting it
 

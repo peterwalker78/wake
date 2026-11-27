@@ -189,8 +189,12 @@ pub fn focus_primary(ui: &Ui) {
 /// Loads a session's detail (and, on `refresh`, the open running subagents) off the UI thread.
 pub fn load_session(ui: &Ui, id: &str, refresh: bool) {
     let id = id.to_string();
+    // The periodic re-read is never stacked on one still running.
+    if refresh && std::mem::replace(&mut ui.st.borrow_mut().busy_panel, true) {
+        return;
+    }
     let open: Vec<String> = if refresh { ui.st.borrow().sub_open.iter().cloned().collect() } else { Vec::new() };
-    app::bg(
+    app::bg_or(
         ui,
         {
             let id = id.clone();
@@ -204,6 +208,9 @@ pub fn load_session(ui: &Ui, id: &str, refresh: bool) {
             }
         },
         move |ui, (d, subs)| {
+            if refresh {
+                ui.st.borrow_mut().busy_panel = false;
+            }
             let (live, opened): (Vec<SubagentSummary>, Vec<String>) = {
                 let mut st = ui.st.borrow_mut();
                 let Some(d) = d else { return };
@@ -229,6 +236,12 @@ pub fn load_session(ui: &Ui, id: &str, refresh: bool) {
             if ui.st.borrow().sw.open {
                 crate::switcher::render_inside(ui);
             }
+        },
+        move |ui| {
+            if refresh {
+                ui.st.borrow_mut().busy_panel = false;
+            }
+            app::toast(ui, "Wake hit an error reading that session; it will keep trying.", true);
         },
     );
 }
@@ -1093,7 +1106,7 @@ pub fn tick_procs(ui: &Ui) {
 /// "Open in a new window" for one running in the background, "Resume in a new window" for one
 /// that has ended and can be reopened.
 pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Button> {
-    if !(s.location.is_some() || app::can_reopen(s) || app::is_live(s.state)) {
+    if !(s.location.is_some() || app::can_reopen(s) || app::is_live(s.state) || s.pid.is_some()) {
         return None;
     }
     let (loc, _, can_go, tip) = app::loc_for(ui, s);
@@ -1120,6 +1133,9 @@ pub fn go_words(s: &SessionSummary, loc: &str, can_go: bool) -> String {
         "Go to".into()
     } else if app::can_reopen(s) {
         "Resume in a new window".into()
+    } else if s.pid.is_some() && s.job_id.is_none() {
+        // Running in a window Wake hasn't found: Go to looks for it.
+        "Go to its window".into()
     } else {
         // Live in no window: a background job, attached in a new window.
         "Open in a new window".into()

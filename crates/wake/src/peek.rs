@@ -852,7 +852,13 @@ pub fn show_for_shot(ui: &Ui, arg: Option<String>) {
 /// for an agent's terminal), through the real desktop link, and the keyboard is put on the first
 /// Monitor row so real Space/Tab presses (from the compositor) can drive it.
 pub fn hook_look_at(ui: &Ui, pid: u32) {
-    let link = wake_core::look::Look::new(wake_core::desktop::default_runner(), &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(), std::env::temp_dir(), std::process::id(), true);
+    let link = wake_core::look::Look::new(
+        wake_core::desktop::default_runner(),
+        &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+        wake_core::store::Paths::from_env().data.join("kwin"),
+        std::process::id(),
+        true,
+    );
     let kind = link.kind();
     *HOOK_ARC.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(link));
     {

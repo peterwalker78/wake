@@ -262,7 +262,7 @@ pub fn fetch(ui: &Ui) {
         Some(s.ov.as_ref().map_or(0, |o| o.seq))
     });
     let Some(since) = since else { return };
-    app::bg(
+    app::bg_or(
         ui,
         move |src| src.questions(since),
         |ui, r| {
@@ -275,6 +275,10 @@ pub fn fetch(ui: &Ui) {
             if active {
                 poll(ui);
             }
+        },
+        |ui| {
+            st(|s| s.busy = false);
+            app::toast(ui, "Wake hit an error reading your questions. Please try again.", true);
         },
     );
 }

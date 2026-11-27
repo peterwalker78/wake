@@ -139,7 +139,8 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
             let req = brief::StartAgent { project: project.clone(), ideas: ids.clone(), brief: text, agent: agent.id().into(), id: id.clone() };
             let (err, busy, ids, name) = (err.clone(), busy.clone(), ids.clone(), name.clone());
             err.set_text("Opening the window…");
-            app::bg(
+            let (err2, busy2) = (err.clone(), busy.clone());
+            app::bg_or(
                 &ui,
                 move |src| src.start_agent(&req, false),
                 move |ui, r| {
@@ -161,6 +162,10 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
                     app::refresh_ideas(ui);
                     app::refresh(ui);
                     views::render_chips(ui);
+                },
+                move |_| {
+                    busy2.set(false);
+                    err2.set_text("Wake hit an error opening the window. Please try again.");
                 },
             );
         })

@@ -182,6 +182,10 @@ pub struct AppState {
     pub modal_open: bool,
     pub busy_ov: bool,
     pub busy_procs: bool,
+    /// The periodic re-reads of open details (Agents' open rows, the session panel) are running:
+    /// the next tick waits for them rather than stacking up.
+    pub busy_agents_open: bool,
+    pub busy_panel: bool,
     /// What each view last drew, so a refresh that changes nothing redraws nothing.
     pub drawn: HashMap<View, String>,
     /// Where each view was scrolled when it was last rebuilt, so restoring focus can't move it.
@@ -245,6 +249,8 @@ impl Default for AppState {
             modal_open: false,
             busy_ov: false,
             busy_procs: false,
+            busy_agents_open: false,
+            busy_panel: false,
             drawn: HashMap::new(),
             kept_scroll: HashMap::new(),
             toast_gen: 0,
@@ -353,30 +359,46 @@ pub struct App {
 
 pub type Ui = Rc<App>;
 
-/// Runs `work` against the source on GLib's blocking pool, then `done` on the UI thread.
+/// Runs `work` against the source on GLib's blocking pool, then `done` on the UI thread. If the
+/// work fails (a panic, already in Wake's log by then), a toast says so.
 pub fn bg<T: Send + 'static>(ui: &Ui, work: impl FnOnce(&dyn Source) -> T + Send + 'static, done: impl FnOnce(&Ui, T) + 'static) {
+    bg_or(ui, work, done, |ui| toast(ui, "Something went wrong there; Wake noted it in its log. Please try again.", true));
+}
+
+/// `bg`, with `failed` run instead of `done` if the work fails: it clears the caller's own busy
+/// flag, so the next try isn't blocked for good, and says what didn't happen.
+pub fn bg_or<T: Send + 'static>(ui: &Ui, work: impl FnOnce(&dyn Source) -> T + Send + 'static, done: impl FnOnce(&Ui, T) + 'static, failed: impl FnOnce(&Ui) + 'static) {
     let src = ui.src.clone();
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         match gio::spawn_blocking(move || work(src.as_ref())).await {
             Ok(value) => done(&ui, value),
-            Err(_) => {
-                // The work panicked. Clear the busy flags so the next poll tries again, and say so.
-                {
-                    let mut st = ui.st.borrow_mut();
-                    st.busy_ov = false;
-                    st.busy_procs = false;
-                    st.ov_error = Some("Wake hit an error reading your sessions; it will keep trying.".into());
-                }
-                render_all(&ui);
-            }
+            Err(_) => failed(&ui),
         }
     });
 }
 
+/// A crash anywhere, the UI thread included, leaves its message and place in Wake's log before the
+/// usual report.
+fn log_panics() {
+    let paths = wake_core::store::Paths::from_env();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let p = info.payload();
+        let msg = p.downcast_ref::<&str>().copied().or_else(|| p.downcast_ref::<String>().map(String::as_str)).unwrap_or("no message");
+        let at = info.location().map(|l| format!(" at {}:{}", l.file(), l.line())).unwrap_or_default();
+        wake_core::log::note_error(&paths, "Crash", &format!("{msg}{at}"));
+        previous(info);
+    }));
+}
+
 pub fn run(opts: Opts) -> glib::ExitCode {
-    // A demo or a screenshot never writes the person's settings.
-    prefs::init(!opts.demo && opts.screenshot.is_none());
+    // A demo or a screenshot never writes the person's settings (or log).
+    let real = !opts.demo && opts.screenshot.is_none();
+    prefs::init(real);
+    if real {
+        log_panics();
+    }
     let app = gtk::Application::builder().application_id(APP_ID).build();
     if opts.screenshot.is_some() || opts.demo {
         // A screenshot or a demo never hands over to (or takes over) the real window.
@@ -1465,7 +1487,8 @@ fn motion_frames(ui: &Ui, path: &std::path::Path, frames: &str, action: &str) {
         ("down", _) => move_sel(ui, 1),
         ("switcher", _) => switcher::open(ui),
         ("pause", _) => {
-            if let Some(id) = ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.first().map(|p| p.id.clone())) {
+            let first = ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.first().map(|p| p.id.clone()));
+            if let Some(id) = first {
                 dialogs::pause(ui, &id);
             }
         }
@@ -1592,16 +1615,27 @@ pub fn refresh(ui: &Ui) {
         }
         st.busy_ov = true;
     }
-    bg(
+    bg_or(
         ui,
         |src| src.overview(),
         |ui, ov| {
-            {
+            let found = {
                 let mut st = ui.st.borrow_mut();
+                let was_finding = finding_windows(&st);
                 st.busy_ov = false;
                 st.ov = Some(ov);
                 st.ov_error = None;
                 st.last_ok = Some(glib::monotonic_time());
+                forget_hidden(&mut st);
+                let finding = finding_windows(&st);
+                if let Some(p) = st.procs.as_mut() {
+                    agents::hold_stale(p, finding);
+                }
+                was_finding && !finding
+            };
+            if found {
+                // Every window is known now: what looks stale can be said.
+                refresh_procs(ui);
             }
             let first = !ui.st.borrow().started;
             ui.st.borrow_mut().started = true;
@@ -1614,7 +1648,46 @@ pub fn refresh(ui: &Ui) {
                 glib::idle_add_local_once(move || focus_list(&ui));
             }
         },
+        |ui| {
+            {
+                let mut st = ui.st.borrow_mut();
+                st.busy_ov = false;
+                st.ov_error = Some("Wake hit an error reading your sessions; it will keep trying.".into());
+            }
+            render_all(ui);
+        },
     );
+}
+
+/// Wake is still finding which window each session is in (or hasn't looked yet).
+fn finding_windows(st: &AppState) -> bool {
+    st.ov.as_ref().is_none_or(|o| o.locations_unsure.is_some())
+}
+
+/// The sessions whose details are on screen: the side panel's, the Find pop-up's, and those of
+/// rows opened in Agents.
+fn shown_sessions(st: &AppState) -> HashSet<String> {
+    let mut keep: HashSet<String> = st.sw.sel_id.iter().cloned().collect();
+    if let Some(Drawer::Session(id)) = &st.drawer {
+        keep.insert(id.clone());
+    }
+    if let Some(p) = &st.procs {
+        keep.extend(p.procs.iter().filter(|a| st.agent_open.contains(&a.pid)).filter_map(|a| a.session_id.clone()));
+    }
+    keep
+}
+
+/// Drops the details nothing shows any more, so they don't pile up over days; they are read
+/// again when opened.
+fn forget_hidden(st: &mut AppState) {
+    let keep = shown_sessions(st);
+    st.sessions.retain(|id, _| keep.contains(id));
+    st.subs.retain(|(sid, _), _| keep.contains(sid));
+    let project = match &st.drawer {
+        Some(Drawer::Project(id)) => Some(id.clone()),
+        _ => None,
+    };
+    st.projects.retain(|id, _| project.as_ref() == Some(id));
 }
 
 pub fn refresh_procs(ui: &Ui) {
@@ -1625,13 +1698,14 @@ pub fn refresh_procs(ui: &Ui) {
         }
         st.busy_procs = true;
     }
-    bg(
+    bg_or(
         ui,
         |src| (src.processes(), mem_available()),
-        |ui, (procs, mem)| {
+        |ui, (mut procs, mem)| {
             {
                 let mut st = ui.st.borrow_mut();
                 st.busy_procs = false;
+                agents::hold_stale(&mut procs, finding_windows(&st));
                 st.procs = Some(procs);
                 st.mem_available = mem;
             }
@@ -1648,6 +1722,10 @@ pub fn refresh_procs(ui: &Ui) {
                 agents::render(ui);
                 agents::refresh_open(ui);
             }
+        },
+        |ui| {
+            ui.st.borrow_mut().busy_procs = false;
+            toast(ui, "Wake hit an error reading the running agents; it will keep trying.", true);
         },
     );
 }
@@ -2123,8 +2201,10 @@ pub fn find_project(ui: &Ui, id: &str) -> Option<ProjectSummary> {
     ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.iter().find(|p| p.id == id).cloned())
 }
 
+/// An ended session that can be resumed. Never one whose process is still alive (`pid`): resuming
+/// that would start a second copy of the same conversation.
 pub fn can_reopen(s: &SessionSummary) -> bool {
-    s.location.is_none() && s.resume_command.is_some() && matches!(s.state, State::Ended | State::Unknown)
+    s.location.is_none() && s.pid.is_none() && s.resume_command.is_some() && matches!(s.state, State::Ended | State::Unknown)
 }
 
 pub fn is_live(s: State) -> bool {
@@ -2149,11 +2229,15 @@ pub fn loc_of(s: &SessionSummary, unsure: bool) -> (String, &'static str, bool, 
     if let Some(l) = &s.location {
         return (tab_label(l), "", true, format!("Bring {} forward", l.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"))));
     }
-    if unsure && is_live(s.state) && s.state != State::Unknown {
+    if unsure && (s.pid.is_some() || is_live(s.state) && s.state != State::Unknown) {
         return ("checking…".into(), "none", false, "Wake is still finding which window this is in.".into());
     }
     if can_reopen(s) {
         return ("not open".into(), "re", true, "Resume it in a new terminal window".into());
+    }
+    if s.pid.is_some() && s.job_id.is_none() {
+        // Running, but in no window Wake has found: Go to looks for it, and never resumes a copy.
+        return ("running".into(), "", true, "It is running, but Wake can't see its window. Go to looks for it.".into());
     }
     if s.deleted_by_claude {
         return ("kept by Wake".into(), "none", false, "Claude deleted its copy; it cannot be reopened".into());
@@ -2775,6 +2859,60 @@ mod tests {
         assert_eq!(command_for(K::Right, false, View::Projects, false), Some(Cmd::Across(1)));
         assert_eq!(command_for(K::Left, false, View::Ideas, false), Some(Cmd::Across(-1)));
         assert_eq!(command_for(K::Right, false, View::Monitor, false), None, "a list has no across");
+    }
+
+    #[test]
+    fn only_details_on_screen_are_kept() {
+        let mut st = AppState { drawer: Some(Drawer::Session("panel".into())), ..Default::default() };
+        st.sw.sel_id = Some("find".into());
+        let keep = shown_sessions(&st);
+        assert!(keep.contains("panel") && keep.contains("find") && keep.len() == 2, "{keep:?}");
+        st.drawer = Some(Drawer::Project("p".into()));
+        st.sw.sel_id = None;
+        assert!(shown_sessions(&st).is_empty(), "a project's panel keeps no session");
+    }
+
+    fn session(state: State) -> SessionSummary {
+        SessionSummary {
+            id: "s".into(),
+            agent: Agent::Codex,
+            project: None,
+            project_name: None,
+            title: "t".into(),
+            state,
+            evidence: String::new(),
+            started_at: None,
+            last_at: None,
+            minutes: 0,
+            prompts: 0,
+            last_prompt: None,
+            away_summary: None,
+            question: None,
+            subagents: SubagentCounts::default(),
+            cwd: None,
+            location: None,
+            resume_command: Some("codex resume s".into()),
+            job_id: None,
+            pid: None,
+            deleted_by_claude: false,
+        }
+    }
+
+    #[test]
+    fn a_session_whose_process_is_alive_is_never_resumed() {
+        let mut s = session(State::Ended);
+        assert!(can_reopen(&s));
+        assert_eq!(loc_of(&s, false).0, "not open");
+        s.pid = Some(4242);
+        for state in [State::Ended, State::Unknown, State::Idle, State::Working] {
+            s.state = state;
+            assert!(!can_reopen(&s), "{state:?}");
+            let (text, _, can_go, _) = loc_of(&s, false);
+            assert_eq!((text.as_str(), can_go), ("running", true), "{state:?}: Go to looks for its window");
+            assert_eq!(loc_of(&s, true).0, "checking…", "{state:?} while windows are being found");
+        }
+        s.job_id = Some("bg-1".into());
+        assert_eq!(loc_of(&s, false).0, "background", "a background job opens with attach");
     }
 
     #[test]

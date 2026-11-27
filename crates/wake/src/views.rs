@@ -1210,20 +1210,64 @@ fn board(ui: &Ui, rows: &[SessionSummary], compact: bool) {
     let narrow = compact || app::cards(&ui.st.borrow());
     if !waiting.is_empty() {
         vw.list.append(&section_row("Needs you", waiting.len()));
-        for s in waiting {
-            vw.list.append(&ask_card(ui, s));
+        for group in project_groups(waiting) {
+            vw.list.append(&project_row(ui, group[0], group.len()));
+            for s in group {
+                vw.list.append(&ask_card(ui, s));
+            }
         }
     }
-    for (title, group) in [("Working", working), ("Earlier", rest)] {
-        if group.is_empty() {
+    for (title, sessions) in [("Working", working), ("Earlier", rest)] {
+        if sessions.is_empty() {
             continue;
         }
-        vw.list.append(&section_row(title, group.len()));
-        let n = group.len();
-        for (i, s) in group.into_iter().enumerate() {
-            board_item(ui, s, (i == 0, i + 1 == n), narrow);
+        vw.list.append(&section_row(title, sessions.len()));
+        // Each project's sessions in one box, under the project's name.
+        for group in project_groups(sessions) {
+            vw.list.append(&project_row(ui, group[0], group.len()));
+            let n = group.len();
+            for (i, s) in group.into_iter().enumerate() {
+                board_item(ui, s, (i == 0, i + 1 == n), narrow);
+            }
         }
     }
+}
+
+/// Sessions bundled by project, each project where its first session was (so the order the board
+/// keeps, what needs you first, still holds), its sessions in their order.
+fn project_groups(rows: Vec<&SessionSummary>) -> Vec<Vec<&SessionSummary>> {
+    let mut groups: Vec<Vec<&SessionSummary>> = Vec::new();
+    for s in rows {
+        match groups.iter_mut().find(|g| g[0].project == s.project) {
+            Some(g) => g.push(s),
+            None => groups.push(vec![s]),
+        }
+    }
+    groups
+}
+
+/// A project's name over its box of sessions: its colour, its name, how many when more than one,
+/// and what it has to pull. Never selected.
+fn project_row(ui: &Ui, s: &SessionSummary, n: usize) -> gtk::ListBoxRow {
+    let r = gtk::ListBoxRow::new();
+    r.set_selectable(false);
+    r.set_activatable(false);
+    r.set_focusable(false);
+    r.add_css_class("grouprow");
+    r.add_css_class("projrow");
+    let b = w::hbox(8, &["projhead"]);
+    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
+        b.append(&tag);
+    }
+    b.append(&w::label(&project_label(s.project_name.as_deref()), &["pname"]));
+    if n > 1 {
+        b.append(&w::label(&n.to_string(), &["dim", "count"]));
+    }
+    if let Some(m) = crate::behind::pill(ui, s.project.as_deref()) {
+        b.append(&m);
+    }
+    r.set_child(Some(&b));
+    r
 }
 
 /// One session on the board: its row (with the agent's readout, as Agents shows it, and the
@@ -1235,13 +1279,13 @@ fn board_item(ui: &Ui, s: &SessionSummary, (first, last): (bool, bool), narrow: 
     let open = ui.st.borrow().board_open.contains(&s.id) && s.subagents.total > 0;
     let toggle = (s.subagents.total > 0).then(|| {
         let (ui2, id) = (ui.clone(), s.id.clone());
-        agents::sub_toggle(&format!("subcount-{}", s.id), &s.subagents, open, narrow, move || {
+        agents::sub_toggle(&format!("subcount-{}", s.id), &s.subagents, 0, open, narrow, move || {
             let open = ui2.st.borrow().board_open.contains(&id);
             agents::set_board_open(&ui2, &id, !open);
         })
     });
     let tree = if open { agents::board_tree(ui, s, lead) } else { Vec::new() };
-    let row = session_item(ui, s, &now_cell(s, toggle.is_none()), wave.map(|w| w.upcast()), (first, last && tree.is_empty()), !narrow, true, toggle);
+    let row = session_item(ui, s, &now_cell(s, toggle.is_none()), wave.map(|w| w.upcast()), (first, last && tree.is_empty()), !narrow, true, toggle, false);
     vw.list.append(&row);
     let n = tree.len();
     for (i, r) in tree.into_iter().enumerate() {
@@ -1273,18 +1317,27 @@ pub fn section_row(title: &str, n: usize) -> gtk::ListBoxRow {
 }
 
 /// The project and session on one line: the project's colour, its name, the session's title.
-fn who_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
+/// Without `named` (Monitor, where the project's name heads its box) just the title, and
+/// "probably this project" when Wake only guessed it.
+fn who_line(ui: &Ui, s: &SessionSummary, named: bool) -> gtk::Box {
     let top = w::hbox(8, &[]);
-    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
-        top.append(&tag);
+    if named {
+        if let Some(tag) = project_tag(ui, s.project.as_deref()) {
+            top.append(&tag);
+        }
+        let name = w::label(&crate::disk::project_words(ui, s), &["pname"]);
+        top.append(&name);
     }
-    let name = w::label(&crate::disk::project_words(ui, s), &["pname"]);
-    top.append(&name);
-    let t = w::label(&s.title, &["dim"]);
+    let t = w::label(&s.title, if named { &["dim"] } else { &["ptitle"] });
     t.set_ellipsize(gtk::pango::EllipsizeMode::End);
     t.set_tooltip_text(Some(&s.title));
     top.append(&t);
-    if let Some(m) = crate::behind::pill(ui, s.project.as_deref()) {
+    if !named && crate::disk::guessed(ui, s) {
+        let g = w::label("probably this project", &["dim"]);
+        g.set_tooltip_text(Some(&crate::disk::project_reason(ui, s)));
+        top.append(&g);
+    }
+    if named && let Some(m) = crate::behind::pill(ui, s.project.as_deref()) {
         top.append(&m);
     }
     top
@@ -1325,7 +1378,7 @@ fn age_label(ui: &Ui, s: &SessionSummary) -> gtk::Label {
 fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
     let card = w::vbox(10, &["card", "askcard"]);
     let top = w::hbox(10, &[]);
-    let who = who_line(ui, s);
+    let who = who_line(ui, s, false);
     who.set_hexpand(true);
     top.append(&who);
     top.append(&age_cell(ui, s, true));
@@ -1379,8 +1432,19 @@ fn readout_of(ui: &Ui, s: &SessionSummary) -> Option<(u32, usize)> {
 /// readout), who (with `toggle`, the button that opens its subagents, after the title as Agents has
 /// it), a second line, and at the end its status and age. `edge` is (first, last) in its list.
 /// `peek`: the row says what holding Space does when it is selected (Monitor; History can't peek).
+/// `named`: the row says its project (History; Monitor's rows sit under their project's name).
 #[expect(clippy::too_many_arguments, reason = "one row shared by Monitor and History, each part optional")]
-pub fn session_item(ui: &Ui, s: &SessionSummary, second: &gtk::Widget, lead: Option<gtk::Widget>, edge: (bool, bool), wide: bool, peek: bool, toggle: Option<gtk::Button>) -> gtk::ListBoxRow {
+pub fn session_item(
+    ui: &Ui,
+    s: &SessionSummary,
+    second: &gtk::Widget,
+    lead: Option<gtk::Widget>,
+    edge: (bool, bool),
+    wide: bool,
+    peek: bool,
+    toggle: Option<gtk::Button>,
+    named: bool,
+) -> gtk::ListBoxRow {
     let row = w::hbox(14, &["item"]);
     if let Some(l) = lead {
         l.set_valign(gtk::Align::Center);
@@ -1388,7 +1452,7 @@ pub fn session_item(ui: &Ui, s: &SessionSummary, second: &gtk::Widget, lead: Opt
     }
     let mid = w::vbox(4, &[]);
     mid.set_hexpand(true);
-    let who = who_line(ui, s);
+    let who = who_line(ui, s, named);
     if let Some(t) = toggle {
         who.append(&t);
     }
@@ -1812,7 +1876,7 @@ fn history(ui: &Ui) {
             vw.list.append(&section_row(&day, 0));
             let n = ss.len();
             for (i, s) in ss.into_iter().enumerate() {
-                vw.list.append(&session_item(ui, s, &now_cell(s, true), None, (i == 0, i + 1 == n), !compact, false, None));
+                vw.list.append(&session_item(ui, s, &now_cell(s, true), None, (i == 0, i + 1 == n), !compact, false, None, true));
             }
         }
     } else {
@@ -1829,7 +1893,7 @@ fn history(ui: &Ui) {
         for (i, (s, m)) in results.iter().enumerate() {
             let l = w::clip("", &["snip"]);
             l.set_markup(&highlight(m, &q));
-            vw.list.append(&session_item(ui, s, l.upcast_ref(), None, (i == 0, i + 1 == n), !compact, false, None));
+            vw.list.append(&session_item(ui, s, l.upcast_ref(), None, (i == 0, i + 1 == n), !compact, false, None, true));
         }
     }
     finish(ui, View::History, had_focus);

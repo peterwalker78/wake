@@ -334,20 +334,7 @@ pub fn render(ui: &Ui) {
     let mut last_group = "";
     // Whether a group's box is open (a folded group has none to close).
     let mut boxed = false;
-    // The session whose tasks are still to be listed: after its subagents, before the next row.
-    let mut tasks_of: Option<(&str, &AgentProc)> = None;
-    let flush = |tasks_of: &mut Option<(&str, &AgentProc)>| {
-        if let Some((group, s)) = tasks_of.take() {
-            for r in task_rows(ui, s, &cols, hide) {
-                r.add_css_class(&group_class(group));
-                vw.list.append(&r);
-            }
-        }
-    };
     for (group, a) in rows {
-        if a.kind != ProcKind::Subagent {
-            flush(&mut tasks_of);
-        }
         let hidden = group == "In the background" && !show_bg;
         if hidden && group == last_group {
             continue;
@@ -395,11 +382,7 @@ pub fn render(ui: &Ui) {
         for want in wanted(ui, a) {
             vw.list.append(&build(ui, a, &want, Grid::Table(&cols, hide)));
         }
-        if a.kind != ProcKind::Subagent {
-            tasks_of = Some((group, a));
-        }
     }
-    flush(&mut tasks_of);
     if boxed {
         let bottom = box_edge(false);
         bottom.add_css_class(&group_class(last_group));
@@ -458,13 +441,14 @@ fn group_words(group: &str) -> Option<&'static str> {
 /// chevron, then how many there are and how many run (what they are doing is on the line below).
 /// `name` finds it again, to turn its chevron. `slim` (a narrow window): the chevron alone, the
 /// count in its tooltip, so the row keeps its room for the title.
-pub fn sub_toggle(name: &str, sc: &SubagentCounts, open: bool, slim: bool, act: impl Fn() + 'static) -> gtk::Button {
+/// The fold button for a session's subagents and its `tasks` background tasks.
+pub fn sub_toggle(name: &str, sc: &SubagentCounts, tasks: usize, open: bool, slim: bool, act: impl Fn() + 'static) -> gtk::Button {
     let b = gtk::Button::new();
     b.add_css_class("subcount");
     b.set_widget_name(name);
     let inner = w::hbox(5, &[]);
     inner.append(&w::chevron(open));
-    let words = crate::why::sub_count(sc);
+    let words = crate::why::fold_count(sc, tasks);
     if slim {
         b.add_css_class("slim");
     } else {
@@ -479,7 +463,8 @@ pub fn sub_toggle(name: &str, sc: &SubagentCounts, open: bool, slim: bool, act: 
     if sc.running > 0 {
         b.add_css_class("running");
     }
-    b.update_property(&[gtk::accessible::Property::Label(&format!("Subagents: {words}"))]);
+    let what = if sc.total == 0 { "Background tasks" } else { "Subagents" };
+    b.update_property(&[gtk::accessible::Property::Label(&format!("{what}: {words}"))]);
     b.set_valign(gtk::Align::Center);
     set_toggle(&b, open);
     b.connect_clicked(move |_| act());
@@ -543,13 +528,15 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     // The title keeps some room whatever sits beside it (as much as the column's narrowest allows).
     tl.set_width_chars(9);
     top.append(&tl);
+    // One fold for what a session has going on beneath it: its subagents and its background tasks.
     let subs = session_of(&ui.st.borrow(), a).map(|s| s.subagents.clone()).filter(|s| s.total > 0);
-    if let Some(sc) = &subs {
+    if subs.is_some() || !a.tasks.is_empty() {
+        let sc = subs.unwrap_or_default();
         let open = ui.st.borrow().agent_open.contains(&a.pid);
         let ui2 = ui.clone();
         let pid = a.pid;
         // Slim when the table is narrow (the PID column has made way).
-        top.append(&sub_toggle(&format!("subcount-{pid}"), sc, open, hide & 0b11 != 0, move || {
+        top.append(&sub_toggle(&format!("subcount-{pid}"), &sc, a.tasks.len(), open, hide & 0b11 != 0, move || {
             let open = ui2.st.borrow().agent_open.contains(&pid);
             set_open(&ui2, pid, !open);
         }));
@@ -906,14 +893,19 @@ enum Link {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Item {
     Run(usize),
+    /// A background task: listed with what is running, before the finished ones.
+    Task(usize),
     Fold,
     Done(usize),
 }
 
-fn plan(n_run: usize, n_done: usize, done_open: bool) -> Vec<(Item, Link)> {
+fn plan(n_run: usize, n_task: usize, n_done: usize, done_open: bool) -> Vec<(Item, Link)> {
     let mut out = Vec::new();
     for i in 0..n_run {
-        out.push((Item::Run(i), if i + 1 == n_run && n_done == 0 { Link::Last } else { Link::Mid }));
+        out.push((Item::Run(i), if i + 1 == n_run && n_task == 0 && n_done == 0 { Link::Last } else { Link::Mid }));
+    }
+    for i in 0..n_task {
+        out.push((Item::Task(i), if i + 1 == n_task && n_done == 0 { Link::Last } else { Link::Mid }));
     }
     if n_done > 0 {
         out.push((Item::Fold, if done_open { Link::FoldOpen } else { Link::Last }));
@@ -1098,6 +1090,7 @@ struct Want {
 enum What {
     Note(&'static str),
     Sub(SubagentSummary, Link),
+    Task(TaskSummary, Link),
     Fold(String, Link),
 }
 
@@ -1113,12 +1106,12 @@ fn wanted(ui: &Ui, a: &AgentProc) -> Vec<Want> {
     }
     let note = |t: &'static str| vec![Want { name: format!("snote-{pid}"), sig: t.to_string(), what: What::Note(t) }];
     let Some(d) = detail else { return note("reading its subagents…") };
-    if d.subagents.is_empty() {
+    if d.subagents.is_empty() && a.tasks.is_empty() {
         return note("No subagents. This session did its work itself.");
     }
     let helpers = live_helpers(a);
     let (running, done) = crate::why::split_subs(&d.subagents);
-    plan(running.len(), done.len(), done_open)
+    plan(running.len(), a.tasks.len(), done.len(), done_open)
         .into_iter()
         .map(|(item, link)| match item {
             Item::Run(i) => {
@@ -1129,6 +1122,11 @@ fn wanted(ui: &Ui, a: &AgentProc) -> Vec<Want> {
                 }
                 // Its "now:" line is patched in place, so it is not part of what it shows.
                 Want { name: sub_name(pid, &s.agent_id), sig: format!("run{link:?}{}{}", s.task, s.kind), what: What::Sub(s, link) }
+            }
+            // How long it has run ticks, and is patched in place.
+            Item::Task(i) => {
+                let t = a.tasks[i].clone();
+                Want { name: format!("task-{pid}-{i}"), sig: format!("task{link:?}{}{}{:?}", t.kind, t.label, t.started_at), what: What::Task(t, link) }
             }
             Item::Done(i) => {
                 let s = done[i].clone();
@@ -1168,6 +1166,14 @@ fn build(ui: &Ui, a: &AgentProc, want: &Want, grid: Grid) -> gtk::ListBoxRow {
             let kind = if s.kind.is_empty() || s.kind == "general-purpose" { String::new() } else { format!(" ({})", s.kind) };
             row.set_tooltip_text(Some(&format!("{}{kind}\nClick for its steps · Enter", s.task)));
             on_click(ui, &row);
+        }
+        What::Task(t, link) => {
+            row.set_selectable(false);
+            row.set_activatable(false);
+            row.set_focusable(false);
+            let (child, tip) = task_line(ui, t, *link, grid);
+            row.set_child(Some(&child));
+            row.set_tooltip_text(Some(&tip));
         }
         What::Fold(line, link) => {
             let open = ui.st.borrow().agent_done_open.contains(&a.pid);
@@ -1292,44 +1298,27 @@ fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, gr
     outer
 }
 
-/// A session's background tasks, each a tree row under it in the subagent rows' parts: the kind as
-/// a quiet word where "subagent" goes, the label as the title, and how long it has run. Never
-/// selected (the keys walk sessions and subagents as before).
-fn task_rows(ui: &Ui, a: &AgentProc, cols: &[Col], hide: u8) -> Vec<gtk::ListBoxRow> {
-    let n = a.tasks.len();
-    a.tasks
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let row = gtk::ListBoxRow::new();
-            row.add_css_class("boxed");
-            row.add_css_class("treerow");
-            row.set_widget_name(&format!("task-{}-{i}", a.pid));
-            row.add_css_class(&format!("tasks-{}", a.pid));
-            row.set_selectable(false);
-            row.set_activatable(false);
-            row.set_focusable(false);
-            let kind = crate::why::task_kind(&t.kind);
-            let task = w::vbox(2, &["pj"]);
-            let title = w::clip(&t.label, &["title"]);
-            title.set_width_chars(9);
-            task.append(&title);
-            // When the PID column makes way (a narrower window, or the wave column gone, whose
-            // place the line takes), so does the kind word in it: it goes under the label instead.
-            if hide & 0b11 != 0 {
-                task.append(&w::clip(kind, &["desc"]));
-            }
-            let age = w::clip(&crate::why::task_age(t.started_at.as_deref()), &["ev"]);
-            let started = t.started_at.clone();
-            live_text(ui, View::Agents, &age, move |_| Some(crate::why::task_age(started.as_deref())));
-            let link = if i + 1 == n { Link::Last } else { Link::Mid };
-            row.set_child(Some(&tree_row(&connector(link, None), w::clip(kind, &["tree"]).upcast(), task.upcast(), age.upcast(), Grid::Table(cols, hide))));
-            let what = if t.kind == "monitor" { "Something this session is watching in the background" } else { "A command this session is running in the background" };
-            let pid = t.pid.map(|p| format!("\nProcess {p}")).unwrap_or_default();
-            row.set_tooltip_text(Some(&format!("{what}:\n{}{pid}", t.label)));
-            row
-        })
-        .collect()
+/// A background task's line in a session's tree, in a subagent row's parts: its kind as a quiet
+/// word, its label, how long it has run; and its tooltip. Never selected: nothing opens under it.
+fn task_line(ui: &Ui, t: &TaskSummary, link: Link, grid: Grid) -> (gtk::Widget, String) {
+    let kind = crate::why::task_kind(&t.kind);
+    let task = w::vbox(2, &["pj"]);
+    let title = w::clip(&t.label, &["title"]);
+    title.set_width_chars(9);
+    task.append(&title);
+    // When the PID column makes way (a narrower window, or the wave column gone, whose place the
+    // line takes), so does the kind word in it: it goes under the label instead.
+    if let Grid::Table(_, hide) = grid
+        && hide & 0b11 != 0
+    {
+        task.append(&w::clip(kind, &["desc"]));
+    }
+    let age = w::clip(&crate::why::task_age(t.started_at.as_deref()), &["ev"]);
+    let started = t.started_at.clone();
+    live_text(ui, View::Agents, &age, move |_| Some(crate::why::task_age(started.as_deref())));
+    let what = if t.kind == "monitor" { "Something this session is watching in the background" } else { "A command this session is running in the background" };
+    let pid = t.pid.map(|p| format!("\nProcess {p}")).unwrap_or_default();
+    (tree_row(&connector(link, None), w::clip(kind, &["tree"]).upcast(), task.upcast(), age.upcast(), grid).upcast(), format!("{what}:\n{}{pid}", t.label))
 }
 
 /// The row named `name` in the list (rows on their way out have no name).
@@ -1526,7 +1515,7 @@ fn patch_trees(ui: &Ui) {
 pub fn set_open(ui: &Ui, pid: u32, open: bool) {
     let Some(a) = find(ui, pid) else { return };
     let sid = a.session_id.clone();
-    let has = sid.as_deref().is_some_and(|id| ui.st.borrow().ov.as_ref().is_some_and(|ov| ov.sessions.iter().any(|s| s.id == id && s.subagents.total > 0)));
+    let has = !a.tasks.is_empty() || sid.as_deref().is_some_and(|id| ui.st.borrow().ov.as_ref().is_some_and(|ov| ov.sessions.iter().any(|s| s.id == id && s.subagents.total > 0)));
     if open && !has {
         return;
     }
@@ -1665,42 +1654,46 @@ pub fn board_tree(ui: &Ui, s: &SessionSummary, lead: i32) -> Vec<gtk::ListBoxRow
         return note("No subagents. This session did its work itself.", "desc");
     }
     let (running, done) = crate::why::split_subs(&d.subagents);
-    plan(running.len(), done.len(), done_open)
+    // Monitor's tree lists subagents only: background tasks are Agents' to show.
+    plan(running.len(), 0, done.len(), done_open)
         .into_iter()
-        .map(|(item, link)| match item {
-            Item::Run(i) => {
-                let mut sub = running[i].clone();
-                if sub.live.is_none() {
-                    sub.live = helpers.iter().find(|h| h.contains(&sub.task) || sub.task.contains(h.as_str())).cloned();
-                }
-                let r = row(&tree_line(ui, &s.id, &sub, link, false, grid));
-                r.set_tooltip_text(Some(&format!("{}\nIts steps are in Agents and in its details (Enter)", sub.task)));
-                r
-            }
-            Item::Done(i) => {
-                let r = row(&tree_line(ui, &s.id, done[i], link, false, grid));
-                r.set_tooltip_text(Some(&done[i].task));
-                r
-            }
-            Item::Fold => {
-                let r = row(&fold_line(&s.id, &crate::why::finished_line(&done), link, done_open, grid));
-                r.set_tooltip_text(Some(if done_open { "Hide the finished ones · click" } else { "Show the finished ones, newest first · click" }));
-                let g = gtk::GestureClick::new();
-                g.set_button(gtk::gdk::BUTTON_PRIMARY);
-                let (ui2, sid) = (ui.clone(), s.id.clone());
-                g.connect_released(move |_, n, _, _| {
-                    if n == 1 {
-                        let mut st = ui2.st.borrow_mut();
-                        if !st.board_done_open.remove(&sid) {
-                            st.board_done_open.insert(sid.clone());
-                        }
-                        drop(st);
-                        views::render_view(&ui2);
+        .filter_map(|(item, link)| {
+            Some(match item {
+                Item::Task(_) => return None,
+                Item::Run(i) => {
+                    let mut sub = running[i].clone();
+                    if sub.live.is_none() {
+                        sub.live = helpers.iter().find(|h| h.contains(&sub.task) || sub.task.contains(h.as_str())).cloned();
                     }
-                });
-                r.add_controller(g);
-                r
-            }
+                    let r = row(&tree_line(ui, &s.id, &sub, link, false, grid));
+                    r.set_tooltip_text(Some(&format!("{}\nIts steps are in Agents and in its details (Enter)", sub.task)));
+                    r
+                }
+                Item::Done(i) => {
+                    let r = row(&tree_line(ui, &s.id, done[i], link, false, grid));
+                    r.set_tooltip_text(Some(&done[i].task));
+                    r
+                }
+                Item::Fold => {
+                    let r = row(&fold_line(&s.id, &crate::why::finished_line(&done), link, done_open, grid));
+                    r.set_tooltip_text(Some(if done_open { "Hide the finished ones · click" } else { "Show the finished ones, newest first · click" }));
+                    let g = gtk::GestureClick::new();
+                    g.set_button(gtk::gdk::BUTTON_PRIMARY);
+                    let (ui2, sid) = (ui.clone(), s.id.clone());
+                    g.connect_released(move |_, n, _, _| {
+                        if n == 1 {
+                            let mut st = ui2.st.borrow_mut();
+                            if !st.board_done_open.remove(&sid) {
+                                st.board_done_open.insert(sid.clone());
+                            }
+                            drop(st);
+                            views::render_view(&ui2);
+                        }
+                    });
+                    r.add_controller(g);
+                    r
+                }
+            })
         })
         .collect()
 }
@@ -2324,11 +2317,15 @@ mod tests {
     fn running_first_then_the_fold_then_the_finished_on_their_own_line() {
         use Item::*;
         use Link::*;
-        assert_eq!(plan(2, 0, false), [(Run(0), Mid), (Run(1), Last)]);
-        assert_eq!(plan(2, 3, false), [(Run(0), Mid), (Run(1), Mid), (Fold, Last)], "closed: no finished rows at all");
-        assert_eq!(plan(1, 2, true), [(Run(0), Mid), (Fold, FoldOpen), (Done(0), InnerMid), (Done(1), InnerLast)]);
-        assert_eq!(plan(0, 1, true), [(Fold, FoldOpen), (Done(0), InnerLast)]);
-        assert!(plan(0, 0, true).is_empty());
+        assert_eq!(plan(2, 0, 0, false), [(Run(0), Mid), (Run(1), Last)]);
+        // Background tasks follow what is running, before the finished ones: one unbroken line.
+        assert_eq!(plan(1, 2, 0, false), [(Run(0), Mid), (Task(0), Mid), (Task(1), Last)]);
+        assert_eq!(plan(1, 1, 3, false), [(Run(0), Mid), (Task(0), Mid), (Fold, Last)]);
+        assert_eq!(plan(0, 1, 0, false), [(Task(0), Last)], "tasks alone");
+        assert_eq!(plan(2, 0, 3, false), [(Run(0), Mid), (Run(1), Mid), (Fold, Last)], "closed: no finished rows at all");
+        assert_eq!(plan(1, 0, 2, true), [(Run(0), Mid), (Fold, FoldOpen), (Done(0), InnerMid), (Done(1), InnerLast)]);
+        assert_eq!(plan(0, 0, 1, true), [(Fold, FoldOpen), (Done(0), InnerLast)]);
+        assert!(plan(0, 0, 0, true).is_empty());
     }
 
     #[test]

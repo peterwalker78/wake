@@ -106,7 +106,7 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
         let (ui, id, cmd_l, choices) = (ui.clone(), id.clone(), cmd_l.clone(), choices.clone());
         move |at: u32| {
             let agent = choices.get(at as usize).copied().unwrap_or(brief::Agent::Claude);
-            cmd_l.set_text(&ui.src.brief_command(agent, &id).unwrap_or_else(|| format!("{} \"$(cat <the brief>)\"", agent.id())));
+            cmd_l.set_text(&ui.src.brief_command(agent, &id).unwrap_or_else(|| format!("{} -- \"$(cat <the brief>)\"", agent.id())));
         }
     };
     show_cmd(0);

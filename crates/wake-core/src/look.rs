@@ -30,9 +30,6 @@ pub const SLIPSTREAM_PATH: &str = "/io/github/peterwalker78/Slipstream";
 pub const SLIPSTREAM_LOOK: &str = "io.github.peterwalker78.Slipstream.Look";
 pub const KWIN_NAME: &str = "org.kde.KWin";
 
-// Moved to `vt`; kept here until the app imports it from there.
-pub use crate::vt::NO_SCREEN;
-
 // ---------- which link ----------
 
 fn name_has_owner(run: &Runner, name: &str) -> bool {

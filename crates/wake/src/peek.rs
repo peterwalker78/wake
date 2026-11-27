@@ -813,7 +813,7 @@ fn show(ui: &Ui, screen: Option<&Screen>, subs: Option<Vec<SubagentSummary>>) ->
     if background { LOGS_POLL } else { SCREEN_POLL }
 }
 
-const NO_SCREEN_WORDS: &str = wake_core::look::NO_SCREEN;
+const NO_SCREEN_WORDS: &str = wake_core::vt::NO_SCREEN;
 
 /// `--show peek[:session]`: the preview for a screenshot, never asking the desktop to move. On real
 /// data only a background session is shown (its screen is the only one Wake can read).

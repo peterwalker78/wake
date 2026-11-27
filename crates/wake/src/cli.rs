@@ -323,7 +323,7 @@ fn doctor_programs(d: &mut Doctor, paths: &store::Paths) {
 }
 
 fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
-    use wake_core::desktop;
+    use wake_core::{desktop, run};
     d.heading("Desktop");
     // New windows (Go there for a session in none, Start an agent) open in the default terminal app.
     match desktop::terminal_launcher() {
@@ -336,15 +336,15 @@ fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
     }
     // KDE Plasma's Peek talks to KWin through Qt 6's qdbus (qdbus-qt6, or qdbus6).
     let kde = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().split(':').any(|x| x.eq_ignore_ascii_case("KDE"));
-    if kde && !on_path(desktop::qdbus_program()) {
+    if kde && !on_path(run::qdbus_program()) {
         d.line(Mark::Optional, "qdbus-qt6 isn't installed, so Peek on KDE Plasma shows a preview instead of going to the window.", &install("qt6-qttools", "qdbus-qt6"));
     }
-    if on_path(desktop::GDBUS) {
+    if on_path(run::GDBUS) {
         d.ok("gdbus");
     } else {
         d.line(Mark::Optional, "gdbus isn't installed. Peek on Slipstream and KDE Plasma, and the notice when a project is behind, need it.", &install("glib2", "libglib2.0-bin"));
     }
-    let kind = wake_core::look::detect(&desktop::default_runner(), &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default());
+    let kind = wake_core::look::detect(&run::default_runner(), &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default());
     match kind {
         wake_core::LookKind::Slipstream => d.ok("Peek: Slipstream flies to the session's window"),
         wake_core::LookKind::Kwin => d.ok("Peek: KDE Plasma switches to the session's window"),

@@ -541,7 +541,7 @@ pub fn look() -> Option<(Arc<wake_core::look::Look>, u32)> {
 /// Monitor row so real Space/Tab presses (from the compositor) can drive it.
 pub fn look_at(ui: &Ui, pid: u32) {
     let link = wake_core::look::Look::new(
-        wake_core::desktop::default_runner(),
+        wake_core::run::default_runner(),
         &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
         wake_core::store::Paths::from_env().data.join("kwin"),
         std::process::id(),

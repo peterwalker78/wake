@@ -21,9 +21,6 @@ use crate::run::{Runner, TIMEOUT, which};
 use crate::types::{ActionResult, Location};
 use crate::util::{shell_join, shell_quote};
 
-// Moved to `run`; kept here until the app imports them from there.
-pub use crate::run::{GDBUS, default_runner, qdbus_program};
-
 const RESUME_PREFIXES: &[&str] = &["claude --resume ", "codex resume ", "claude attach "];
 const FORBIDDEN: &[&str] = &["\n", "\r", ";", "&&", "|", "`", "$("];
 
@@ -268,6 +265,7 @@ pub fn window_argv(launcher: &[String], path: &str, cwd: &str, command: &str, sh
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::run::{GDBUS, default_runner};
     use crate::testing::{Scratch, scratch};
     use std::fs;
     use std::sync::Arc;

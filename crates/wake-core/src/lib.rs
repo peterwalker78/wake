@@ -54,7 +54,7 @@ pub trait Source: Send + Sync {
     fn search(&self, query: &str) -> Vec<(SessionSummary, String)>;
     fn ideas(&self) -> Vec<Idea>;
     fn add_idea(&self, text: &str, project: Option<&str>) -> Result<Idea, String>;
-    fn set_idea(&self, id: &str, state: Option<&str>, project: Option<Option<&str>>) -> Result<Idea, String>;
+    fn set_idea(&self, id: &str, state: Option<IdeaState>, project: Option<Option<&str>>) -> Result<Idea, String>;
     fn pause(&self, project: &str, note: &str, next: &str) -> Result<Checkpoint, String>;
     fn add_project(&self, path: &str) -> Result<ProjectSummary, String>;
     fn remove_project(&self, id: &str, removed: bool) -> Result<ProjectSummary, String>;

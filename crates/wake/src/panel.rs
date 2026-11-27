@@ -1527,8 +1527,8 @@ fn project(ui: &Ui, id: &str) {
             }
         }));
     }
-    let to_sort: Vec<&Idea> = d.ideas.iter().filter(|i| i.state == "inbox").collect();
-    let sent = d.ideas.iter().filter(|i| i.state == "sent").count();
+    let to_sort: Vec<&Idea> = d.ideas.iter().filter(|i| i.state == IdeaState::Inbox).collect();
+    let sent = d.ideas.iter().filter(|i| i.state == IdeaState::Sent).count();
     if !to_sort.is_empty() || sent > 0 {
         let note = if to_sort.is_empty() { format!("{sent} sent") } else { to_sort.len().to_string() };
         folds.append(&fold(ui, "ideas", "Ideas", &note, "", |x| {

@@ -110,11 +110,11 @@ impl IdeaTab {
     }
 
     /// Which list an idea is in (an unknown state reads as to sort).
-    pub fn of(state: &str) -> IdeaTab {
+    pub fn of(state: IdeaState) -> IdeaTab {
         match state {
-            "sent" => IdeaTab::Sent,
-            "done" => IdeaTab::Done,
-            _ => IdeaTab::Sort,
+            IdeaState::Sent => IdeaTab::Sent,
+            IdeaState::Done => IdeaTab::Done,
+            IdeaState::Inbox | IdeaState::Unknown => IdeaTab::Sort,
         }
     }
 }

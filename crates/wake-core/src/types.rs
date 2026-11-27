@@ -270,8 +270,7 @@ pub struct Idea {
     pub project_name: Option<String>,
     /// typed | shell | prompt
     pub source: String,
-    /// inbox | done | sent (sent to an agent, added 2026-11-20)
-    pub state: String,
+    pub state: IdeaState,
     /// When it was sent to an agent (state "sent"); its project is the one it was sent for.
     /// Added 2026-11-20.
     #[serde(default)]
@@ -280,6 +279,21 @@ pub struct Idea {
     /// 2026-11-20.
     #[serde(default)]
     pub brief: Option<String>,
+}
+
+/// Where an idea is. Written lowercase: "inbox", "sent", "done".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IdeaState {
+    /// Waiting to be sorted.
+    #[default]
+    Inbox,
+    /// Sent to an agent (added 2026-11-20).
+    Sent,
+    Done,
+    /// A state this Wake doesn't know, from someone else's file: shown with the ideas to sort.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -635,7 +635,7 @@ fn chips_sig(st: &AppState) -> String {
         View::Agents => st.procs.as_ref().map_or(vec![], |p| vec![agents::row_count(p, false), agents::row_count(p, true)]),
         View::Ideas => {
             let all: Vec<&Idea> = st.ideas.iter().flatten().filter(|i| st.proj_filter.is_none() || i.project == st.proj_filter).collect();
-            IdeaTab::ALL.iter().map(|t| all.iter().filter(|i| IdeaTab::of(&i.state) == *t).count()).collect()
+            IdeaTab::ALL.iter().map(|t| all.iter().filter(|i| IdeaTab::of(i.state) == *t).count()).collect()
         }
         View::Projects => vec![ov.projects.iter().filter(|p| p.removed).count()],
         View::History | View::Questions | View::Settings => vec![],
@@ -724,7 +724,7 @@ pub fn render_chips(ui: &Ui) {
             chips.add_next(&w::label("Ideas", &["ttl"]));
             let all: Vec<&Idea> = st.ideas.iter().flatten().filter(|i| st.proj_filter.is_none() || i.project == st.proj_filter).collect();
             for tab in IdeaTab::ALL {
-                let n = all.iter().filter(|i| IdeaTab::of(&i.state) == tab).count();
+                let n = all.iter().filter(|i| IdeaTab::of(i.state) == tab).count();
                 // "Sent to an agent" shows only once something has been sent.
                 if tab == IdeaTab::Sent && n == 0 && st.idea_tab != tab {
                     continue;
@@ -1494,7 +1494,7 @@ fn ideas(ui: &Ui) {
         b.append(&acts);
         vw.top.append(&b);
     }
-    let list: Vec<&Idea> = all.iter().filter(|i| (pf.is_none() || i.project == pf) && IdeaTab::of(&i.state) == tab).collect();
+    let list: Vec<&Idea> = all.iter().filter(|i| (pf.is_none() || i.project == pf) && IdeaTab::of(i.state) == tab).collect();
     if list.is_empty() {
         let e = match tab {
             IdeaTab::Done => w::empty("Nothing marked done yet.", ""),
@@ -1512,10 +1512,10 @@ fn ideas(ui: &Ui) {
     for i in list {
         let note = w::vbox(10, &["card", "note"]);
         let colour = i.project.as_deref().and_then(|id| colour_by_id(ui, id));
-        if i.state == "done" {
+        if i.state == IdeaState::Done {
             note.add_css_class("done");
         }
-        if i.state == "sent" {
+        if i.state == IdeaState::Sent {
             note.add_css_class("sent");
         }
         // The top: tick it for a brief, and its project.
@@ -1570,14 +1570,14 @@ fn ideas(ui: &Ui) {
             "prompt" => "from a prompt",
             s => s,
         };
-        let meta = match (&i.sent_at, i.state.as_str()) {
-            (Some(at), "sent") => format!("sent {} · noted {}", fmt::short_when(Some(at)), fmt::short_when(Some(&i.at))),
+        let meta = match (&i.sent_at, i.state) {
+            (Some(at), IdeaState::Sent) => format!("sent {} · noted {}", fmt::short_when(Some(at)), fmt::short_when(Some(&i.at))),
             _ => format!("{} · {}", fmt::short_when(Some(&i.at)), source),
         };
         let foot = w::hbox(8, &[]);
         let meta_l = w::clip(&meta, &["caption", "dim"]);
         foot.append(&meta_l);
-        if let Some(brief) = i.brief.clone().filter(|_| i.state == "sent") {
+        if let Some(brief) = i.brief.clone().filter(|_| i.state == IdeaState::Sent) {
             // The brief it was sent in, opened in the desktop's default app.
             let b = gtk::Button::with_label("brief");
             b.add_css_class("link");
@@ -1589,10 +1589,10 @@ fn ideas(ui: &Ui) {
         }
         let ui2 = ui.clone();
         let id = i.id.clone();
-        let btn = if i.state != "inbox" {
-            w::button("Back to sort", None, &["sm", "ghost"], move || set_idea(&ui2, &id, Some("inbox"), None, "Back in the list to sort.".into()))
+        let btn = if i.state != IdeaState::Inbox {
+            w::button("Back to sort", None, &["sm", "ghost"], move || set_idea(&ui2, &id, Some(IdeaState::Inbox), None, "Back in the list to sort.".into()))
         } else {
-            w::button("Done", None, &["sm", "ghost", "done"], move || set_idea(&ui2, &id, Some("done"), None, "Marked done.".into()))
+            w::button("Done", None, &["sm", "ghost", "done"], move || set_idea(&ui2, &id, Some(IdeaState::Done), None, "Marked done.".into()))
         };
         btn.set_valign(gtk::Align::Center);
         foot.append(&btn);
@@ -1623,7 +1623,7 @@ fn open_brief(ui: &Ui, id: &str) {
     }
 }
 
-fn set_idea(ui: &Ui, id: &str, state: Option<&'static str>, project: Option<Option<String>>, msg: String) {
+fn set_idea(ui: &Ui, id: &str, state: Option<IdeaState>, project: Option<Option<String>>, msg: String) {
     let id = id.to_string();
     let id2 = id.clone();
     app::bg(
@@ -1637,7 +1637,7 @@ fn set_idea(ui: &Ui, id: &str, state: Option<&'static str>, project: Option<Opti
                     if let Some(i) = st.ideas.as_mut().and_then(|l| l.iter_mut().find(|i| i.id == id2)) {
                         *i = idea;
                     }
-                    if state != Some("inbox") && state.is_some() {
+                    if state.is_some_and(|s| s != IdeaState::Inbox) {
                         st.picked.retain(|p| p != &id2);
                     }
                 }

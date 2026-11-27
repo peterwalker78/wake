@@ -383,16 +383,16 @@ impl DemoSource {
         }
 
         let ideas = vec![
-            idea("i1", 20 * MIN, "Wake could show which window each agent's helper is reading", Some("tideline-desktop"), "typed", "inbox"),
-            idea("i2", 3 * HOUR, "Ask Priya whether teachers want the reports as CSV too", Some("Gradebook"), "prompt", "inbox"),
-            idea("i3", 26 * HOUR, "Moving platforms need their path saved with the level", Some("Skyhook"), "shell", "inbox"),
-            idea("i4", 2 * DAY, "A night mode for the reading pages", None, "typed", "inbox"),
-            idea("i6", 4 * HOUR, "Teacher invites: say when the link expires, in the email itself", Some("Gradebook"), "typed", "inbox"),
-            idea("i7", 3 * DAY, "Terminal window titles could carry the project's name", Some("tideline-desktop"), "typed", "sent"),
-            idea("i5", 6 * DAY, "Try the Italian feed with a fixed date parser", Some("waypoint"), "typed", "done"),
+            idea("i1", 20 * MIN, "Wake could show which window each agent's helper is reading", Some("tideline-desktop"), "typed", IdeaState::Inbox),
+            idea("i2", 3 * HOUR, "Ask Priya whether teachers want the reports as CSV too", Some("Gradebook"), "prompt", IdeaState::Inbox),
+            idea("i3", 26 * HOUR, "Moving platforms need their path saved with the level", Some("Skyhook"), "shell", IdeaState::Inbox),
+            idea("i4", 2 * DAY, "A night mode for the reading pages", None, "typed", IdeaState::Inbox),
+            idea("i6", 4 * HOUR, "Teacher invites: say when the link expires, in the email itself", Some("Gradebook"), "typed", IdeaState::Inbox),
+            idea("i7", 3 * DAY, "Terminal window titles could carry the project's name", Some("tideline-desktop"), "typed", IdeaState::Sent),
+            idea("i5", 6 * DAY, "Try the Italian feed with a fixed date parser", Some("waypoint"), "typed", IdeaState::Done),
         ];
         for p in &mut projects {
-            p.ideas = ideas.iter().filter(|i| i.project.as_deref() == Some(p.id.as_str()) && i.state == "inbox").count() as u32;
+            p.ideas = ideas.iter().filter(|i| i.project.as_deref() == Some(p.id.as_str()) && i.state == IdeaState::Inbox).count() as u32;
         }
 
         let find = |id: &str| sessions.iter().find(|s| s.id.starts_with(id)).unwrap();
@@ -458,7 +458,7 @@ impl DemoSource {
     }
 }
 
-fn idea(id: &str, secs: i64, text: &str, project: Option<&str>, source: &str, state: &str) -> Idea {
+fn idea(id: &str, secs: i64, text: &str, project: Option<&str>, source: &str, state: IdeaState) -> Idea {
     Idea {
         id: id.into(),
         at: ago(secs),
@@ -466,9 +466,9 @@ fn idea(id: &str, secs: i64, text: &str, project: Option<&str>, source: &str, st
         project: project.map(Into::into),
         project_name: project.map(Into::into),
         source: source.into(),
-        state: state.into(),
-        sent_at: (state == "sent").then(|| ago(secs.saturating_sub(600))),
-        brief: (state == "sent").then(|| "b3f9a1c07d2e4".into()),
+        state,
+        sent_at: (state == IdeaState::Sent).then(|| ago(secs.saturating_sub(600))),
+        brief: (state == IdeaState::Sent).then(|| "b3f9a1c07d2e4".into()),
     }
 }
 
@@ -558,7 +558,7 @@ impl Pretend {
             generated_at: ago(0),
             indexing: Progress { done: 53, total: 53 },
             counts,
-            ideas: self.ideas.iter().filter(|i| i.state == "inbox").count() as u32,
+            ideas: self.ideas.iter().filter(|i| i.state == IdeaState::Inbox).count() as u32,
             projects,
             sessions: self.sessions.clone(),
             index_error: None,
@@ -713,16 +713,16 @@ impl Source for DemoSource {
         let mut st = self.state.lock().unwrap();
         let id = format!("i{}", st.next_idea);
         st.next_idea += 1;
-        let i = idea(&id, 0, text, project, "typed", "inbox");
+        let i = idea(&id, 0, text, project, "typed", IdeaState::Inbox);
         st.ideas.insert(0, i.clone());
         Ok(i)
     }
 
-    fn set_idea(&self, id: &str, state: Option<&str>, project: Option<Option<&str>>) -> Result<Idea, String> {
+    fn set_idea(&self, id: &str, state: Option<IdeaState>, project: Option<Option<&str>>) -> Result<Idea, String> {
         let mut st = self.state.lock().unwrap();
         let i = st.ideas.iter_mut().find(|i| i.id == id).ok_or("No such idea.")?;
         if let Some(s) = state {
-            i.state = s.into();
+            i.state = s;
             i.sent_at = None;
         }
         if let Some(p) = project {
@@ -776,7 +776,7 @@ impl Source for DemoSource {
         }
         let at = ago(0);
         for i in st.ideas.iter_mut().filter(|i| req.ideas.contains(&i.id)) {
-            i.state = "sent".into();
+            i.state = IdeaState::Sent;
             i.sent_at = Some(at.clone());
             i.brief = Some(req.id.clone());
         }

@@ -6,7 +6,7 @@
 use std::rc::Rc;
 
 use gtk4::{self as gtk, prelude::*};
-use wake_core::{Idea, brief};
+use wake_core::{Idea, IdeaState, brief};
 
 use crate::{
     app::{self, IdeaTab, Ui, View},
@@ -50,7 +50,7 @@ fn chosen(ui: &Ui, ids: Option<Vec<String>>) -> Vec<Idea> {
             Vec::new()
         }
     });
-    ids.iter().filter_map(|id| all.iter().find(|i| &i.id == id && i.state == "inbox").cloned()).collect()
+    ids.iter().filter_map(|id| all.iter().find(|i| &i.id == id && i.state == IdeaState::Inbox).cloned()).collect()
 }
 
 pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
@@ -190,7 +190,7 @@ mod tests {
             project: project.map(Into::into),
             project_name: project.map(|p| format!("{p} name")),
             source: "typed".into(),
-            state: "inbox".into(),
+            state: IdeaState::Inbox,
             sent_at: None,
             brief: None,
         }

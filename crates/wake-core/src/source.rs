@@ -644,7 +644,7 @@ impl Inner {
             live: livec,
             last_at: last,
             sessions_14d: mine.iter().filter(|s| s.last_at.as_deref().unwrap_or("") >= cutoff.as_str()).count() as u32,
-            ideas: ideas.iter().filter(|i| i.project.as_deref() == Some(p.id.as_str()) && i.state == "inbox").count() as u32,
+            ideas: ideas.iter().filter(|i| i.project.as_deref() == Some(p.id.as_str()) && i.state == IdeaState::Inbox).count() as u32,
             git: gitinfo::cached_totals(p).unwrap_or_default(),
             paused: pauses.get(&p.id).map(|r| PauseNote { at: r.at.clone(), note: r.note.clone() }),
             last_summary: by_last.iter().find_map(|s| s.away_summary.clone()),
@@ -788,7 +788,7 @@ impl Inner {
             project: i.project.clone(),
             project_name: i.project.as_deref().and_then(|p| store::project_by_id(p, projects)).map(|p| p.name.clone()),
             source: i.source.clone(),
-            state: i.state.clone(),
+            state: i.state,
             sent_at: i.sent_at.clone(),
             brief: i.brief.clone(),
         }
@@ -932,7 +932,7 @@ impl Source for Live {
             generated_at: util::now_iso(),
             indexing: Progress { done, total },
             counts,
-            ideas: ideas.iter().filter(|x| x.state == "inbox").count() as u32,
+            ideas: ideas.iter().filter(|x| x.state == IdeaState::Inbox).count() as u32,
             projects: projects.iter().map(|p| i.project_summary(p, &sessions, &ideas, &pauses, now)).collect(),
             sessions,
             index_error: if problems.is_empty() { None } else { Some(problems.join(" ")) },
@@ -1081,7 +1081,7 @@ impl Source for Live {
         Ok(self.inner.idea_out(&rec, &projects))
     }
 
-    fn set_idea(&self, id: &str, state: Option<&str>, project: Option<Option<&str>>) -> Result<Idea, String> {
+    fn set_idea(&self, id: &str, state: Option<IdeaState>, project: Option<Option<&str>>) -> Result<Idea, String> {
         let projects = self.inner.store.load_projects();
         if let Some(Some(p)) = project
             && store::project_by_id(p, &projects).is_none()
@@ -1833,9 +1833,9 @@ mod tests {
         let env = Env::new();
         let (l, _, _fp) = make(&env, &FakeBus::new());
         let i = l.add_idea("try a dark theme", Some("alpha")).unwrap();
-        assert_eq!((i.project_name.as_deref(), i.state.as_str()), (Some("alpha"), "inbox"));
-        assert_eq!(l.set_idea(&i.id, Some("done"), None).unwrap().state, "done");
-        assert_eq!(l.ideas()[0].state, "done");
+        assert_eq!((i.project_name.as_deref(), i.state), (Some("alpha"), IdeaState::Inbox));
+        assert_eq!(l.set_idea(&i.id, Some(IdeaState::Done), None).unwrap().state, IdeaState::Done);
+        assert_eq!(l.ideas()[0].state, IdeaState::Done);
         assert!(l.add_idea("", None).is_err());
         assert!(l.add_idea("x", Some("nope")).is_err());
         let cp = l.pause("alpha", "stopping", "parser").unwrap();
@@ -1884,7 +1884,7 @@ mod tests {
         let r = l.start_agent(&req(vec![a.id.clone(), b.id.clone()]), true);
         assert!(r.ok, "{r:?}");
         assert!(!path.exists() && bus.writes().is_empty());
-        assert_eq!(l.ideas().iter().filter(|i| i.state == "sent").count(), 0);
+        assert_eq!(l.ideas().iter().filter(|i| i.state == IdeaState::Sent).count(), 0);
         // For real: the brief file, a new window running the command, the ideas sent.
         let r = l.start_agent(&req(vec![a.id.clone(), b.id.clone()]), false);
         assert!(r.ok, "{r:?}");
@@ -1898,11 +1898,11 @@ mod tests {
         let ideas = l.ideas();
         for x in [&a, &b] {
             let i = ideas.iter().find(|i| i.id == x.id).unwrap();
-            assert_eq!((i.state.as_str(), i.project.as_deref()), ("sent", Some("alpha")));
+            assert_eq!((i.state, i.project.as_deref()), (IdeaState::Sent, Some("alpha")));
             assert!(i.sent_at.is_some());
             assert_eq!(i.brief.as_deref(), Some(id.as_str()), "the idea leads to its brief");
         }
-        assert_eq!(ideas.iter().find(|i| i.id == other.id).unwrap().state, "inbox");
+        assert_eq!(ideas.iter().find(|i| i.id == other.id).unwrap().state, IdeaState::Inbox);
         assert!(log::recent(&env.paths, 5).iter().any(|l| l.contains("  start an agent  Claude in alpha (~/Projects/alpha)  ok  ")), "{:?}", log::recent(&env.paths, 5));
         assert_eq!(l.overview().projects.iter().find(|p| p.id == "alpha").unwrap().ideas, 0, "sent ideas leave the count to sort");
     }

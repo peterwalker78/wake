@@ -19,6 +19,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::types::IdeaState;
 use crate::util;
 
 /// Where everything is. `Paths::from_env()` for the real machine.
@@ -470,8 +471,7 @@ pub struct IdeaRec {
     pub project: Option<String>,
     pub source: String,
     pub cwd: Option<String>,
-    /// inbox | done | sent (sent to an agent; added 2026-11-20)
-    pub state: String,
+    pub state: IdeaState,
     /// When it was sent to an agent (state "sent"), from its state record. Not in the idea's
     /// own record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -991,7 +991,7 @@ impl Store {
             project,
             source: source.into(),
             cwd: cwd.map(Into::into),
-            state: "inbox".into(),
+            state: IdeaState::Inbox,
             sent_at: None,
             brief: None,
         };
@@ -1001,17 +1001,17 @@ impl Store {
     }
 
     /// `project`: None leaves it, Some(None) clears it, Some(Some(id)) sets it.
-    pub fn set_idea(&self, id: &str, state: Option<&str>, project: Option<Option<&str>>) -> SResult<IdeaRec> {
+    pub fn set_idea(&self, id: &str, state: Option<IdeaState>, project: Option<Option<&str>>) -> SResult<IdeaRec> {
         let mut idea = self.list_ideas().into_iter().find(|i| i.id == id).ok_or_else(|| StoreError("No idea with that id.".into()))?;
         let mut rec = Map::new();
         rec.insert("id".into(), id.into());
         rec.insert("at".into(), util::now_iso().into());
         if let Some(s) = state {
-            if s != "inbox" && s != "done" {
+            if !matches!(s, IdeaState::Inbox | IdeaState::Done) {
                 return Err(StoreError("State must be inbox or done.".into()));
             }
-            rec.insert("state".into(), s.into());
-            idea.state = s.into();
+            rec.insert("state".into(), serde_json::json!(s));
+            idea.state = s;
             idea.sent_at = None;
             idea.brief = None;
         }
@@ -1037,12 +1037,12 @@ impl Store {
         }
         let at = util::now_iso();
         for i in &mut out {
-            let mut rec = serde_json::json!({"id": i.id, "state": "sent", "at": at, "project": project});
+            let mut rec = serde_json::json!({"id": i.id, "state": IdeaState::Sent, "at": at, "project": project});
             if let Some(b) = brief {
                 rec["brief"] = b.into();
             }
             self.writer.append_jsonl(&self.ideas_path(), &rec)?;
-            i.state = "sent".into();
+            i.state = IdeaState::Sent;
             i.sent_at = Some(at.clone());
             i.brief = brief.map(String::from);
             i.project = Some(project.into());
@@ -1066,7 +1066,7 @@ impl Store {
                     project: s("project"),
                     source: s("source").unwrap_or_else(|| "typed".into()),
                     cwd: s("cwd"),
-                    state: s("state").unwrap_or_else(|| "inbox".into()),
+                    state: o.get("state").and_then(|v| IdeaState::deserialize(v).ok()).unwrap_or_default(),
                     sent_at: None,
                     brief: None,
                 };
@@ -1078,12 +1078,13 @@ impl Store {
                     }
                 }
             } else if let Some(&i) = at.get(id) {
-                if let Some(st) = o.get("state").and_then(Value::as_str)
-                    && (st == "inbox" || st == "done" || st == "sent")
+                if let Some(st) = o.get("state").and_then(|v| IdeaState::deserialize(v).ok())
+                    && st != IdeaState::Unknown
                 {
-                    out[i].state = st.into();
-                    out[i].sent_at = if st == "sent" { o.get("at").and_then(Value::as_str).map(String::from) } else { None };
-                    out[i].brief = if st == "sent" { o.get("brief").and_then(Value::as_str).map(String::from) } else { None };
+                    let sent = st == IdeaState::Sent;
+                    out[i].state = st;
+                    out[i].sent_at = if sent { o.get("at").and_then(Value::as_str).map(String::from) } else { None };
+                    out[i].brief = if sent { o.get("brief").and_then(Value::as_str).map(String::from) } else { None };
                 }
                 if let Some(p) = o.get("project") {
                     out[i].project = p.as_str().map(String::from);
@@ -1354,17 +1355,17 @@ mod tests {
         let a = s.add_idea("first", None, "typed", Some(&cwd)).unwrap();
         let b = s.add_idea("second", Some("beta"), "typed", None).unwrap();
         assert_eq!(a.project.as_deref(), Some("alpha"));
-        s.set_idea(&a.id, Some("done"), None).unwrap();
+        s.set_idea(&a.id, Some(IdeaState::Done), None).unwrap();
         s.set_idea(&a.id, None, Some(Some("beta"))).unwrap();
         let ideas = s.list_ideas();
         let ia = ideas.iter().find(|i| i.id == a.id).unwrap();
-        assert_eq!((ia.state.as_str(), ia.project.as_deref()), ("done", Some("beta")));
-        assert_eq!(ideas.iter().find(|i| i.id == b.id).unwrap().state, "inbox");
+        assert_eq!((ia.state, ia.project.as_deref()), (IdeaState::Done, Some("beta")));
+        assert_eq!(ideas.iter().find(|i| i.id == b.id).unwrap().state, IdeaState::Inbox);
         assert_eq!(fs::metadata(&env.paths.data).unwrap().permissions().mode() & 0o777, 0o700);
         assert!(s.add_idea("   ", None, "typed", None).is_err());
-        assert!(s.set_idea(&a.id, Some("bogus"), None).is_err());
-        assert!(s.set_idea("nope", Some("done"), None).is_err());
-        assert!(s.set_idea(&a.id, Some("sent"), None).is_err(), "sent only through mark_sent, with its project");
+        assert!(s.set_idea(&a.id, Some(IdeaState::Unknown), None).is_err());
+        assert!(s.set_idea("nope", Some(IdeaState::Done), None).is_err());
+        assert!(s.set_idea(&a.id, Some(IdeaState::Sent), None).is_err(), "sent only through mark_sent, with its project");
     }
 
     #[test]
@@ -1374,13 +1375,13 @@ mod tests {
         let a = s.add_idea("first", Some("alpha"), "typed", None).unwrap();
         let b = s.add_idea("second", Some("alpha"), "typed", None).unwrap();
         assert!(s.mark_sent(&[a.id.clone(), "nope".into()], "alpha", None).is_err());
-        assert_eq!(s.list_ideas().iter().filter(|i| i.state == "sent").count(), 0, "nothing written when one id is unknown");
+        assert_eq!(s.list_ideas().iter().filter(|i| i.state == IdeaState::Sent).count(), 0, "nothing written when one id is unknown");
         let sent = s.mark_sent(&[a.id.clone(), b.id.clone()], "alpha", Some("b123")).unwrap();
         assert!(sent.iter().all(|i| i.brief.as_deref() == Some("b123")));
-        assert!(sent.iter().all(|i| i.state == "sent" && i.sent_at.is_some()));
+        assert!(sent.iter().all(|i| i.state == IdeaState::Sent && i.sent_at.is_some()));
         let ideas = s.list_ideas();
         let ia = ideas.iter().find(|i| i.id == a.id).unwrap();
-        assert_eq!((ia.state.as_str(), ia.project.as_deref()), ("sent", Some("alpha")));
+        assert_eq!((ia.state, ia.project.as_deref()), (IdeaState::Sent, Some("alpha")));
         assert_eq!(ia.sent_at, sent[0].sent_at);
         assert_eq!(ia.brief.as_deref(), Some("b123"));
         // The record on disk: state, time and project, nothing else.
@@ -1390,9 +1391,60 @@ mod tests {
         assert_eq!(last["project"], "alpha");
         assert!(!text.lines().next().unwrap().contains("sent_at"), "a new idea's record keeps the old format");
         // Back to sort: no longer sent.
-        s.set_idea(&a.id, Some("inbox"), None).unwrap();
+        s.set_idea(&a.id, Some(IdeaState::Inbox), None).unwrap();
         let ia = s.list_ideas().into_iter().find(|i| i.id == a.id).unwrap();
-        assert_eq!((ia.state.as_str(), ia.sent_at), ("inbox", None));
+        assert_eq!((ia.state, ia.sent_at), (IdeaState::Inbox, None));
+    }
+
+    /// Files as Wake wrote them before agents and idea states were enums: they load, and what is
+    /// written back is byte for byte the same.
+    #[test]
+    fn files_from_before_the_enums_load_and_write_back_the_same() {
+        fn same<T: serde::de::DeserializeOwned + Serialize>(json: &str) -> T {
+            let v: T = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_string(&v).unwrap(), json);
+            v
+        }
+        // index/sessions/<id>.json
+        let acc: crate::index::Acc = same(
+            r#"{"id":"s1","agent":"codex","source":"/h/.codex/sessions/2026/11/20/rollout-s1.jsonl","startedAt":"2026-11-20T10:00:00.000Z","lastAt":"2026-11-20T11:00:00.000Z","prompts":1,"promptsList":[{"at":"2026-11-20T10:00:00.000Z","text":"hi"}],"firstPrompt":"hi","files":{"/p/a.rs":2},"commands":1,"tests":0,"prLinks":[],"cost":null,"aiTitle":null,"customTitle":null,"lastPromptMeta":null,"agentName":null,"awaySummary":null,"awayAt":null,"cwd":"/p","launchCwd":"/p","gitBranch":"main","projTurns":{"/p":1},"worktrees":{},"cwdSeen":{"/p":1},"lastText":"done","lastTextAt":"2026-11-20T11:00:00.000Z","lastKind":"assistant","lastUserAt":null,"activeSec":120.0,"prevTs":1767229200.0,"subagentsTotal":0,"deletedByClaude":false,"scanOffset":4096}"#,
+        );
+        assert_eq!(acc.agent, crate::types::Agent::Codex);
+        // index/files.json, one entry
+        let f: crate::index::FileRec = same(r#"{"size":4096,"mtime":1767229200.5,"offset":4096,"session":"s1","agent":"claude"}"#);
+        assert_eq!(f.agent, crate::types::Agent::Claude);
+        // questions/threads/<id>.json
+        let t: crate::types::QThread = same(
+            r#"{"id":"q1","title":"Why","project":null,"claude_session":"abc","created":"2026-11-20T10:00:00.000Z","turns":[{"question":"Why?","answer":"Because.","asked_at":"2026-11-20T10:00:00.000Z","answered_at":"2026-11-20T10:00:05.000Z","error":null}],"ai":"gemini"}"#,
+        );
+        assert_eq!(crate::questions::thread_ai(&t), crate::types::Agent::Gemini);
+        // ideas.jsonl: an idea's own record, then the ideas as Wake hands them out
+        let i: IdeaRec = same(r#"{"id":"i1","at":"2026-11-19T10:00:00.000Z","text":"x","project":"alpha","source":"typed","cwd":"/h","state":"inbox"}"#);
+        assert_eq!(i.state, IdeaState::Inbox);
+        let i: crate::types::Idea = same(
+            r#"{"id":"i1","at":"2026-11-19T10:00:00.000Z","text":"x","project":"alpha","project_name":"alpha","source":"typed","state":"sent","sent_at":"2026-11-19T11:00:00.000Z","brief":"b0123456789ab"}"#,
+        );
+        assert_eq!(i.state, IdeaState::Sent);
+        // A state this Wake doesn't know still loads, and goes with the ideas to sort.
+        let i: IdeaRec = serde_json::from_str(r#"{"id":"i2","at":"","text":"y","project":null,"source":"typed","cwd":null,"state":"kept"}"#).unwrap();
+        assert_eq!(i.state, IdeaState::Unknown);
+        // Folding ideas.jsonl: the state records main writes, sent with its brief.
+        let env = Env::new();
+        let s = env.store();
+        s.ensure_data_dir().unwrap();
+        fs::write(
+            env.paths.data.join("ideas.jsonl"),
+            "{\"id\":\"i1\",\"at\":\"2026-11-19T10:00:00.000Z\",\"text\":\"x\",\"project\":null,\"source\":\"typed\",\"cwd\":\"/h\",\"state\":\"inbox\"}\n\
+             {\"id\":\"i2\",\"at\":\"2026-11-19T10:01:00.000Z\",\"text\":\"y\",\"project\":null,\"source\":\"typed\",\"cwd\":\"/h\",\"state\":\"kept\"}\n\
+             {\"id\":\"i1\",\"state\":\"sent\",\"at\":\"2026-11-19T11:00:00.000Z\",\"project\":\"alpha\",\"brief\":\"b0123456789ab\"}\n\
+             {\"id\":\"i2\",\"state\":\"bogus\",\"at\":\"2026-11-19T11:00:00.000Z\"}\n",
+        )
+        .unwrap();
+        let ideas = s.list_ideas();
+        let by = |id: &str| ideas.iter().find(|i| i.id == id).unwrap().clone();
+        let i1 = by("i1");
+        assert_eq!((i1.state, i1.project.as_deref(), i1.brief.as_deref()), (IdeaState::Sent, Some("alpha"), Some("b0123456789ab")));
+        assert_eq!(by("i2").state, IdeaState::Unknown, "an unknown state record changes nothing");
     }
 
     #[test]
@@ -1408,7 +1460,7 @@ mod tests {
         .unwrap();
         let ideas = s.list_ideas();
         assert_eq!(ideas.len(), 1);
-        assert_eq!((ideas[0].state.as_str(), ideas[0].source.as_str()), ("done", "shell"));
+        assert_eq!((ideas[0].state, ideas[0].source.as_str()), (IdeaState::Done, "shell"));
     }
 
     #[test]

@@ -703,7 +703,7 @@ fn render_idea(ui: &Ui) {
     ih.append(&w::wrap(&format!("Ideas in {name}"), &["b"]));
     ih.append(&w::wrap("Enter keeps what you typed here; you can sort it later in Ideas.", &["s"]));
     el.append(&ih);
-    let ideas: Vec<Idea> = ui.st.borrow().ideas.iter().flatten().filter(|x| x.state == "inbox" && &x.project == id).take(8).cloned().collect();
+    let ideas: Vec<Idea> = ui.st.borrow().ideas.iter().flatten().filter(|x| x.state == IdeaState::Inbox && &x.project == id).take(8).cloned().collect();
     if ideas.is_empty() {
         el.append(&w::wrap("None yet.", &["none", "pad4"]));
     }

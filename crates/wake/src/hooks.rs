@@ -141,7 +141,11 @@ pub fn apply_show(ui: &Ui, show: &str) {
         // Ideas on one of its lists: ideas:sent, ideas:done.
         "ideas" => {
             set_view(ui, View::Ideas);
-            ui.st.borrow_mut().idea_tab = IdeaTab::of(arg.as_deref().unwrap_or("inbox"));
+            ui.st.borrow_mut().idea_tab = match arg.as_deref() {
+                Some("sent") => IdeaTab::Sent,
+                Some("done") => IdeaTab::Done,
+                _ => IdeaTab::Sort,
+            };
             ui.st.borrow_mut().drawn.remove(&View::Ideas);
             views::render_view(ui);
         }
@@ -190,7 +194,7 @@ pub fn apply_show(ui: &Ui, show: &str) {
         "ticked" | "start-agent" => {
             let picked = {
                 let st = ui.st.borrow();
-                let ideas: Vec<&Idea> = st.ideas.iter().flatten().filter(|i| i.state == "inbox" && i.project.is_some()).collect();
+                let ideas: Vec<&Idea> = st.ideas.iter().flatten().filter(|i| i.state == IdeaState::Inbox && i.project.is_some()).collect();
                 let best = ideas.iter().map(|i| &i.project).max_by_key(|p| ideas.iter().filter(|i| &i.project == *p).count()).cloned().flatten();
                 ideas.iter().filter(|i| i.project == best).map(|i| i.id.clone()).collect::<Vec<_>>()
             };

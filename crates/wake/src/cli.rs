@@ -108,7 +108,7 @@ fn cmd_idea(words: &[String]) -> u8 {
 fn cmd_ideas() -> u8 {
     let s = store();
     let projects = s.load_projects();
-    let ideas: Vec<_> = s.list_ideas().into_iter().filter(|i| i.state == "inbox").collect();
+    let ideas: Vec<_> = s.list_ideas().into_iter().filter(|i| i.state == wake_core::IdeaState::Inbox).collect();
     if ideas.is_empty() {
         out!("No ideas waiting.");
         return 0;

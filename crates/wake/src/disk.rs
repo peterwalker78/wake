@@ -520,7 +520,7 @@ pub fn project_reason(ui: &Ui, s: &SessionSummary) -> String {
 /// "Which project is this session?": every tracked project, "No project", and (when the person
 /// set one) "Let Wake decide".
 pub fn set_project(ui: &Ui, session: &str) {
-    let Some(s) = app::find_session(ui, session) else { return };
+    let Some(s) = ui.st.borrow().session(session).cloned() else { return };
     let (projects, words, set) = {
         let st = ui.st.borrow();
         let ps: Vec<ProjectSummary> = st.ov.as_ref().map(|o| o.projects.iter().filter(|p| !p.removed).cloned().collect()).unwrap_or_default();

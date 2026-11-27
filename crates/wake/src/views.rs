@@ -83,10 +83,6 @@ pub fn live_tip(ui: &Ui, view: View, wd: &impl IsA<gtk::Widget>, f: impl Fn(&App
     push_live(ui, view, wd.clone().upcast(), Box::new(f));
 }
 
-fn session_in<'a>(st: &'a AppState, id: &str) -> Option<&'a SessionSummary> {
-    st.ov.as_ref()?.sessions.iter().find(|s| s.id == id)
-}
-
 // ---------- order ----------
 
 /// Needs-you first. "Lost track" sorts with the ended ones: there is nothing to do about it.
@@ -1283,7 +1279,7 @@ fn age_label(ui: &Ui, s: &SessionSummary) -> gtk::Label {
     let last = w::label(&fmt::ago(s.last_at.as_deref()), &["num", "dim"]);
     last.set_xalign(1.0);
     let id = s.id.clone();
-    live_text(ui, View::Monitor, &last, move |st| session_in(st, &id).map(|s| fmt::ago(s.last_at.as_deref())));
+    live_text(ui, View::Monitor, &last, move |st| st.session(&id).map(|s| fmt::ago(s.last_at.as_deref())));
     last
 }
 

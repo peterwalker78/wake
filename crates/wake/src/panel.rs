@@ -839,12 +839,11 @@ fn session_menu(ui: &Ui, s: &SessionSummary) -> gtk::MenuButton {
 }
 
 fn session(ui: &Ui, id: &str) {
-    let (detail, summary) = {
+    let (detail, s) = {
         let st = ui.st.borrow();
-        let sum = st.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.id == id).cloned());
-        (st.sessions.get(id).cloned(), sum)
+        (st.sessions.get(id).cloned(), st.session(id).cloned())
     };
-    let Some(s) = summary.clone().or_else(|| detail.as_ref().map(|d| d.summary.clone())) else {
+    let Some(s) = s else {
         head(ui, "Session", &[]);
         skeleton(&body(ui));
         return;

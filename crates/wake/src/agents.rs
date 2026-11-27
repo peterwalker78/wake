@@ -195,10 +195,9 @@ fn group_of(a: &AgentProc) -> &'static str {
     }
 }
 
-/// The session behind a row, from the overview: its subagent counts.
+/// The session behind a row (`AppState::session`): its subagent counts.
 fn session_of<'a>(st: &'a app::AppState, a: &AgentProc) -> Option<&'a SessionSummary> {
-    let id = a.session_id.as_deref()?;
-    st.ov.as_ref()?.sessions.iter().find(|s| s.id == id)
+    st.session(a.session_id.as_deref()?)
 }
 
 /// What, when it changes, is worth drawing the rows again for: never memory, CPU or idle time.

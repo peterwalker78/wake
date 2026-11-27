@@ -115,6 +115,14 @@ pub fn named(root: &impl IsA<gtk::Widget>, name: &str) -> Option<gtk::Widget> {
     find(root, |w| w.widget_name() == name)
 }
 
+/// Says `msg` to screen readers. Not on Broadway, whose missing accessibility backend crashes
+/// GTK's announce.
+pub fn announce(window: &gtk::ApplicationWindow, msg: &str, priority: gtk::AccessibleAnnouncementPriority) {
+    if std::env::var("GDK_BACKEND").map_or(true, |b| b != "broadway") {
+        window.announce(msg, priority);
+    }
+}
+
 pub fn clear(b: &impl IsA<gtk::Widget>) {
     let w = b.upcast_ref::<gtk::Widget>();
     while let Some(child) = w.first_child() {

@@ -291,7 +291,7 @@ pub fn update_chip(ui: &Ui) {
     if ui.peek.borrow().phase != Phase::Idle {
         return;
     }
-    let session = target(ui, HoldKey::Space).and_then(|id| ui.st.borrow().ov.as_ref()?.sessions.iter().find(|s| s.id == id).cloned());
+    let session = target(ui, HoldKey::Space).and_then(|id| ui.st.borrow().session(&id).cloned());
     let tip = session.map(|s| {
         if zooms(ui, &s) {
             format!("Hold Space to zoom to the window \"{}\" is in. Let go to come back to Wake, or press Enter while holding to stay there.", s.title)
@@ -656,7 +656,7 @@ fn open_preview(ui: &Ui, id: &str, epoch: u64, why: Option<String>) {
         p.mode = Mode::Preview;
         p.text.clear();
     }
-    let s = app::find_session(ui, id);
+    let s = ui.st.borrow().session(id).cloned();
     if let Some(v) = preview(ui) {
         let v = &v;
         v.title.set_text(s.as_ref().map_or("", |s| s.title.as_str()));
@@ -777,7 +777,7 @@ fn show(ui: &Ui, screen: Option<&Screen>, subs: Option<Vec<SubagentSummary>>) ->
         None => {
             // Running, but in a terminal app, whose screen Wake can't read: don't call it stopped.
             let target = ui.peek.borrow().target.clone();
-            let live = target.and_then(|id| app::find_session(ui, &id)).is_some_and(|s| app::is_live(s.state));
+            let live = target.is_some_and(|id| ui.st.borrow().session(&id).is_some_and(|s| app::is_live(s.state)));
             if live {
                 v.source.set_text("can't read this terminal");
                 v.note.set_text("This agent is running, but Wake can't read its terminal, so there is no screen to show here.");

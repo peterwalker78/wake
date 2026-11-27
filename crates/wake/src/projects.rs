@@ -52,7 +52,7 @@ pub fn render(ui: &Ui) {
     // Never rebuild under someone typing a folder into "Track a folder", nor under a project being
     // dragged (it would drop the drag); it draws again when the drag ends.
     let vw = &ui.w.views[&View::Projects];
-    if (adding && (app::typing_in(ui, &vw.top) || app::typing_in(ui, &vw.list))) || DRAGGING.with(|d| d.get()) {
+    if (adding && (app::typing_in(ui, &vw.top) || app::typing_in(ui, &vw.list))) || ui.st.borrow().dragging {
         return;
     }
     let mut sig_list = list.clone();
@@ -185,11 +185,6 @@ struct Section<'a> {
     target: Option<Option<String>>,
 }
 
-thread_local! {
-    /// A project is being dragged: the view waits to draw again until it is dropped.
-    static DRAGGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 /// What a dragged project carries: its id, marked as Wake's so text dragged in from elsewhere is
 /// never taken for a project. A dragged group carries its name.
 const DRAG_PREFIX: &str = "wake-project:";
@@ -220,8 +215,9 @@ fn drag_payload(ui: &Ui, w: &impl IsA<gtk::Widget>, payload: String) {
     }
     {
         let w = w.clone().upcast::<gtk::Widget>();
+        let ui = ui.clone();
         src.connect_drag_begin(move |s, _| {
-            DRAGGING.with(|d| d.set(true));
+            ui.st.borrow_mut().dragging = true;
             let (x, y) = at.get();
             s.set_icon(Some(&gtk::WidgetPaintable::new(Some(&w))), x as i32, y as i32);
         });
@@ -229,7 +225,7 @@ fn drag_payload(ui: &Ui, w: &impl IsA<gtk::Widget>, payload: String) {
     {
         let ui = ui.clone();
         src.connect_drag_end(move |_, _, _| {
-            DRAGGING.with(|d| d.set(false));
+            ui.st.borrow_mut().dragging = false;
             // Whatever came in while it was held.
             let ui = ui.clone();
             glib::idle_add_local_once(move || render_view(&ui));

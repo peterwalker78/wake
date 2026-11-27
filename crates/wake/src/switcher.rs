@@ -200,8 +200,8 @@ fn open_tab(ui: &Ui, idea: bool) {
         return;
     }
     // Esc puts the keyboard back where it was (the panel, the rail...), not always on the list.
-    RETURN_TO.with(|r| *r.borrow_mut() = gtk::prelude::GtkWindowExt::focus(&ui.window));
-    ui.st.borrow_mut().sw = app::Sw { open: true, idea, ..Default::default() };
+    let return_to = gtk::prelude::GtkWindowExt::focus(&ui.window);
+    ui.st.borrow_mut().sw = app::Sw { open: true, idea, return_to, ..Default::default() };
     ui.w.sw_entry.set_text("");
     show_tab(ui);
     ui.w.switcher.set_visible(true);
@@ -275,16 +275,13 @@ pub fn close(ui: &Ui) {
     ui.st.borrow_mut().sw.open = false;
     ui.w.switcher.set_visible(false);
     ui.w.column.set_sensitive(true);
-    match RETURN_TO.with(|r| r.borrow_mut().take()) {
+    let back = ui.st.borrow_mut().sw.return_to.take();
+    match back {
         Some(w) if w.is_mapped() && w.is_sensitive() && !w.is_ancestor(&ui.w.switcher) => {
             w.grab_focus();
         }
         _ => app::focus_list(ui),
     }
-}
-
-thread_local! {
-    static RETURN_TO: std::cell::RefCell<Option<gtk::Widget>> = const { std::cell::RefCell::new(None) };
 }
 
 /// For screenshots: select `id` and look inside its first subagent.

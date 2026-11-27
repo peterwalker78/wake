@@ -137,6 +137,8 @@ pub struct Sw {
     pub in_subs: bool,
     pub sub_sel: usize,
     pub expanded: Option<String>,
+    /// Where the keyboard was when it opened, to go back to on Esc (the panel, the rail...).
+    pub return_to: Option<gtk::Widget>,
 }
 
 pub struct AppState {
@@ -182,6 +184,12 @@ pub struct AppState {
     pub cur: Option<String>,
     pub back: Option<String>,
     pub modal_open: bool,
+    /// The open dialog's Ctrl+Enter (pause) or confirm action, and where the keyboard goes back
+    /// to when it closes.
+    pub modal_submit: Option<Rc<dyn Fn()>>,
+    pub modal_return: Option<gtk::Widget>,
+    /// Projects: a project is being dragged; the view waits to draw again until it is dropped.
+    pub dragging: bool,
     pub busy_ov: bool,
     pub busy_procs: bool,
     /// The periodic re-reads of open details (Agents' open rows, the session panel) are running:
@@ -209,6 +217,13 @@ pub struct AppState {
     pub chips_drawn: String,
     /// The layout for the window's width (layout.rs), as last drawn.
     pub lay: crate::layout::Lay,
+}
+
+impl AppState {
+    /// A session by id: from the overview, else from its details when they have been read.
+    pub fn session(&self, id: &str) -> Option<&SessionSummary> {
+        self.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.id == id)).or_else(|| self.sessions.get(id).map(|d| &d.summary))
+    }
 }
 
 impl Default for AppState {
@@ -249,6 +264,9 @@ impl Default for AppState {
             cur: None,
             back: None,
             modal_open: false,
+            modal_submit: None,
+            modal_return: None,
+            dragging: false,
             busy_ov: false,
             busy_procs: false,
             busy_agents_open: false,
@@ -1620,11 +1638,6 @@ pub fn open_sel(ui: &Ui) {
     }
 }
 
-pub fn find_session(ui: &Ui, id: &str) -> Option<SessionSummary> {
-    let st = ui.st.borrow();
-    st.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.id == id).cloned()).or_else(|| st.sessions.get(id).map(|d| d.summary.clone()))
-}
-
 pub fn find_project(ui: &Ui, id: &str) -> Option<ProjectSummary> {
     ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.iter().find(|p| p.id == id).cloned())
 }
@@ -1751,7 +1764,7 @@ pub fn glide_to(g: &Rc<Glide>, row: Option<&gtk::ListBoxRow>) {
 
 /// Go to: `Source::go_to`, then say what happened.
 pub fn go_to(ui: &Ui, id: &str) {
-    let Some(s) = find_session(ui, id) else { return };
+    let Some(s) = ui.st.borrow().session(id).cloned() else { return };
     let (_, _, can, _) = loc_of(&s, unsure(ui));
     if !can {
         let msg = if s.deleted_by_claude {
@@ -1807,11 +1820,8 @@ pub fn toast(ui: &Ui, msg: &str, bad: bool) {
     }
     t.set_visible(true);
     crate::motion::pop(t);
-    // Screen readers hear it too (not on Broadway, whose missing accessibility backend crashes
-    // GTK's announce, as behind.rs found).
-    if std::env::var("GDK_BACKEND").map_or(true, |b| b != "broadway") {
-        ui.window.announce(msg, if bad { gtk::AccessibleAnnouncementPriority::High } else { gtk::AccessibleAnnouncementPriority::Medium });
-    }
+    // Screen readers hear it too.
+    w::announce(&ui.window, msg, if bad { gtk::AccessibleAnnouncementPriority::High } else { gtk::AccessibleAnnouncementPriority::Medium });
     let ticket = {
         let mut st = ui.st.borrow_mut();
         st.toast_gen += 1;

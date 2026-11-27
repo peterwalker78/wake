@@ -8,7 +8,7 @@ use wake_core::*;
 
 use crate::{
     agents,
-    app::{IdeaTab, Ui, View, find_session, is_live, move_sel, refresh, render_all, restore_sel, set_view, toast},
+    app::{IdeaTab, Ui, View, is_live, move_sel, refresh, render_all, restore_sel, set_view, toast},
     dialogs, panel, peek, prefs, setview, switcher, theme, views, w,
 };
 
@@ -610,7 +610,7 @@ pub fn hold(ui: &Ui, arg: Option<String>) {
         eprintln!("wake: hold hook: no row for {session:?}");
         return;
     };
-    let bg = find_session(ui, &row).map(|s| s.location.is_none());
+    let bg = ui.st.borrow().session(&row).map(|s| s.location.is_none());
     eprintln!("wake: hold hook: holding Space on {row} (background, no tab: {bg:?}), {}", if stay { "Enter to stay" } else { "then letting go" });
     let ui = ui.clone();
     let t0 = peek::now_ms();

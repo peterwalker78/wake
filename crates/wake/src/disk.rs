@@ -33,7 +33,6 @@ const CSS: &str = "
 .disk-safe { color: @mint; } .disk-check { color: @amber; } .disk-keep { color: @dim; }
 .disk-refused { font-size: 11px; color: @amber; }
 .disk-cmd { font-family: \"JetBrains Mono\", monospace; font-size: 11px; color: @soft; background-color: @codebg; border-radius: 5px; padding: 3px 7px; }
-.disk-scroll { min-height: 120px; }
 .disk-proj { padding: 3px 0; }
 ";
 
@@ -449,9 +448,9 @@ pub fn machine(ui: &Ui) {
             body.append(&item_widget(ui, it, None, ""));
         }
     }
-    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).min_content_height(200).max_content_height(470).propagate_natural_height(true).child(&body).build();
-    scroll.add_css_class("disk-scroll");
-    card.append(&scroll);
+    // No scroller of its own: a list scrolled inside a dialog cuts its top line in half. The
+    // whole card grows, and a card taller than the window scrolls as one (dialogs::show).
+    card.append(&body);
     let when = match &r.measuring {
         Some(m) => format!("{m}…"),
         None => format!(
@@ -576,8 +575,8 @@ pub fn set_project(ui: &Ui, session: &str) {
     if set {
         list.append(&pick("Let Wake decide again", None, None, false));
     }
-    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).max_content_height(380).propagate_natural_height(true).child(&list).build();
-    card.append(&scroll);
+    // The whole card scrolls when it is taller than the window, never the list inside it.
+    card.append(&list);
     close_row(ui, &card);
     dialogs::show(ui, &card, None);
     if let Some(b) = first {

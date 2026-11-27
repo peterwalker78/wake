@@ -191,11 +191,14 @@ fn proc(
         children: Vec::new(),
         start_ticks: Some(u64::from(pid) * 100),
         helpers: None,
+        tasks: Vec::new(),
+        others: Vec::new(),
+        others_rss_bytes: 0,
     }
 }
 
 fn note(name: &str, idle: bool, helpers: &[&str]) -> WorkingNote {
-    WorkingNote { name: name.into(), idle, helpers: helpers.iter().map(|h| h.to_string()).collect() }
+    WorkingNote { name: name.into(), idle, helpers: helpers.iter().map(|h| h.to_string()).collect(), tasks: Vec::new() }
 }
 
 impl DemoSource {

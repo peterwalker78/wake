@@ -100,12 +100,21 @@ pub fn read_working_note(paths: &Paths, pid: u32) -> Option<(WorkingNote, f64)> 
     Some((parse_note(&lines), at))
 }
 
+/// A note's lines: 1 the name, 2 `idle` or anything else (working), then one per helper
+/// (subagent) by its task, then one per background task as `task<TAB><label>`. A line without
+/// that prefix is a helper, so an older note reads as it always did.
 pub fn parse_note(lines: &[String]) -> WorkingNote {
-    WorkingNote {
-        name: lines.first().map(|l| l.trim().to_string()).unwrap_or_default(),
-        idle: lines.get(1).is_some_and(|l| l.trim() == "idle"),
-        helpers: lines.iter().skip(2).map(|l| l.trim()).filter(|l| !l.is_empty()).map(String::from).collect(),
+    let (mut helpers, mut tasks) = (Vec::new(), Vec::new());
+    for line in lines.iter().skip(2) {
+        match line.strip_prefix("task\t") {
+            // Labels never hold a tab; one that does gets a space instead, so the row reads as one line.
+            Some(label) => tasks.push(label.replace('\t', " ").trim().to_string()),
+            None => helpers.push(line.trim().to_string()),
+        }
     }
+    helpers.retain(|h| !h.is_empty());
+    tasks.retain(|t| !t.is_empty());
+    WorkingNote { name: lines.first().map(|l| l.trim().to_string()).unwrap_or_default(), idle: lines.get(1).is_some_and(|l| l.trim() == "idle"), helpers, tasks }
 }
 
 pub fn read_resume_note(paths: &Paths, pid: u32) -> Option<String> {
@@ -593,5 +602,38 @@ mod tests {
         assert_eq!(real_name(Some(&i)).as_deref(), Some("unfinished-work-check"));
         assert_eq!(question_text("Done.\n\n  Shall I\n go on?  "), "Shall I go on?");
         assert_eq!(parse_note(&["n".into(), "idle".into(), "".into(), "h1".into()]).helpers, ["h1"]);
+    }
+
+    fn note_of(text: &str) -> WorkingNote {
+        parse_note(&text.lines().map(String::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn an_old_note_has_helpers_and_no_tasks() {
+        let n = note_of("claude: alpha\n\nReview parser\nPort the view\n");
+        assert_eq!((n.name.as_str(), n.idle), ("claude: alpha", false));
+        assert_eq!(n.helpers, ["Review parser", "Port the view"]);
+        assert!(n.tasks.is_empty());
+        let bare = note_of("claude: alpha");
+        assert!(bare.helpers.is_empty() && bare.tasks.is_empty() && !bare.idle);
+    }
+
+    #[test]
+    fn task_lines_are_tasks_with_the_prefix_taken_off() {
+        let n = note_of("claude: alpha\nidle\nReview parser\ntask\tcargo test --offline\ntask\twatching CI run 42\n");
+        assert!(n.idle, "tasks don't change idle");
+        assert_eq!(n.helpers, ["Review parser"]);
+        assert_eq!(n.tasks, ["cargo test --offline", "watching CI run 42"]);
+        // Only the word and one tab make a task line: anything else is a helper, as before.
+        let n = note_of("n\n\ntask list review\ntasks\tx\n task\tindented\ntask\t\nTask\tcaps\n");
+        assert_eq!(n.helpers, ["task list review", "tasks\tx", "task\tindented", "Task\tcaps"]);
+        assert!(n.tasks.is_empty(), "{:?}", n.tasks);
+    }
+
+    #[test]
+    fn a_task_label_never_holds_a_tab() {
+        let n = note_of("n\n\ntask\tone\ttwo\t\ntask\t\tpadded \n");
+        assert_eq!(n.tasks, ["one two", "padded"]);
+        assert!(n.tasks.iter().all(|t| !t.contains('\t')));
     }
 }

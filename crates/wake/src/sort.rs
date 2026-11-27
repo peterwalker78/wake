@@ -265,6 +265,9 @@ mod tests {
             children: vec![],
             start_ticks: None,
             helpers: None,
+            tasks: Vec::new(),
+            others: Vec::new(),
+            others_rss_bytes: 0,
         };
         let (x, y, z) = (a(30, "beta", 500, State::Idle, Some(600)), a(10, "alpha", 900, State::Idle, Some(60)), a(20, "Gamma", 100, State::Working, None));
         let mut v = vec![&x, &y, &z];

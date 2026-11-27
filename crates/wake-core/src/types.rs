@@ -380,6 +380,25 @@ pub struct WorkingNote {
     pub idle: bool,
     /// Lines 3+: one per helper (subagent) the agent has working, by its task.
     pub helpers: Vec<String>,
+    /// Lines `task<TAB><label>` after the helpers: the background tasks (shells, monitors) the
+    /// agent has running, by their label (the prefix taken off).
+    #[serde(default)]
+    pub tasks: Vec<String>,
+}
+
+/// A background task a session has running: a shell command or a monitor (something it watches).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskSummary {
+    /// "shell" or "monitor", as Claude's job record names them; a shell found among a session's
+    /// processes is "shell".
+    pub kind: String,
+    /// What it runs, on one line, at most 60 characters, with secret-looking values hidden.
+    pub label: String,
+    /// When it started (ISO 8601), if known.
+    pub started_at: Option<String>,
+    /// Its process, when it was found among the session's processes (not from a job record).
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -415,6 +434,18 @@ pub struct AgentProc {
     /// them. Live, unlike the note's helper lines. None when there is no readable job record.
     #[serde(default)]
     pub helpers: Option<Vec<String>>,
+    /// For a session: its background tasks running now. From its job record (`fan` entries of
+    /// kind `shell` or `monitor` not yet done) when it has one, else the shells among its own
+    /// child processes.
+    #[serde(default)]
+    pub tasks: Vec<TaskSummary>,
+    /// Other processes below it that are not agents (shells and whatever they run: builds, test
+    /// runs), counted into `rss_bytes` and `cpu_percent`. Never rows of their own.
+    #[serde(default)]
+    pub others: Vec<u32>,
+    /// Their memory, added up (already in `rss_bytes`).
+    #[serde(default)]
+    pub others_rss_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -590,7 +621,8 @@ pub struct SessionResources {
     pub own_rss_bytes: u64,
     /// Percent of one CPU, all its processes together (None until two samples are in).
     pub cpu_percent: Option<f32>,
-    /// Every process counted: the agent first, then its pty host, attach clients, helpers.
+    /// Every process counted: the agent first, then its pty host, attach clients, helpers, then the
+    /// other processes below it (shells, builds).
     pub pids: Vec<u32>,
 }
 

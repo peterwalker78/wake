@@ -1943,6 +1943,9 @@ mod tests {
             children: vec![],
             start_ticks: Some(start),
             helpers: None,
+            tasks: Vec::new(),
+            others: Vec::new(),
+            others_rss_bytes: 0,
         }
     }
 

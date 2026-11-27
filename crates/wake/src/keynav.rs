@@ -798,6 +798,7 @@ pub fn build(ui: &Ui) {
             }
             focus_moved(&ui2);
             mark(&ui2);
+            crate::peek::update_chip(&ui2);
         });
     }
     {
@@ -810,7 +811,13 @@ pub fn build(ui: &Ui) {
         click.set_button(0);
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
         click.connect_pressed(|_, _, _, _| note_input());
-        click.connect_released(|_, _, _, _| note_input());
+        let ui2 = ui.clone();
+        click.connect_released(move |_, _, _, _| {
+            note_input();
+            // Once the click has done its work (a row picked, Find opened or closed).
+            let ui3 = ui2.clone();
+            glib::idle_add_local_once(move || crate::peek::update_chip(&ui3));
+        });
         ui.window.add_controller(click);
     }
 }

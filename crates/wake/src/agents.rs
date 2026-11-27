@@ -278,6 +278,7 @@ pub fn render(ui: &Ui) {
     head.append(&line);
     let acts = w::hbox(8, &["agentacts"]);
     acts.set_valign(gtk::Align::Center);
+    acts.append(&crate::peek::chip());
     let n_stale = stale_summary(&p).0;
     if n_stale > 0 {
         let ui2 = ui.clone();

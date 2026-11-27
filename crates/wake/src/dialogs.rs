@@ -241,7 +241,7 @@ pub fn keys(ui: &Ui) {
     top.append(&w::spacer());
     top.append(&w::label("Esc closes", &["hint"]));
     c.append(&top);
-    let peek = if crate::peek::can_fly(ui) { "zoom to the session's window (a preview if no window shows it)" } else { "preview the session" };
+    let peek = if crate::peek::can_fly(ui) { "Peek: zoom to the session's window, or preview it if no window shows it" } else { "Peek: preview the session" };
     let groups: [(&str, Vec<(&str, String)>); 2] = [
         (
             "Moving around",
@@ -251,7 +251,7 @@ pub fn keys(ui: &Ui) {
                 ("Home  End", "the first or last".into()),
                 ("Enter", "open the details, or press the button".into()),
                 ("Esc", "go back, or close".into()),
-                ("hold Space", format!("{peek}; let go to come back")),
+                ("hold Space", format!("{peek}; let go to come back. PEEK AVAILABLE shows at the top when you can")),
             ],
         ),
         (
@@ -259,6 +259,9 @@ pub fn keys(ui: &Ui) {
             vec![
                 ("Ctrl+F", "find a session".into()),
                 ("Ctrl+N", "a new idea".into()),
+                ("Ctrl+1 to 5", "Monitor, Projects, Ideas, History, Agents".into()),
+                ("Ctrl+6", "Ask".into()),
+                ("Ctrl+,", "Settings".into()),
                 ("Ctrl+Tab", "the next view (Shift: back)".into()),
                 ("Menu  Shift+F10", "the selected item's menu".into()),
                 ("Delete", "in Agents: stop the agent (asks first)".into()),

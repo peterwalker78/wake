@@ -260,6 +260,64 @@ pub fn cue(ui: &Ui, s: &SessionSummary, long: bool) -> gtk::Box {
     b
 }
 
+thread_local! {
+    /// Every "PEEK AVAILABLE" chip (one in each page's title row), and what they say now: shown or
+    /// not, and the tooltip. A page drawn later starts with the same.
+    static CHIPS: std::cell::RefCell<(Vec<glib::WeakRef<gtk::Label>>, Option<String>)> = Default::default();
+}
+
+/// A "PEEK AVAILABLE" chip for a page's title row, at the end where its actions go. It shows while
+/// holding Space would peek at the session the keyboard is on.
+pub fn chip() -> gtk::Label {
+    let c = w::label("PEEK AVAILABLE", &["pill", "mint", "peekchip"]);
+    c.set_valign(gtk::Align::Center);
+    CHIPS.with(|cs| {
+        let mut cs = cs.borrow_mut();
+        cs.0.retain(|x| x.upgrade().is_some());
+        cs.0.push(c.downgrade());
+        show_chip(&c, cs.1.as_deref());
+    });
+    c
+}
+
+fn show_chip(c: &gtk::Label, tip: Option<&str>) {
+    c.set_visible(tip.is_some());
+    c.set_tooltip_text(tip);
+    if let Some(t) = tip {
+        c.update_property(&[gtk::accessible::Property::Description(t)]);
+    }
+}
+
+/// Shows the chips while holding Space would peek at the session the keyboard is on (the same
+/// check a held Space makes), and says in their tooltip what it would do.
+pub fn update_chip(ui: &Ui) {
+    if ui.st.try_borrow_mut().is_err() || ui.peek.try_borrow_mut().is_err() {
+        return;
+    }
+    // While a peek is on, the chips stay as they were when it began.
+    if ui.peek.borrow().phase != Phase::Idle {
+        return;
+    }
+    let session = target(ui, HoldKey::Space).and_then(|id| ui.st.borrow().ov.as_ref()?.sessions.iter().find(|s| s.id == id).cloned());
+    let tip = session.map(|s| {
+        if zooms(ui, &s) {
+            format!("Hold Space to zoom to the window \"{}\" is in. Let go to come back to Wake, or press Enter while holding to stay there.", s.title)
+        } else if can_fly(ui) {
+            format!("Hold Space to preview \"{}\" here: no window shows it. Let go to close the preview.", s.title)
+        } else {
+            format!("Hold Space to preview \"{}\" here. Let go to close the preview.", s.title)
+        }
+    });
+    CHIPS.with(|cs| {
+        let mut cs = cs.borrow_mut();
+        cs.0.retain(|x| x.upgrade().is_some());
+        for c in cs.0.iter().filter_map(|x| x.upgrade()) {
+            show_chip(&c, tip.as_deref());
+        }
+        cs.1 = tip;
+    });
+}
+
 /// The session a peek would show from where the keyboard is now, if any.
 fn target(ui: &Ui, key: HoldKey) -> Option<String> {
     let st = ui.st.borrow();

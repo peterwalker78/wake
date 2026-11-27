@@ -11,6 +11,8 @@ window.wake {
   font-family: "Atkinson Hyperlegible", sans-serif;
   font-size: 14px;
 }
+/* Monospace text is never 12px: at 1.25 scale (GTK 4.24, the usual fallback for JetBrains Mono)
+   that size loses the top pixel row of T, E and F. 12.5px reads the same and draws whole. */
 window.wake * { outline-color: @accent; }
 /* GTK 4 marks every ancestor of the focused widget focus-visible too, so outline only the widget
    that has the focus itself. List rows show focus with their selected bar instead of a box, and
@@ -39,7 +41,7 @@ window.wake tooltip { background-color: @float; color: @ink; border: 1px solid @
 
 /* top bar */
 .logo { font-weight: 700; font-size: 15px; letter-spacing: 3px; }
-window.wake button.stat { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @muted; padding: 4px 2px; }
+window.wake button.stat { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: @muted; padding: 4px 2px; }
 .stat .n { color: @ink; font-weight: 700; }
 .stat .d { border-radius: 50%; min-width: 7px; min-height: 7px; }
 .stat.work .n { color: @mint; } .stat.work .d { background-color: @mint; }
@@ -162,7 +164,7 @@ window.wake button.link:hover { text-decoration: underline; }
 /* states */
 .empty { padding: 48px 24px; color: @dim; }
 .empty .big { font-weight: 700; font-size: 20px; color: @ink; }
-.loading { padding: 28px 16px; color: @dim; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.loading { padding: 28px 16px; color: @dim; font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
 .skel { min-height: 12px; border-radius: 4px; background-color: @panel2; margin: 4px 0; }
 .err { color: @rose; font-size: 12.5px; }
 
@@ -176,7 +178,7 @@ list.table > row.idea-row:selected .idea { box-shadow: 0 0 0 1px @accent; }
 .idea .tx { font-size: 13px; }
 .idea .mt { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: @dim; padding-top: 1px; }
 .brief { margin: 8px 14px 14px; border: 1px dashed @violet; border-radius: 10px; padding: 12px 14px; background-color: alpha(@violet, .05); }
-.brief .pre { font-family: "JetBrains Mono", monospace; font-size: 12px; background-color: @bg; border: 1px solid @line; border-radius: 7px; padding: 10px 12px; }
+.brief .pre { font-family: "JetBrains Mono", monospace; font-size: 12.5px; background-color: @bg; border: 1px solid @line; border-radius: 7px; padding: 10px 12px; }
 
 /* history and projects */
 .searchbox { padding: 12px 14px; border-bottom: 1px solid @line; }
@@ -327,7 +329,7 @@ window.wake popover.peek-pop contents { padding: 0; background-color: #07090D; b
 .peek-meta { font-size: 12px; color: #8995A6; }
 .peek-source { font-family: "JetBrains Mono", monospace; font-size: 11px; color: #38CEFF; padding: 3px 8px; border: 1px solid rgba(56,206,255,.35); border-radius: 999px; }
 .peek-scroll { background-color: #07090D; }
-.peek-term { font-family: "JetBrains Mono", monospace; font-size: 12px; color: #C9D3DF; padding: 12px 18px; }
+.peek-term { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: #C9D3DF; padding: 12px 18px; }
 .peek-note { font-size: 12px; color: #FFB547; padding: 6px 18px; }
 .peek-subs { padding: 8px 18px; border-top: 1px solid #1A232E; background-color: #0B0F15; }
 .peek-sub-mark { color: #42E6A4; font-family: "JetBrains Mono", monospace; padding-top: 1px; }
@@ -339,7 +341,7 @@ window.wake popover.peek-pop contents { padding: 0; background-color: #07090D; b
 .peek-scroll undershoot.top, .peek-scroll undershoot.bottom, .peek-scroll overshoot.top, .peek-scroll overshoot.bottom { background: none; box-shadow: none; }
 
 /* Calm pass: fewer boxes, weights and colours; more room. Later rules win over the ones above. */
-.quiet-top { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @dim; padding-top: 1px; }
+.quiet-top { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: @dim; padding-top: 1px; }
 .pj .title { font-weight: normal; color: @soft; }
 .pill { background-color: transparent; padding: 0; font-weight: normal; color: @muted; }
 .loc, window.wake button.loc { border-color: transparent; padding: 3px 0; }
@@ -384,7 +386,7 @@ window.wake button.foldbtn:hover { background-color: @row; }
 
 /* the keys overlay */
 .keygrp { margin-top: 4px; }
-.keyname { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @accent; padding-top: 1px; }
+.keyname { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: @accent; padding-top: 1px; }
 .pill.paused { border: none; padding: 0; }
 .foldbtn .chev { font-size: 13px; color: @dim; }
 window.wake button.subcount { border-color: transparent; padding: 1px 2px; }
@@ -645,6 +647,7 @@ window.wake menubutton.more > button:hover, window.wake menubutton.sortbtn > but
 window.wake button.menuitem { padding: 6px 12px; border-radius: 6px; color: @muted; }
 window.wake button.menuitem:hover { background-color: @row; color: @ink; }
 window.wake button.menuitem.on { color: @accent; font-weight: 700; }
+.menukey { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @dim; }
 .modal.sheet { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom: none; }
 .cardrow { padding: 9px 14px; }
 /* The slim rail's full form, slid out over the content (layout.rs): a soft shadow on its right. */
@@ -668,7 +671,7 @@ window.wake button.menuitem.on { color: @accent; font-weight: 700; }
 .caption { font-size: 12px; }
 .caption-heading { font-size: 12px; font-weight: 700; color: @muted; }
 .dim { color: @muted; }
-.count { font-family: "JetBrains Mono", monospace; font-size: 12px; padding-top: 1px; }
+.count { font-family: "JetBrains Mono", monospace; font-size: 12.5px; padding-top: 1px; }
 
 /* the title bar: Find and New idea, the view switcher, Ask and the menu */
 .top { min-height: 50px; padding: 0 8px 0 10px; background-color: @panel; border-bottom: 1px solid @line; }
@@ -794,3 +797,5 @@ list.table > row:selected .peek-cue { opacity: 1; }
 list.table > row:selected .peek-age { opacity: 0; }
 .peek-cue.zoom .kbd { color: @accent; border-color: alpha(@accent, .55); }
 .peek-cue.zoom .hint { color: @accent; }
+/* "PEEK AVAILABLE" in the title bar: a pill in the working green, a size up from a row's pills. */
+window.wake .pill.peekchip { font-size: 11px; padding: 4px 10px; border-radius: 999px; letter-spacing: .5px; background-color: alpha(@mint, .14); border: 1px solid alpha(@mint, .45); }

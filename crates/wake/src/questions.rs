@@ -503,7 +503,7 @@ fn render_thread(ui: &Ui) {
         let e = w::empty(
             "Ask anything",
             &format!(
-                "Wake asks your own {ai} and keeps every thread here. Just a question: {Ai} can search the web. About a project: it can also read that project's files. It never changes anything. Settings (,) picks which AI answers.",
+                "Wake asks your own {ai} and keeps every thread here. Just a question: {Ai} can search the web. About a project: it can also read that project's files. It never changes anything. Settings (Ctrl+,) picks which AI answers.",
                 ai = crate::setview::current_ai().id(),
                 Ai = crate::setview::current_ai().name()
             ),

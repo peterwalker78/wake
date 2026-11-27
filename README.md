@@ -86,9 +86,12 @@ anywhere in the details puts the keyboard there. Every action is a button or in 
 |---|---|
 | `Ctrl+F` | find a session by name |
 | `Ctrl+N` | a new idea |
+| `Ctrl+1` to `Ctrl+5` | Monitor, Projects, Ideas, History, Agents |
+| `Ctrl+6` | Ask |
+| `Ctrl+,` | Settings |
 | `Ctrl+Tab` | the next view (`Shift` for the one before) |
 | the Menu key or `Shift+F10` | the selected item's ⋯ menu |
-| hold `Space` | peek at the session; let go to come back, `Enter` to stay |
+| hold `Space` | peek at the session; let go to come back, `Enter` to stay. "Peek available" shows at the top when you can |
 | `Delete` | in Agents: stop the selected agent (it asks first) |
 | `F1` | the keys |
 

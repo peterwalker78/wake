@@ -356,7 +356,8 @@ pub fn render_top(ui: &Ui) {
                 inner.append(&b);
             }
             b.set_child(Some(&inner));
-            b.set_tooltip_text(Some(&format!("{}: {tip}", v.name())));
+            let key = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents].iter().position(|x| x == v).map(|i| format!(" (Ctrl+{})", i + 1)).unwrap_or_default();
+            b.set_tooltip_text(Some(&format!("{}: {tip}{key}", v.name())));
             b.update_property(&[gtk::accessible::Property::Label(v.name())]);
             if bottom {
                 b.set_hexpand(true);
@@ -817,6 +818,9 @@ pub fn render_chips(ui: &Ui) {
             chips.add_next(&w::label("History", &["ttl"]));
             chips.add_next(&w::spacer());
             chips.add_next(&w::label("searches titles, your prompts, files touched and Claude's recaps", &["meta"]));
+            // No page title here: the peek chip ends this row instead (Space peeks from a session's
+            // details).
+            chips.add_next(&crate::peek::chip());
         }
         View::Questions => {
             chips.add_next(&w::label("Ask", &["ttl"]));
@@ -1146,7 +1150,13 @@ fn monitor(ui: &Ui) {
     head.set_focusable(false);
     head.add_css_class("grouprow");
     head.add_css_class("herorow");
-    head.set_child(Some(&hero(tally)));
+    // The title, and at its end (where Agents has its actions) the peek chip.
+    let line = w::hbox(8, &[]);
+    let title = hero(tally);
+    title.set_hexpand(true);
+    line.append(&title);
+    line.append(&crate::peek::chip());
+    head.set_child(Some(&line));
     vw.list.append(&head);
     agents::follow_notes(ui);
     ui.readouts.borrow_mut().clear();

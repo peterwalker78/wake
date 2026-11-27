@@ -774,8 +774,16 @@ fn build(app: &gtk::Application, opts: Opts) {
         // The main menu: Settings, the keys, and the demo board.
         let pop = gtk::Popover::new();
         let items = w::vbox(2, &["moremenu"]);
-        let item = |label: &str, f: Box<dyn Fn()>| {
-            let b = gtk::Button::with_label(label);
+        // Each with its shortcut at the end, as menus show them.
+        let item = |label: &str, key: &str, f: Box<dyn Fn()>| {
+            let b = gtk::Button::new();
+            let line = w::hbox(18, &[]);
+            let l = w::label(label, &[]);
+            l.set_hexpand(true);
+            l.set_xalign(0.0);
+            line.append(&l);
+            line.append(&w::label(key, &["menukey"]));
+            b.set_child(Some(&line));
             b.add_css_class("menuitem");
             let pop = pop.clone();
             b.connect_clicked(move |_| {
@@ -785,11 +793,11 @@ fn build(app: &gtk::Application, opts: Opts) {
             items.append(&b);
         };
         let ui2 = ui.clone();
-        item("Settings", Box::new(move || set_view(&ui2, View::Settings)));
+        item("Settings", "Ctrl+,", Box::new(move || set_view(&ui2, View::Settings)));
         let ui2 = ui.clone();
-        item("Keyboard shortcuts", Box::new(move || dialogs::keys(&ui2)));
+        item("Keyboard shortcuts", "F1", Box::new(move || dialogs::keys(&ui2)));
         let ui2 = ui.clone();
-        item("Ask a question", Box::new(move || set_view(&ui2, View::Questions)));
+        item("Ask a question", "Ctrl+6", Box::new(move || set_view(&ui2, View::Questions)));
         pop.set_child(Some(&items));
         ui.w.menu.set_popover(Some(&pop));
     }
@@ -1676,6 +1684,7 @@ pub fn render_all(ui: &Ui) {
     views::render_chips(ui);
     views::render_view(ui);
     views::render_status(ui);
+    crate::peek::update_chip(ui);
     crate::behind::render(ui);
     if ui.st.borrow().drawer.is_some() && !typing_in(ui, &ui.w.drawer) {
         panel::render(ui);
@@ -2374,6 +2383,9 @@ pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> 
 
 pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagation {
     crate::keynav::note_key(ui, key);
+    // Once the key has done its work (a selection moved, Find opened or closed).
+    let ui2 = ui.clone();
+    glib::idle_add_local_once(move || crate::peek::update_chip(&ui2));
     // WAKE_KEY_DEBUG=1: every key the window gets, and where the keyboard is after it.
     if std::env::var_os("WAKE_KEY_DEBUG").is_some() {
         let r = on_key_inner(ui, key, mods);
@@ -2471,9 +2483,10 @@ fn on_key_inner(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propag
     }
 }
 
-/// Wake's few shortcuts, as in other desktop apps: Ctrl+F finds, Ctrl+N is a new idea, Ctrl+Tab
-/// steps through the views, F1 shows the keys, Ctrl+Q quits, and Shift+F10 or the Menu key opens
-/// the selected item's ⋯ menu.
+/// Wake's shortcuts, as in other desktop apps: Ctrl+F finds, Ctrl+N is a new idea, Ctrl+1 to Ctrl+5
+/// go to each view in the tabs' order, Ctrl+6 to Ask, Ctrl+, to Settings, Ctrl+Tab steps through
+/// the views, F1 shows the keys, Ctrl+Q quits, and Shift+F10 or the Menu key opens the selected
+/// item's ⋯ menu.
 fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
     use gdk::Key as K;
     let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
@@ -2486,6 +2499,13 @@ fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib:
         K::f | K::F if ctrl => switcher::open(ui),
         K::n | K::N if ctrl => open_capture(ui),
         K::q | K::Q if ctrl => ui.window.close(),
+        K::_1 if ctrl && !shift => set_view(ui, View::Monitor),
+        K::_2 if ctrl && !shift => set_view(ui, View::Projects),
+        K::_3 if ctrl && !shift => set_view(ui, View::Ideas),
+        K::_4 if ctrl && !shift => set_view(ui, View::History),
+        K::_5 if ctrl && !shift => set_view(ui, View::Agents),
+        K::_6 if ctrl && !shift => set_view(ui, View::Questions),
+        K::comma if ctrl && !shift => set_view(ui, View::Settings),
         K::F1 => dialogs::keys(ui),
         K::F10 if shift => context_menu(ui),
         K::Menu => context_menu(ui),

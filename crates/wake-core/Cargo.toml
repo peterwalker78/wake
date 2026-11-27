@@ -15,5 +15,7 @@ serde_json.workspace = true
 libc = "0.2"
 # Fast substring checks on transcript lines before any JSON is decoded.
 memchr = "2"
+# Plays `claude logs` output onto a terminal grid for the background preview.
+vte = { version = "0.15", default-features = false, features = ["std"] }
 # Settings (~/.config/wake/settings.toml): unknown keys kept as they are.
 toml = "0.9"

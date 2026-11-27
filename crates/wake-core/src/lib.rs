@@ -20,6 +20,7 @@ pub mod settings;
 pub mod source;
 pub mod store;
 pub mod util;
+pub mod vt;
 
 pub use source::{Live, LiveConfig};
 pub use types::*;

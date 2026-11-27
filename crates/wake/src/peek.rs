@@ -674,8 +674,16 @@ fn show(ui: &Ui, screen: Option<&Screen>, subs: Option<Vec<SubagentSummary>>) ->
             }
         }
         None => {
-            v.source.set_text("not running");
-            v.note.set_text("This session isn't running, so there is no live screen to show. Enter opens it.");
+            // Running, but in a terminal Wake can't read (Ghostty, say): don't call it stopped.
+            let target = ui.peek.borrow().target.clone();
+            let live = target.and_then(|id| app::find_session(ui, &id)).is_some_and(|s| app::is_live(s.state));
+            if live {
+                v.source.set_text("can't read this terminal");
+                v.note.set_text("This agent is running in a terminal Wake can't read. Wake can show the screen of agents in a Konsole tab, or ones running in the background.");
+            } else {
+                v.source.set_text("not running");
+                v.note.set_text("This session isn't running, so there is no live screen to show. Enter opens it.");
+            }
             v.note.set_visible(true);
         }
     }

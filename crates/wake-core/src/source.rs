@@ -1158,7 +1158,7 @@ impl Source for Live {
         }
         Some(i.screens.get_or(session, || match (&loc, &info.job_id) {
             (Some(l), _) => look::read_konsole(&i.runner, l),
-            (None, Some(job)) => look::read_logs(&i.runner, job),
+            (None, Some(job)) => look::read_logs(&i.runner, job, crate::vt::term_size(info.pid)),
             (None, None) => unreachable!(),
         }))
     }

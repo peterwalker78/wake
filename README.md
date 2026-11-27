@@ -164,6 +164,8 @@ is installed.
 `qdbus-qt6` package. Peek on Slipstream and KWin, and
 the notice when a project is behind, use `gdbus`. On Slipstream and KDE Plasma the desktop
 brings the window forward; elsewhere Konsole switches tab and Wake says which window it is in.
+An agent in another terminal (Ghostty, say) is still listed, but Go there and Peek can't reach
+its window; Peek shows its screen only if it runs in the background.
 The KWin scripts are written against KWin 6's scripting API and have not yet been tried on a
 real Plasma session.
 

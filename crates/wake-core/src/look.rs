@@ -539,14 +539,24 @@ pub fn read_konsole(run: &Runner, loc: &Location) -> Screen {
     screen_from(code, &out, source)
 }
 
-/// What a background session's terminal showed lately: `claude logs <jobId>` (read-only).
-pub fn read_logs(run: &Runner, job: &str) -> Screen {
+/// What a background session's terminal shows: `claude logs <jobId>` (read-only), played onto a
+/// grid of the terminal's size (`size`, rows and columns; a common size when it can't be read).
+pub fn read_logs(run: &Runner, job: &str, size: Option<(usize, usize)>) -> Screen {
     if job.is_empty() || job.len() > 64 || !job.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Screen { source: "claude logs".into(), at: util::now_iso(), note: Some(NO_SCREEN.into()), ..Default::default() };
     }
     let argv = vec!["claude".to_string(), "logs".into(), job.into()];
     let (code, out) = run(&argv, LOGS_TIMEOUT);
-    screen_from(code, &out, "claude logs".into())
+    let source = "claude logs".to_string();
+    if code != 0 {
+        return screen_from(code, &out, source);
+    }
+    let (rows, cols) = size.unwrap_or((40, 120));
+    let mut g = crate::vt::Grid::new(rows, cols);
+    g.feed(out.as_bytes());
+    let mut lines = g.lines();
+    let skip = lines.len().saturating_sub(MAX_LINES);
+    Screen { lines: lines.split_off(skip), source, at: util::now_iso(), note: None }
 }
 
 fn screen_from(code: i32, out: &str, source: String) -> Screen {
@@ -759,19 +769,21 @@ mod tests {
     }
 
     #[test]
-    fn logs_screen_strips_colour_caps_lines_and_reports_a_timeout() {
-        let long: String = (0..600).map(|i| format!("\u{1b}[36mline {i}\u{1b}[0m\n")).collect();
+    fn logs_screen_plays_the_redraws_caps_lines_and_reports_a_timeout() {
+        let mut long: String = (0..600).map(|i| format!("\u{1b}[36mline {i}\u{1b}[0m\r\n")).collect();
+        // A spinner redrawn in place, as Claude draws it: only its last frame is on screen.
+        long.push_str("Swirling…\r\u{1b}[KKneading…\r\u{1b}[KThinking…");
         let (r, calls) = fake(move |_| (0, long.clone()));
-        let s = read_logs(&r, "job-1");
+        let s = read_logs(&r, "job-1", Some((30, 80)));
         assert_eq!(s.lines.len(), MAX_LINES);
-        assert_eq!(s.lines.last().unwrap(), "line 599");
+        assert_eq!(s.lines[MAX_LINES - 2..], ["line 599", "Thinking…"]);
         assert_eq!(s.source, "claude logs");
         assert_eq!(calls.lock().unwrap()[0], vec!["claude", "logs", "job-1"]);
         let (r, _) = fake(|_| (124, String::new()));
-        let s = read_logs(&r, "job-1");
+        let s = read_logs(&r, "job-1", None);
         assert_eq!(s.note.as_deref(), Some(NO_SCREEN));
         let (r, calls) = fake(|_| (0, String::new()));
-        assert_eq!(read_logs(&r, "bad;id").note.as_deref(), Some(NO_SCREEN));
+        assert_eq!(read_logs(&r, "bad;id", None).note.as_deref(), Some(NO_SCREEN));
         assert!(calls.lock().unwrap().is_empty(), "an odd job id is never passed to claude");
     }
 

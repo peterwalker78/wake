@@ -883,10 +883,15 @@ fn session(ui: &Ui, id: &str) {
         // One main action, and the rest under ⋯.
         let act = w::hbox(8, &["dact"]);
         if let Some(b) = go_button(ui, &s, true) {
-            if app::is_live(s.state) {
-                b.set_tooltip_text(Some(&format!("{} (o). Hold Space to peek without leaving Wake.", b.tooltip_text().unwrap_or_default())));
-            }
             act.append(&b);
+            if app::is_live(s.state) {
+                // Peek is only a held key, so say so where you'd go to the session.
+                let hint = w::hbox(5, &["peek-hint"]);
+                hint.append(&w::kbd("Space"));
+                hint.append(&w::label("hold to peek", &["hint"]));
+                hint.set_tooltip_text(Some("Hold Space to look at this session without leaving Wake. Let go to come back, or press Enter while holding to go to it."));
+                act.append(&hint);
+            }
         } else {
             act.append(&w::clip(if s.deleted_by_claude { "Claude deleted the conversation; it can't be reopened." } else { "Nothing to reopen." }, &["meta"]));
         }

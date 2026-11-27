@@ -43,7 +43,7 @@ const HIDE_BELOW: i32 = 760;
 /// Below this list width (no panel) rows become two-line cells.
 const NARROW_BELOW: i32 = 720;
 /// Below this list width the Agents table drops its Where and Why stale columns (all of them at
-/// their natural widths need about 1130 px).
+/// their natural widths need about 1180 px; a little under that, the task column narrows).
 const TIGHT_BELOW: i32 = 1140;
 /// The details share the row only while the list keeps this much beside them; else they push.
 #[cfg(test)]

@@ -1087,6 +1087,8 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
     if !tip.is_empty() {
         b.set_tooltip_text(Some(&tip));
     }
+    // A screen reader hears whose window it is ("Go to Terminal, term-report-pdf-export").
+    b.update_property(&[gtk::accessible::Property::Label(&format!("{word}, {}", s.title))]);
     Some(b)
 }
 

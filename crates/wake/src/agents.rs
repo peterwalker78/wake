@@ -69,7 +69,7 @@ fn cols(hide: u8) -> Vec<Col> {
         (if short { "Task" } else { "Task · project" }, 180, true, false),
         (if short { "State" } else { "State · idle" }, 126, false, false),
         (if short { "Mem" } else { "Memory" }, 84, false, false),
-        ("Where", 110, false, false),
+        ("Where", 160, false, false),
         ("Why stale", 140, false, false),
         ("", 56, false, false),
     ];
@@ -207,7 +207,9 @@ fn signature(st: &app::AppState, p: &ProcOverview) -> String {
         .iter()
         .map(|a| {
             let subs = session_of(st, a).map(|s| (s.subagents.total, s.subagents.running));
-            let key = (a.pid, a.ppid, a.kind, a.state, &a.title, &a.project_name, &a.location, &a.job_id, &a.stale_reason, &a.children, &a.note, &a.session_id, a.state == State::Working, subs);
+            // The Go button's words follow where its session is.
+            let place = session_of(st, a).map(|s| app::loc_of(s, st.ov.as_ref().is_some_and(|o| o.locations_unsure.is_some())).0);
+            let key = (a.pid, a.ppid, a.kind, a.state, &a.title, &a.project_name, &a.location, &a.job_id, &a.stale_reason, &a.children, &a.note, &a.session_id, a.state == State::Working, subs, place);
             serde_json::to_string(&key).unwrap_or_default()
         })
         .collect();
@@ -293,7 +295,7 @@ pub fn render(ui: &Ui) {
     }
     head.append(&acts);
     vw.top.append(&head);
-    let hide = hidden_cols(compact, ui.st.borrow().lay.tight, p.procs.iter().any(|a| where_words(a).is_some()), p.procs.iter().any(|a| a.stale_reason.is_some()) || !p.dead_notes.is_empty());
+    let hide = hidden_cols(compact, ui.st.borrow().lay.tight, p.procs.iter().any(has_where), p.procs.iter().any(|a| a.stale_reason.is_some()) || !p.dead_notes.is_empty());
     let cols = cols(hide);
     vw.head.append(&views::sort_head(ui, View::Agents, &cols, &sort_keys(hide)));
 
@@ -439,6 +441,11 @@ fn where_words(a: &AgentProc) -> Option<String> {
     a.location.as_ref().map(app::window_name)
 }
 
+/// The row has something for the Where column: a window, a session to go to, or a background job.
+fn has_where(a: &AgentProc) -> bool {
+    a.location.is_some() || a.job_id.is_some() || a.session_id.is_some()
+}
+
 fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols: &[Col], hide: u8) -> gtk::ListBoxRow {
     let pid = w::vbox(2, &[]);
     pid.append(&w::clip(&a.pid.to_string(), &["pid"]));
@@ -538,16 +545,26 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     let cpu = w::clip(&cpu_words(a), &["ev"]);
     live_text(ui, View::Agents, &cpu, move |st| st.procs.as_ref()?.procs.iter().find(|x| x.pid == id).map(cpu_words));
     mem.append(&cpu);
-    let where_ = match (where_words(a), &a.job_id) {
-        (Some(t), _) => w::label(&t, &["loc", "plain"]),
-        (None, Some(_)) => w::label("background", &["loc", "re"]),
-        _ => w::label("", &[]),
+    // Where: for a session's row, the details' own small Go button (its words say where it goes);
+    // for a process with no session, where it is in the same words ("no window").
+    let sess = session_of(&ui.st.borrow(), a).cloned();
+    let where_: gtk::Widget = match (sess.as_ref().and_then(|s| panel::go_button(ui, s, false)), where_words(a), &a.job_id) {
+        (Some(b), ..) => {
+            b.set_valign(gtk::Align::Center);
+            b.upcast()
+        }
+        (None, Some(t), _) => w::label(&t, &["loc", "plain"]).upcast(),
+        (None, None, Some(_)) => {
+            let l = w::label("no window", &["loc", "re"]);
+            l.set_tooltip_text(Some("It runs in the background and no window shows it."));
+            l.upcast()
+        }
+        _ => w::label("", &[]).upcast(),
     };
-    if let Some(j) = &a.job_id {
-        where_.set_tooltip_text(Some(&format!("background job {j}")));
-    }
     where_.set_halign(gtk::Align::Start);
-    where_.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    if let Some(l) = where_.downcast_ref::<gtk::Label>() {
+        l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    }
     // Only stale rows say why; the rest is blank.
     let why: gtk::Widget = match &a.stale_reason {
         Some(r) => w::wrap(r, &[if is_stale(a) { "why" } else { "ev" }]).upcast(),
@@ -778,7 +795,7 @@ fn layout(ui: &Ui) -> (Vec<Col>, u8) {
     let st = ui.st.borrow();
     let compact = app::compact(&st) || st.lay.push;
     let p = st.procs.clone().unwrap_or_default();
-    let hide = hidden_cols(compact, st.lay.tight, p.procs.iter().any(|a| where_words(a).is_some()), p.procs.iter().any(|a| a.stale_reason.is_some()) || !p.dead_notes.is_empty());
+    let hide = hidden_cols(compact, st.lay.tight, p.procs.iter().any(has_where), p.procs.iter().any(|a| a.stale_reason.is_some()) || !p.dead_notes.is_empty());
     (cols(hide), hide)
 }
 

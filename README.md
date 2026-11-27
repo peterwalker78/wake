@@ -51,7 +51,7 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
   On Slipstream the desktop slides to the agent's window, idle or working, in whatever terminal
   it is in; on KDE Plasma a small KWin script switches to it. Anywhere else, and for a background
   session nothing is attached to, Wake shows the agent's terminal text.
-- **Go there** takes you to the session: the terminal window it is in, whatever the terminal
+- **Go to** takes you to the session: the terminal window it is in, whatever the terminal
   app, a new window attached to a background session (`claude attach`), or a new window resuming
   an ended one. New windows open in your default terminal app.
 - **Behind**: Wake asks each project's remote, now and then, whether someone pushed commits you
@@ -129,7 +129,7 @@ Everything else it does is something you ask for, and it asks again first:
 - **Clear** build output or a cache: moved to the Trash, never deleted.
 - **Remove** an agent's worktree whose branch is merged and whose tree is clean
   (`git worktree remove`, never `--force`).
-- **Go there** and **Start an agent** open a new window of your default terminal app.
+- **Go to** and **Start an agent** open a new window of your default terminal app.
 
 ## Getting it
 
@@ -168,8 +168,8 @@ is installed.
 **Desktops.** Wake works with any terminal app. It finds the window showing each agent from
 `/proc` (the terminal app holds the other end of the agent's terminal), including a
 `claude agents` window that has the session open, which it tells by the session's terminal size.
-New windows (Go there for a session in none, Start an agent) open in your default terminal app,
-through `xdg-terminal-exec`, else `$TERMINAL`. Peek and Go there on Slipstream, and the notice when
+New windows (Go to for a session in none, Start an agent) open in your default terminal app,
+through `xdg-terminal-exec`, else `$TERMINAL`. Peek and Go to on Slipstream, and the notice when
 a project is behind, use `gdbus`; on KDE Plasma they use `qdbus-qt6` (Fedora's `qt6-qttools`, or
 `qdbus6` on Debian and Ubuntu). On Slipstream and KDE Plasma the desktop brings the window forward;
 elsewhere Wake says which window it is in. A terminal app shows its tabs its own way, so with
@@ -182,7 +182,7 @@ real Plasma session.
 Wake works on any desktop, and goes further on
 [Slipstream](https://github.com/peterwalker78/slipstream-desktop):
 
-- **Peek and go there** use Slipstream's Look request: the desktop flies to the agent's
+- **Peek and Go to** use Slipstream's Look request: the desktop flies to the agent's
   workspace and rings its window, while the keyboard stays with Wake.
 - **Monitor and Agents** draw each working agent's trace the way Slipstream's faded desktop does,
   from the notes [agent-notify](https://github.com/peterwalker78/agent-notify) leaves, in your

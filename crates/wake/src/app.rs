@@ -1670,9 +1670,13 @@ pub fn unsure(ui: &Ui) -> bool {
     ui.st.borrow().ov.as_ref().is_some_and(|o| o.locations_unsure.is_some())
 }
 
-/// Where a session can be seen: text, class, can go, tooltip. While Wake is `unsure` where
-/// sessions are, a live one without a window says "checking" rather than a confident (and maybe
-/// wrong) "background", and can't be gone to: that might attach a second time.
+/// Where a session can be seen: text, class, can go, tooltip. The one set of place words, the same
+/// wherever a place is shown (Find, Agents, the details) and matching the Go to button's words
+/// (`panel::go_words`): the terminal app's name (or "its window") for one in a window, "no window"
+/// for one running in the background that nobody has open, "not open" for one that has ended.
+/// While Wake is `unsure` where sessions are, a live one without a window says "checking" rather
+/// than a confident (and maybe wrong) "no window", and can't be gone to: that might attach a
+/// second time.
 pub fn loc_of(s: &SessionSummary, unsure: bool) -> (String, &'static str, bool, String) {
     if let Some(l) = &s.location {
         return (window_name(l), "", true, format!("Bring {} forward", l.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"))));
@@ -1681,19 +1685,30 @@ pub fn loc_of(s: &SessionSummary, unsure: bool) -> (String, &'static str, bool, 
         return ("checking…".into(), "none", false, "Wake is still finding which window this is in.".into());
     }
     if can_reopen(s) {
-        return ("not open".into(), "re", true, "Resume it in a new terminal window".into());
+        return ("not open".into(), "re", true, "It has ended. Resume in a new window carries on the conversation in a new terminal window.".into());
     }
     if s.pid.is_some() && s.job_id.is_none() {
         // Running, but in no window Wake has found: Go to looks for it, and never resumes a copy.
-        return ("running".into(), "", true, "It is running, but Wake can't see its window. Go to looks for it.".into());
+        return ("its window".into(), "", true, "It is running in a window Wake can't see. Go to looks for it.".into());
     }
     if s.deleted_by_claude {
         return ("kept by Wake".into(), "none", false, "Claude deleted its copy; it cannot be reopened".into());
     }
     if is_live(s.state) {
-        return ("background".into(), "re", true, "Runs in the background, in no window. Go to opens it in a new terminal window".into());
+        return ("no window".into(), "re", true, "It runs in the background and no window shows it. Open in a new window opens one for it.".into());
     }
     ("not open".into(), "none", false, String::new())
+}
+
+/// Where a session is, as a few words for a line of text: "in Terminal", "in its window", "no
+/// window", "not open" (`loc_of`'s words).
+pub fn place_words(ui: &Ui, s: &SessionSummary) -> String {
+    let (loc, ..) = loc_for(ui, s);
+    match &s.location {
+        Some(l) => format!("in {}", l.app.as_deref().unwrap_or("its window")),
+        None if loc == "its window" => "in its window".into(),
+        None => loc,
+    }
 }
 
 /// `loc_of` for the app as it is now.
@@ -2343,11 +2358,29 @@ mod tests {
             s.state = state;
             assert!(!can_reopen(&s), "{state:?}");
             let (text, _, can_go, _) = loc_of(&s, false);
-            assert_eq!((text.as_str(), can_go), ("running", true), "{state:?}: Go to looks for its window");
+            assert_eq!((text.as_str(), can_go), ("its window", true), "{state:?}: Go to looks for its window");
             assert_eq!(loc_of(&s, true).0, "checking…", "{state:?} while windows are being found");
         }
         s.job_id = Some("bg-1".into());
-        assert_eq!(loc_of(&s, false).0, "background", "a background job opens with attach");
+        assert_eq!(loc_of(&s, false).0, "no window", "a background job opens with attach");
+    }
+
+
+    #[test]
+    fn the_place_and_the_go_button_say_the_same() {
+        let words = |s: &SessionSummary| {
+            let (loc, _, can_go, _) = loc_of(s, false);
+            (loc.clone(), crate::panel::go_words(s, &loc, can_go))
+        };
+        let mut s = session(State::Ended);
+        assert_eq!(words(&s), ("not open".into(), "Resume in a new window".into()));
+        s.state = State::Idle;
+        s.pid = Some(4242);
+        assert_eq!(words(&s), ("its window".into(), "Go to its window".into()));
+        s.job_id = Some("bg-1".into());
+        assert_eq!(words(&s), ("no window".into(), "Open in a new window".into()));
+        s.location = Some(Location { pid: 1, app: Some("Terminal".into()) });
+        assert_eq!(words(&s), ("Terminal".into(), "Go to Terminal".into()));
     }
 
     #[test]

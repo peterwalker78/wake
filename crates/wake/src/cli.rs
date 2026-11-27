@@ -325,12 +325,12 @@ fn doctor_programs(d: &mut Doctor, paths: &store::Paths) {
 fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
     use wake_core::{desktop, run};
     d.heading("Desktop");
-    // New windows (Go there for a session in none, Start an agent) open in the default terminal app.
+    // New windows (Go to for a session in none, Start an agent) open in the default terminal app.
     match desktop::terminal_launcher() {
         Some(l) => d.ok(&format!("default terminal app: opened through {}", tilde(std::path::Path::new(&l[0])))),
         None => d.line(
             Mark::Optional,
-            "Wake can't find your default terminal app, so Go there and Start an agent can only give you a command to copy.",
+            "Wake can't find your default terminal app, so Go to and Start an agent can only give you a command to copy.",
             "install xdg-terminal-exec, or set TERMINAL to your terminal app.",
         ),
     }
@@ -353,7 +353,7 @@ fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
     if kind != wake_core::LookKind::Slipstream {
         d.line(
             Mark::Optional,
-            "Slipstream isn't running. On Slipstream, peek and Go there fly to the agent's window, and Wake adds a card to its plugin panel.",
+            "Slipstream isn't running. On Slipstream, peek and Go to fly to the agent's window, and Wake adds a card to its plugin panel.",
             "only if you want it, see https://github.com/peterwalker78/slipstream-desktop",
         );
     }

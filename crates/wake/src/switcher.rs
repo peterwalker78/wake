@@ -189,9 +189,38 @@ fn show_tab(ui: &Ui) {
             for k in *ks {
                 b.append(&w::kbd(k));
             }
-            b.append(&w::label(word, &[]));
+            let l = w::label(word, &[]);
+            if !idea && ks == &["Enter"] {
+                // What Enter does for the chosen session (`enter_words`), in a fixed width so the
+                // keys after it stay put as the choice moves.
+                l.set_widget_name("pal-enter");
+                l.set_xalign(0.0);
+                l.set_width_chars(ENTER_CHARS);
+                l.set_max_width_chars(ENTER_CHARS);
+                l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            }
+            b.append(&l);
             ft.add(&b, *prio);
         }
+    }
+}
+
+/// The width of the words after Enter in Find's keys: "resume in a new window" and a little more.
+const ENTER_CHARS: i32 = 24;
+
+/// What Enter does for the chosen row, as the Go to button says it, in lower case: "go to
+/// Terminal", "open in a new window", "resume in a new window", "go back".
+fn enter_words(ui: &Ui) -> String {
+    let (it, i) = current(ui);
+    match it.get(i) {
+        Some(Item::Back(_)) => "go back".into(),
+        Some(Item::Session(s)) => {
+            let (loc, _, can_go, _) = app::loc_for(ui, s);
+            let words = panel::go_words(s, &loc, can_go);
+            let mut c = words.chars();
+            c.next().map(|f| f.to_lowercase().chain(c).collect()).unwrap_or(words)
+        }
+        None => "go to".into(),
     }
 }
 
@@ -443,6 +472,15 @@ fn subs(ui: &Ui) -> Vec<SubagentSummary> {
 }
 
 pub fn render_inside(ui: &Ui) {
+    if ui.st.borrow().sw.open
+        && !ui.st.borrow().sw.idea
+        && let Some(l) = w::named(&ui.w.switcher, "pal-enter").and_downcast::<gtk::Label>()
+    {
+        let t = enter_words(ui);
+        if l.text() != t {
+            l.set_text(&t);
+        }
+    }
     render_inside_rows(ui);
     w::shrinkable(ui.w.sw_inside.upcast_ref());
     columns(ui);
@@ -469,10 +507,10 @@ fn render_inside_rows(ui: &Ui) {
         (st.sessions.get(&s.id).cloned(), st.sw.in_subs, st.sw.sub_sel, st.sw.expanded.clone())
     };
     let total = s.subagents.total;
-    let run = s.subagents.running;
     ih.append(&w::wrap(&format!("Inside · {}", s.title), &["b"]));
-    let _ = run;
-    ih.append(&w::label(&if total > 0 { format!("{}{}", crate::why::sub_count(&s.subagents), if in_subs { "" } else { " · → to look inside" }) } else { "no subagents".into() }, &["s"]));
+    // Where it is (the place words Find's rows use), then its subagents.
+    let subs_words = if total > 0 { format!("{}{}", crate::why::sub_count(&s.subagents), if in_subs { "" } else { " · → to look inside" }) } else { "no subagents".into() };
+    ih.append(&w::wrap(&format!("{} · {subs_words}", app::place_words(ui, &s)), &["s"]));
     el.append(&ih);
     if let (State::Waiting, Some(q)) = (s.state, &s.question) {
         let b = w::vbox(3, &["box", "q", "tight"]);

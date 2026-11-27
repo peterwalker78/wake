@@ -431,7 +431,7 @@ impl DemoSource {
                 702,
                 Some(0.0),
                 Some(note("waypoint: rail times", true, &[])),
-                Some("idle for 31 h, background, nobody attached"),
+                Some("idle for 31 h, with no terminal window and nothing attached"),
             ),
             proc(30656, 30655, ProcKind::PtyHost, Some(find("c4d2")), State::Idle, None, 41, Some(0.0), None, None),
             proc(38410, 3120, ProcKind::Session, Some(find("e0b3")), State::Idle, Some(9 * HOUR as u64), 466, Some(0.0), Some(note("fernlight: chapter 4", true, &[])), None),

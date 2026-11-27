@@ -1301,18 +1301,14 @@ fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
     ql.set_tooltip_text(Some(&q));
     card.append(&ql);
     let acts = w::hbox(8, &[]);
-    let (loc, _, can_go, tip) = app::loc_for(ui, s);
-    let id = s.id.clone();
-    let ui2 = ui.clone();
-    let go = w::button(&panel::go_words(s, &loc, can_go), None, &["suggested"], move || app::go_to(&ui2, &id));
-    go.set_sensitive(can_go);
-    if !tip.is_empty() {
-        go.set_tooltip_text(Some(&tip));
+    if let Some(go) = panel::go_button(ui, s, true) {
+        acts.append(&go);
     }
-    acts.append(&go);
     let id = s.id.clone();
     let ui2 = ui.clone();
-    acts.append(&w::button("Details", Some("Enter"), &[], move || panel::open_session(&ui2, &id, true)));
+    let details = w::button("Details", Some("Enter"), &[], move || panel::open_session(&ui2, &id, true));
+    details.update_property(&[gtk::accessible::Property::Label(&format!("Details, {}", s.title))]);
+    acts.append(&details);
     acts.append(&w::spacer());
     let asks = crate::why::asks_question(s);
     acts.append(&w::state_tag(if asks { "Asks you" } else { "Wants a decision" }, "waiting"));

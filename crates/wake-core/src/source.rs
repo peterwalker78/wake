@@ -28,7 +28,7 @@ use crate::store::{self, IdeaRec, Paths, PauseRec, ProjectRec, Store};
 use crate::types::*;
 use crate::util;
 use crate::vt::ScreenCache;
-use crate::{Source, brief, gitinfo};
+use crate::{Source, brief, gitinfo, newproject};
 use crate::{attrib, disk, log};
 
 pub const RECENT_DAYS: f64 = 14.0;
@@ -1297,6 +1297,9 @@ impl Source for Live {
     }
 
     fn retry_question(&self, thread: &str) -> Result<(), String> {
+        if self.inner.questions.is_interview(thread) {
+            return self.inner.questions.retry_interview(thread);
+        }
         let project = self.inner.questions.thread_project(thread).ok_or("That thread is gone.")?;
         self.inner.questions.retry(thread, self.question_context(project.as_deref())?)
     }
@@ -1376,6 +1379,32 @@ impl Source for Live {
     fn note_error(&self, context: &str, message: &str) {
         log::note_error(&self.inner.paths, context, message);
     }
+
+    fn interview_ai(&self) -> Agent {
+        self.inner.questions.interview_ai()
+    }
+
+    fn interview(&self, thread: Option<&str>, answer: &str) -> Result<String, String> {
+        self.inner.questions.interview(thread, answer)
+    }
+
+    fn interview_state(&self, thread: &str, since: u64) -> Option<QOverview> {
+        self.inner.questions.interview_state(thread, since)
+    }
+
+    fn new_project_folder(&self, folder: &str) -> Result<String, String> {
+        newproject::check_folder(&self.inner.paths.projects, folder).map(|p| util::tilde(&p, &self.inner.paths.home))
+    }
+
+    fn create_project(&self, plan: &newproject::Plan, agent: Agent, dry_run: bool) -> ActionResult {
+        let r = self.create_project_steps(plan, agent, dry_run);
+        if !dry_run {
+            // The folder and the agent, never the plan's words.
+            let folder = util::tilde(self.inner.paths.projects.join(&plan.folder_name), &self.inner.paths.home);
+            log::record_action(&self.inner.paths, "create a project", &format!("{folder} with {}", agent.label()), r.ok, &r.message, &r.steps);
+        }
+        r
+    }
 }
 
 impl Live {
@@ -1449,6 +1478,108 @@ impl Live {
                 Err(_) => root.clone(),
             }
         );
+        r
+    }
+
+    /// New project: the folder (and ~/Projects itself if missing), `git init` if chosen, the
+    /// description file (never over an existing one), tracking, the brief, and the new window.
+    fn create_project_steps(&self, plan: &newproject::Plan, agent: Agent, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let fail = |m: &str, steps: &[String]| ActionResult { ok: false, message: m.into(), steps: steps.to_vec() };
+        if plan.name.trim().is_empty() {
+            return fail("Give the project a name.", &[]);
+        }
+        if !agent.can_brief() || !self.agent_choices().contains(&agent) {
+            return fail("That agent isn't installed here.", &[]);
+        }
+        let file_name = newproject::file_name(agent);
+        if plan.description.trim().is_empty() {
+            return fail(&format!("The description is empty. Write a few lines about the project for {file_name}."), &[]);
+        }
+        if plan.first_task.trim().is_empty() {
+            return fail("The first task is empty. Say what the agent should do first.", &[]);
+        }
+        let projects = &i.paths.projects;
+        let dir = match newproject::check_folder(projects, &plan.folder_name) {
+            Ok(d) => d,
+            Err(e) => return fail(&e, &[]),
+        };
+        let shown = util::tilde(&dir, &i.paths.home);
+        let Some(dir_s) = dir.to_str().map(String::from) else { return fail("Wake can't use that folder's path.", &[]) };
+        let id = brief::new_id();
+        let brief_path = brief::path(&i.paths.data, &id);
+        let briefs = i.paths.data.join("briefs");
+        let Some(cmd) = brief::command(agent, &brief_path) else {
+            return fail("Wake can't type a command for a brief in its folder (its path has a quote in it).", &[]);
+        };
+        let file = dir.join(file_name);
+        let make_projects = !projects.is_dir();
+        if dry_run {
+            let mut steps = Vec::new();
+            if make_projects {
+                steps.push(format!("make folder {}", projects.display()));
+            }
+            steps.push(format!("make folder {dir_s}"));
+            if plan.git {
+                steps.push(format!("git init {dir_s}"));
+            }
+            steps.push(format!("write {} (only if it isn't there)", file.display()));
+            steps.push(format!("track {dir_s}"));
+            steps.push(format!("write {}", brief_path.display()));
+            steps.push(format!("open a new terminal window in {dir_s} running: {cmd}"));
+            return ActionResult { ok: true, message: format!("Dry run. Wake would make {shown} and start {} there.", agent.label()), steps };
+        }
+        let mut steps: Vec<String> = Vec::new();
+        // ~/Projects itself only when it is missing (its parent must be there); never anything above.
+        if make_projects {
+            if let Err(e) = std::fs::create_dir(projects) {
+                return fail(&format!("Wake couldn't make {}: {e}", util::tilde(projects, &i.paths.home)), &steps);
+            }
+            steps.push(format!("make folder {}", projects.display()));
+        }
+        match std::fs::create_dir(&dir) {
+            Ok(()) => steps.push(format!("make folder {dir_s}")),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return fail("A folder with that name already exists. Pick another name.", &steps),
+            Err(e) => return fail(&format!("Wake couldn't make {shown}: {e}"), &steps),
+        }
+        let mut notes: Vec<String> = Vec::new();
+        if plan.git {
+            let mut c = std::process::Command::new("git");
+            c.args(["init", "--quiet", "--"]).arg(&dir).env("GIT_TERMINAL_PROMPT", "0");
+            match run::run_with_timeout(c, Duration::from_secs(20)) {
+                Ok((0, _, _)) => steps.push(format!("git init {dir_s}")),
+                Ok((_, _, err)) => notes.push(format!("git didn't start tracking it ({}); you can ask the agent to try again", util::squash(err.lines().next().unwrap_or("it stopped with an error")))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => notes.push("git isn't installed, so changes aren't tracked yet".into()),
+                Err(_) => notes.push("git didn't start tracking it in time; you can ask the agent to try again".into()),
+            }
+        }
+        let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&file).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(format!("{}\n", plan.description.trim_end()).as_bytes())
+        });
+        if let Err(e) = written {
+            return fail(&format!("Wake made {shown} but couldn't write {file_name} in it: {e}"), &steps);
+        }
+        steps.push(format!("write {}", file.display()));
+        match i.store.add_project(&dir_s) {
+            Ok(_) => steps.push(format!("track {dir_s}")),
+            Err(e) => notes.push(format!("Wake couldn't add it to Projects ({}); Track a folder adds it", e.0)),
+        }
+        if let Err(e) = brief::write(&i.store.writer, &i.paths.data, &id, &newproject::brief_text(plan, agent)) {
+            return fail(&format!("Wake made {shown} but couldn't save the first task: {}", e.0), &steps);
+        }
+        steps.push(format!("write {}", brief_path.display()));
+        let mut r = i.desktop.start_typed(&dir_s, &cmd, &briefs, false);
+        steps.append(&mut r.steps);
+        r.steps = steps;
+        if !r.ok {
+            r.message = format!("Made {shown}, but the window didn't open. {}", r.message);
+            return r;
+        }
+        r.message = format!("Made {shown}. {} is starting in a new terminal window there.", agent.label());
+        if !notes.is_empty() {
+            r.message = format!("{} (Note: {}.)", r.message, notes.join("; "));
+        }
         r
     }
 
@@ -1912,6 +2043,103 @@ mod tests {
         assert_eq!(ideas.iter().find(|i| i.id == other.id).unwrap().state, IdeaState::Inbox);
         assert!(log::recent(&env.paths, 5).iter().any(|l| l.contains("  start an agent  Claude in alpha (~/Projects/alpha)  ok  ")), "{:?}", log::recent(&env.paths, 5));
         assert_eq!(l.overview().projects.iter().find(|p| p.id == "alpha").unwrap().ideas, 0, "sent ideas leave the count to sort");
+    }
+
+    fn plan(folder: &str, git: bool) -> newproject::Plan {
+        newproject::Plan {
+            name: "Family Recipes".into(),
+            folder_name: folder.into(),
+            summary: "A website with the family's recipes.".into(),
+            technical: true,
+            tech: vec!["HTML".into()],
+            git,
+            description: "# Family Recipes\n\nSay \"hi\" for $5 `now`.".into(),
+            first_task: "Set up the starting files.".into(),
+        }
+    }
+
+    #[test]
+    fn a_new_project_dry_run_lists_the_steps_and_refuses_what_it_must() {
+        let env = Env::new();
+        let bus = FakeBus::new();
+        let (l, _, _fp) = make(&env, &bus);
+        let r = l.create_project(&plan("family-recipes", true), Agent::Claude, true);
+        assert!(r.ok, "{r:?}");
+        let dir = env.paths.projects.join("family-recipes");
+        let d = dir.display().to_string();
+        assert_eq!(r.steps[0], format!("make folder {d}"));
+        assert_eq!(r.steps[1], format!("git init {d}"));
+        assert_eq!(r.steps[2], format!("write {d}/CLAUDE.md (only if it isn't there)"));
+        assert_eq!(r.steps[3], format!("track {d}"));
+        assert!(r.steps[4].starts_with(&format!("write {}/briefs/b", env.paths.data.display())));
+        assert!(r.steps[5].starts_with(&format!("open a new terminal window in {d} running: claude -- \"$(cat '")), "{:?}", r.steps);
+        assert!(!dir.exists() && bus.writes().is_empty() && !env.paths.data.join("briefs").exists(), "a dry run makes nothing");
+        let r = l.create_project(&plan("family-recipes", false), Agent::Codex, true);
+        assert!(!r.steps.iter().any(|s| s.starts_with("git")));
+        if r.ok {
+            assert!(r.steps.iter().any(|s| s.ends_with("AGENTS.md (only if it isn't there)")));
+        }
+        // Refusals: an existing folder, a folder name that isn't a safe one, an agent that can't brief.
+        for (p, agent, why) in [
+            (plan("alpha", true), Agent::Claude, "already exists"),
+            (plan("Bad Name", true), Agent::Claude, "lowercase"),
+            (plan("../escape", true), Agent::Claude, "lowercase"),
+            (plan("", true), Agent::Claude, "Give the folder a name"),
+            (plan("ok", true), Agent::Gemini, "isn't installed"),
+            (newproject::Plan { first_task: " ".into(), ..plan("ok", true) }, Agent::Claude, "first task is empty"),
+            (newproject::Plan { description: String::new(), ..plan("ok", true) }, Agent::Claude, "description is empty"),
+        ] {
+            let r = l.create_project(&p, agent, true);
+            assert!(!r.ok && r.message.contains(why), "{why}: {r:?}");
+            let r = l.create_project(&p, agent, false);
+            assert!(!r.ok && r.message.contains(why), "{why}: {r:?}");
+        }
+        assert!(bus.writes().is_empty());
+        assert_eq!(l.new_project_folder("family-recipes"), Ok("~/Projects/family-recipes".into()));
+        assert!(l.new_project_folder("alpha").unwrap_err().contains("already exists"));
+    }
+
+    #[test]
+    fn a_new_project_is_made_tracked_and_opened() {
+        let env = Env::new();
+        let bus = FakeBus::new();
+        let (l, _, _fp) = make(&env, &bus);
+        // With git: the folder, a repository, CLAUDE.md, tracked, the brief, one new window there.
+        let r = l.create_project(&plan("family-recipes", true), Agent::Claude, false);
+        assert!(r.ok, "{r:?}");
+        let dir = env.paths.projects.join("family-recipes");
+        if crate::run::which("git").is_some() {
+            assert!(dir.join(".git/HEAD").is_file(), "git init ran in the new folder: {r:?}");
+        }
+        assert_eq!(fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), "# Family Recipes\n\nSay \"hi\" for $5 `now`.\n");
+        assert_eq!(fs::read_dir(&dir).unwrap().filter_map(Result::ok).filter(|e| e.file_name() != ".git").count(), 1, "nothing else is made");
+        assert!(l.overview().projects.iter().any(|p| p.roots.iter().any(|r| r.ends_with("/family-recipes"))), "tracked");
+        let briefs: Vec<_> = fs::read_dir(env.paths.data.join("briefs")).unwrap().filter_map(Result::ok).collect();
+        assert_eq!(briefs.len(), 1);
+        assert_eq!(fs::read_to_string(briefs[0].path()).unwrap(), "Set up the starting files.\n\nRead CLAUDE.md first.\n");
+        let started: Vec<Vec<String>> = bus.writes().into_iter().filter(|c| c[0] == "setsid").collect();
+        assert_eq!(started.len(), 1);
+        let cmd = brief::command(Agent::Claude, &briefs[0].path()).unwrap();
+        assert!(started[0][5].contains(&format!("; cd {} && {cmd}; exec ", util::shell_quote(&dir.to_string_lossy()))), "{:?}", started[0]);
+        assert!(r.message.starts_with("Made ~/Projects/family-recipes. Claude is starting"), "{}", r.message);
+        let logged = log::recent(&env.paths, 5);
+        assert!(logged.iter().any(|x| x.contains("  create a project  ~/Projects/family-recipes with Claude  ok  ")), "{logged:?}");
+        assert!(!logged.iter().any(|x| x.contains("Say") || x.contains("starting files")), "no plan text in the log: {logged:?}");
+        // Again with the same name: refused, nothing overwritten.
+        let r = l.create_project(&plan("family-recipes", true), Agent::Claude, false);
+        assert!(!r.ok && r.message.contains("already exists"));
+        assert!(fs::read_to_string(dir.join("CLAUDE.md")).unwrap().starts_with("# Family Recipes"));
+        // Without git, and with ~/Projects missing: it is made, and no repository.
+        fs::rename(&env.paths.projects, env.root.join("Projects-moved")).unwrap();
+        let r = l.create_project(&plan("notes-two", false), Agent::Claude, false);
+        assert!(r.ok, "{r:?}");
+        let two = env.paths.projects.join("notes-two");
+        assert!(two.join("CLAUDE.md").is_file() && !two.join(".git").exists());
+        assert!(r.steps[0] == format!("make folder {}", env.paths.projects.display()) && !r.steps.iter().any(|s| s.starts_with("git")), "{:?}", r.steps);
+        // A window that doesn't open says so, after the folder is made.
+        bus.fail.lock().unwrap().push("window");
+        let r = l.create_project(&plan("four", false), Agent::Claude, false);
+        assert!(!r.ok && r.message.starts_with("Made ~/Projects/four, but the window didn't open."), "{r:?}");
     }
 
     #[test]

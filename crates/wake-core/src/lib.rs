@@ -13,6 +13,7 @@ pub mod index;
 pub mod live;
 pub mod log;
 pub mod look;
+pub mod newproject;
 pub mod procs;
 pub mod questions;
 pub mod remote;
@@ -194,4 +195,36 @@ pub trait Source: Send + Sync {
     /// Record an error the person was shown (an error toast) in Wake's log, `log::note_error`.
     /// `context` says where ("Shown in Projects"). Cheap (one appended line).
     fn note_error(&self, _context: &str, _message: &str) {}
+
+    // ---- New project (added 2026-11-27, newproject.rs) ----
+
+    /// The AI that runs the New project interview: the one Ask uses, except Codex (it can't be
+    /// run with no tools), which gives way to Claude. Cheap.
+    fn interview_ai(&self) -> Agent {
+        Agent::Claude
+    }
+    /// Start a New project interview (`thread` None; `answer` is the opening message) or send the
+    /// person's answer in one. Runs like a question, with no tools at all, and never shows in
+    /// Ask's list or Wake's session lists. Returns the thread id at once. `retry_question`,
+    /// `cancel_question` and `delete_thread` work on it too.
+    fn interview(&self, _thread: Option<&str>, _answer: &str) -> Result<String, String> {
+        Err("New projects aren't available here.".into())
+    }
+    /// The interview as an overview holding just its thread, or None when it is gone or (`since`,
+    /// the `seq` last seen) nothing changed. Cheap.
+    fn interview_state(&self, _thread: &str, _since: u64) -> Option<QOverview> {
+        None
+    }
+    /// Where a new project with this folder name would go ("~/Projects/<name>"), or one plain
+    /// sentence on why it can't (not a safe name, or already there). Cheap (one look at the disk).
+    fn new_project_folder(&self, _folder: &str) -> Result<String, String> {
+        Err("New projects aren't available here.".into())
+    }
+    /// Make the new project: its folder under the projects folder (which must not exist), `git
+    /// init` if the plan says so, the description as CLAUDE.md (Claude) or AGENTS.md (Codex),
+    /// tracked in Projects, then a new terminal window in it running `agent` on the first task.
+    /// A dry run makes nothing and lists the steps. Blocks briefly (git init, the window).
+    fn create_project(&self, _plan: &newproject::Plan, _agent: Agent, _dry_run: bool) -> ActionResult {
+        ActionResult { ok: false, message: "New projects aren't available here.".into(), steps: vec![] }
+    }
 }

@@ -213,7 +213,11 @@ impl vte::Perform for Grid {
             }
             'L' | 'M' if (self.top..=self.bottom).contains(&self.row) => {
                 let top = std::mem::replace(&mut self.top, self.row);
-                if action == 'L' { self.scroll_down(n(0)) } else { self.scroll_up(n(0)) }
+                if action == 'L' {
+                    self.scroll_down(n(0))
+                } else {
+                    self.scroll_up(n(0))
+                }
                 self.top = top;
             }
             'S' => self.scroll_up(n(0)),

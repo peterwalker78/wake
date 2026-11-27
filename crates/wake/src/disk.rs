@@ -611,7 +611,7 @@ pub fn rail_tip(ui: &Ui, wd: &impl IsA<gtk::Widget>, id: &str) {
 // ---------------------------------------------------------------- --show, for screenshots
 
 /// `--show disk[:project]` (its Disk section), `disk-machine`, `disk-clear[:project]`,
-/// `disk-remove[:project]`, `set-project[:session]`. disk.rs hook target (app.rs `apply_show`).
+/// `disk-remove[:project]`, `set-project[:session]`. disk.rs hook target (hooks.rs `apply_show`).
 pub fn show(ui: &Ui, what: &str, arg: Option<String>) {
     let biggest = || -> Option<String> {
         let st = ui.st.borrow();

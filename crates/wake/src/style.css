@@ -773,11 +773,17 @@ window.wake .pair > button.pairbtn:focus:focus-visible { outline-style: none; bo
 window.wake .pair > button.pairbtn.on { background-color: alpha(@accent, .12); border-color: @accent; color: @ink; }
 window.wake .pair > button.pairbtn.on image { color: @accent; }
 
-/* Projects: importance, the layout switch and Organise. */
-.state.tag.imp-high { color: @rose; background-color: alpha(@rose, .12); } .d.imp-high { background-color: @rose; }
-.state.tag.imp-low { color: @dim; background-color: alpha(@dim, .1); } .d.imp-low { background-color: @dim; }
+/* Projects: importance (three joined choices on each project), the layout switch and Organise. */
+window.wake .segs.imp > button.seg { font-size: 11.5px; padding: 1px 9px; min-height: 18px; }
+window.wake .segs.imp > button.seg.on:first-child { color: @rose; }
 .pgrid.ingroup { padding: 4px 24px 6px; }
 window.wake .layoutswitch > button.pairbtn { padding: 5px 9px; }
 window.wake button.organise, window.wake menubutton.organise > button { font-weight: 700; font-size: 12.5px; padding: 5px 12px; border-radius: 8px; border: 1px solid @line2; background-color: @panel2; color: @ink; }
 .menuhead { padding: 6px 10px 2px; }
 .state.tag.group { color: @muted; background-color: alpha(@muted, .1); } .d.group { background-color: @muted; }
+/* Projects: a group with nothing in it yet, and a group lit while a project is dragged over it. */
+list.table > row.droprow, list.table > row.droprow:hover { border-bottom: none; background-color: transparent; padding: 0 24px 6px; }
+.drophint { border: 1px dashed @line2; border-radius: 12px; padding: 16px 18px; }
+list.table > row.itemrow.dropping .item, list.table > row.droprow.dropping .drophint, list.table > row.gridrow.dropping { background-color: alpha(@accent, .08); }
+list.table > row.droprow.dropping .drophint { border-color: @accent; }
+list.table > row.sectrow.dropping .heading { color: @accent; }

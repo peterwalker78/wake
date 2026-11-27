@@ -866,6 +866,7 @@ impl Source for Live {
             resources: Some(i.resources(&sessions_for_res)),
             disk: i.disk_report(&sessions_for_res),
             attribution: Some(i.attribution(&sessions_for_res, &projects)),
+            groups: i.store.groups(),
         }
     }
 
@@ -1257,6 +1258,18 @@ impl Source for Live {
     fn set_project_importance(&self, id: &str, importance: Option<&str>) -> Result<ProjectSummary, String> {
         let p = self.inner.store.set_project_importance(id, importance).map_err(|e| e.0)?;
         Ok(self.project_summary_now(&p))
+    }
+
+    fn add_group(&self, name: &str) -> Result<String, String> {
+        self.inner.store.add_group(name).map_err(|e| e.0)
+    }
+
+    fn remove_group(&self, name: &str) -> Result<usize, String> {
+        self.inner.store.remove_group(name).map_err(|e| e.0)
+    }
+
+    fn order_groups(&self, order: &[String]) -> Result<(), String> {
+        self.inner.store.order_groups(order).map_err(|e| e.0)
     }
 
     fn check_remotes(&self, project: Option<&str>) {

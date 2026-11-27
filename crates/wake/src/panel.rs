@@ -1329,25 +1329,8 @@ pub fn project_menu(ui: &Ui, p: &ProjectSummary) -> gtk::MenuButton {
         items.append(&b);
     }
     items.append(&w::label("Group", &["caption-heading", "menuhead"]));
-    // A new group by name, or one already in use, or none.
-    let entry = gtk::Entry::builder().placeholder_text("A new group, then Enter").max_length(40).build();
-    entry.set_widget_name("group-entry");
-    {
-        let (ui2, pop2, id, name) = (ui.clone(), pop.clone(), p.id.clone(), p.name.clone());
-        entry.connect_activate(move |e| {
-            let g = e.text().trim().to_string();
-            if g.is_empty() {
-                return;
-            }
-            pop2.popdown();
-            let (id2, g2) = (id.clone(), g.clone());
-            apply(&ui2, id.clone(), Box::new(move |src| src.set_project_group(&id2, Some(&g2))), format!("{name} is in {g}."));
-        });
-    }
-    items.append(&entry);
-    let mut groups: Vec<String> = ui.st.borrow().ov.as_ref().map(|ov| ov.projects.iter().filter_map(|x| x.group.clone()).collect()).unwrap_or_default();
-    groups.sort_by_key(|g| g.to_lowercase());
-    groups.dedup();
+    // One of the person's groups (new ones come from "+ New group" above the projects), or none.
+    let groups: Vec<String> = ui.st.borrow().ov.as_ref().map(|ov| ov.groups.clone()).unwrap_or_default();
     for g in groups.into_iter().map(Some).chain([None]) {
         let on = p.group == g;
         let label = g.clone().unwrap_or_else(|| "No group".into());

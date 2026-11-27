@@ -300,6 +300,10 @@ pub struct Overview {
     /// the person, guessed (marked "probably"), or none (added 2026-11-20).
     #[serde(default)]
     pub attribution: Option<Vec<Attribution>>,
+    /// The person's project groups by name, including those with no project in them yet (added
+    /// 2026-11-27).
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 // ---- agent processes (the Agents view) ----

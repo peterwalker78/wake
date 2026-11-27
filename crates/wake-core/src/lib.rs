@@ -159,6 +159,21 @@ pub trait Source: Send + Sync {
     fn set_project_group(&self, _id: &str, _group: Option<&str>) -> Result<ProjectSummary, String> {
         Err("Groups can't be changed here.".into())
     }
+    /// Add a project group with nothing in it yet; a name in use is that group. Returns the name
+    /// as kept. Writes projects.json. Added 2026-11-27.
+    fn add_group(&self, _name: &str) -> Result<String, String> {
+        Err("Groups can't be changed here.".into())
+    }
+    /// Put the project groups in this order (as the person dragged them). Writes projects.json.
+    /// Added 2026-11-27.
+    fn order_groups(&self, _order: &[String]) -> Result<(), String> {
+        Err("Groups can't be changed here.".into())
+    }
+    /// Remove a project group; its projects stay tracked, in no group. Returns how many were in
+    /// it. Writes projects.json. Added 2026-11-27.
+    fn remove_group(&self, _name: &str) -> Result<usize, String> {
+        Err("Groups can't be changed here.".into())
+    }
     /// Set a project's importance: "high", "low", or None for normal. Writes projects.json.
     fn set_project_importance(&self, _id: &str, _importance: Option<&str>) -> Result<ProjectSummary, String> {
         Err("Importance can't be changed here.".into())

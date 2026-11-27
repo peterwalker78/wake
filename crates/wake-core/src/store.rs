@@ -459,6 +459,29 @@ pub fn random_hex(bytes: usize) -> String {
 struct ProjectsFile {
     #[allow(dead_code)] // read only to check the file is one Wake understands
     projects: Vec<ProjectRec>,
+    /// The person's groups, including those with no project in them yet. Added 2026-11-27; older
+    /// files have none, and their groups are the ones their projects name.
+    #[serde(default, deserialize_with = "null_default")]
+    groups: Vec<String>,
+}
+
+/// The groups kept on their own, in their order, then those only a tracked project names, A to Z.
+fn all_groups(mut kept: Vec<String>, projects: &[ProjectRec]) -> Vec<String> {
+    let mut extra: Vec<String> = Vec::new();
+    for g in projects.iter().filter(|p| !p.removed).filter_map(|p| p.group.as_ref()) {
+        if !kept.iter().chain(extra.iter()).any(|x| x.eq_ignore_ascii_case(g)) {
+            extra.push(g.clone());
+        }
+    }
+    extra.sort_by_key(|g| g.to_lowercase());
+    kept.extend(extra);
+    kept
+}
+
+/// A group's name as kept: trimmed, at most 40 characters; None if nothing is left.
+fn group_name(g: &str) -> Option<String> {
+    let g = g.trim();
+    (!g.is_empty()).then(|| g.chars().take(40).collect())
 }
 
 /// Projects, ideas and pauses. Cheap to clone; serialises its own writes.
@@ -702,12 +725,83 @@ impl Store {
     }
 
     fn save_projects_locked(&self, projects: &[ProjectRec]) -> SResult<()> {
+        let groups = self.load_groups_locked();
+        self.save_file_locked(projects, &groups)
+    }
+
+    /// The groups kept in projects.json (not those only named by a project). Empty when the file
+    /// is missing or can't be read.
+    fn load_groups_locked(&self) -> Vec<String> {
+        fs::read(self.projects_path()).ok().and_then(|b| serde_json::from_slice::<ProjectsFile>(&b).ok()).map(|f| f.groups).unwrap_or_default()
+    }
+
+    fn save_file_locked(&self, projects: &[ProjectRec], groups: &[String]) -> SResult<()> {
         let path = self.projects_path();
         // Never replace a file Wake could not understand: it may hold the person's own words.
         if path.exists() && fs::read(&path).ok().is_none_or(|b| serde_json::from_slice::<ProjectsFile>(&b).is_err()) {
             return Err(StoreError(format!("{} could not be understood, so Wake will not overwrite it.", path.display())));
         }
-        self.writer.write_json(&path, &serde_json::json!({ "projects": projects }))
+        if groups.is_empty() {
+            self.writer.write_json(&path, &serde_json::json!({ "projects": projects }))
+        } else {
+            self.writer.write_json(&path, &serde_json::json!({ "projects": projects, "groups": groups }))
+        }
+    }
+
+    /// The person's groups, in their order: those kept on their own as the person arranged them,
+    /// then any only a tracked project names (from files written before groups were kept), A to Z.
+    pub fn groups(&self) -> Vec<String> {
+        let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        all_groups(self.load_groups_locked(), &self.load_projects_locked())
+    }
+
+    /// Puts the groups in this order. Names not in `order` keep their place after it; names that
+    /// are no group are left out.
+    pub fn order_groups(&self, order: &[String]) -> SResult<()> {
+        let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let projects = self.load_projects_locked();
+        let known = all_groups(self.load_groups_locked(), &projects);
+        let mut out: Vec<String> = Vec::new();
+        for g in order.iter().chain(known.iter()) {
+            if known.contains(g) && !out.contains(g) {
+                out.push(g.clone());
+            }
+        }
+        self.save_file_locked(&projects, &out)
+    }
+
+    /// Adds a group with no projects in it yet. A name already in use (in any case) is that group.
+    pub fn add_group(&self, name: &str) -> SResult<String> {
+        let name = group_name(name).ok_or_else(|| StoreError("A group needs a name.".into()))?;
+        let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let projects = self.load_projects_locked();
+        let mut groups = self.load_groups_locked();
+        if let Some(same) = groups.iter().chain(projects.iter().filter_map(|p| p.group.as_ref())).find(|g| g.eq_ignore_ascii_case(&name)) {
+            let same = same.clone();
+            if !groups.contains(&same) {
+                groups.push(same.clone());
+                self.save_file_locked(&projects, &groups)?;
+            }
+            return Ok(same);
+        }
+        groups.push(name.clone());
+        self.save_file_locked(&projects, &groups)?;
+        Ok(name)
+    }
+
+    /// Removes a group. Its projects stay tracked, in no group. Returns how many were in it.
+    pub fn remove_group(&self, name: &str) -> SResult<usize> {
+        let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut projects = self.load_projects_locked();
+        let mut groups = self.load_groups_locked();
+        groups.retain(|g| g != name);
+        let mut moved = 0;
+        for p in projects.iter_mut().filter(|p| p.group.as_deref() == Some(name)) {
+            p.group = None;
+            moved += usize::from(!p.removed);
+        }
+        self.save_file_locked(&projects, &groups)?;
+        Ok(moved)
     }
 
     pub fn add_project(&self, path: &str) -> SResult<ProjectRec> {
@@ -769,14 +863,21 @@ impl Store {
     }
 
     /// Put a project in a group (a short name of the person's own), or take it out with None.
+    /// The group is kept on its own too, so it stays when its last project leaves it.
     pub fn set_project_group(&self, id: &str, group: Option<&str>) -> SResult<ProjectRec> {
-        let group = group.map(str::trim).filter(|g| !g.is_empty()).map(|g| g.chars().take(40).collect::<String>());
+        let group = group.and_then(group_name);
         let _g = PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut projects = self.load_projects_locked();
+        let mut groups = self.load_groups_locked();
         let p = projects.iter_mut().find(|p| p.id == id).ok_or_else(|| StoreError("No project with that id.".into()))?;
-        p.group = group;
+        p.group = group.clone();
         let out = p.clone();
-        self.save_projects_locked(&projects)?;
+        if let Some(g) = group
+            && !groups.contains(&g)
+        {
+            groups.push(g);
+        }
+        self.save_file_locked(&projects, &groups)?;
         Ok(out)
     }
 
@@ -1288,6 +1389,57 @@ mod tests {
         assert_eq!(s.set_project_importance(&id, None).unwrap().importance, None);
         assert!(s.set_project_importance(&id, Some("urgent")).is_err());
         assert!(s.set_project_group("nope", Some("x")).is_err());
+    }
+
+    #[test]
+    fn a_group_lives_on_its_own_until_it_is_removed() {
+        let env = Env::new();
+        let s = env.store();
+        let ids: Vec<String> = s.load_projects().iter().map(|p| p.id.clone()).collect();
+        // An empty group is kept, through other changes to the project list too.
+        assert_eq!(s.add_group("  Clients ").unwrap(), "Clients");
+        assert_eq!(s.add_group("clients").unwrap(), "Clients", "the same name in another case is the same group");
+        assert!(s.add_group("   ").is_err());
+        s.set_project_next(&ids[0], "write the tests").unwrap();
+        assert_eq!(s.groups(), vec!["Clients".to_string()]);
+        // A project's group is a group too, and stays when the project leaves it.
+        s.set_project_group(&ids[0], Some("Work")).unwrap();
+        s.set_project_group(&ids[0], None).unwrap();
+        assert_eq!(s.groups(), vec!["Clients".to_string(), "Work".to_string()]);
+        // Removing a group leaves its projects tracked, in no group.
+        s.set_project_group(&ids[0], Some("Clients")).unwrap();
+        assert_eq!(s.remove_group("Clients").unwrap(), 1);
+        assert_eq!(s.groups(), vec!["Work".to_string()]);
+        let p = s.load_projects().into_iter().find(|p| p.id == ids[0]).unwrap();
+        assert_eq!((p.group, p.removed), (None, false));
+        // Kept in projects.json beside the projects.
+        let raw: serde_json::Value = serde_json::from_slice(&fs::read(s.projects_path()).unwrap()).unwrap();
+        assert_eq!(raw["groups"], serde_json::json!(["Work"]));
+    }
+
+    #[test]
+    fn groups_keep_the_order_they_were_put_in() {
+        let env = Env::new();
+        let s = env.store();
+        for g in ["Zebra", "apple", "Mango"] {
+            s.add_group(g).unwrap();
+        }
+        assert_eq!(s.groups(), ["Zebra", "apple", "Mango"], "in the order they were made, not A to Z");
+        s.order_groups(&["Mango".into(), "Zebra".into()]).unwrap();
+        assert_eq!(s.groups(), ["Mango", "Zebra", "apple"], "the ones not named keep their place after");
+        s.order_groups(&["nope".into(), "apple".into()]).unwrap();
+        assert_eq!(s.groups(), ["apple", "Mango", "Zebra"], "a name that is no group is left out");
+        // A group only a project names (an older file) comes after, until it is put in order.
+        let id = s.load_projects()[0].id.clone();
+        let mut projects = s.load_projects();
+        projects.iter_mut().find(|p| p.id == id).unwrap().group = Some("Old".into());
+        {
+            let _g = PROJECTS_LOCK.lock().unwrap();
+            s.save_projects_locked(&projects).unwrap();
+        }
+        assert_eq!(s.groups(), ["apple", "Mango", "Zebra", "Old"]);
+        s.order_groups(&["Old".into()]).unwrap();
+        assert_eq!(s.groups(), ["Old", "apple", "Mango", "Zebra"]);
     }
 
     #[test]

@@ -726,14 +726,15 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
                 }
                 return Some(Stop);
             }
-            // ↑ from the first item: up to the list's own controls, if it has any.
+            // ↑ from the first item: up to the nearest of the list's own controls above it (its
+            // group's heading, the column heads, a search box), if there is one.
             K::Up if f == item => {
                 let before = ui.st.borrow().sel.clone();
                 app::move_sel(ui, -1);
-                if ui.st.borrow().sel == before
-                    && let Some(c) = own_controls(&w).last()
-                {
-                    c.grab_focus();
+                if ui.st.borrow().sel == before {
+                    let mut all = vec![item.clone()];
+                    all.extend(own_controls(&w));
+                    arrow_among(&w, &all, &f, Arrow::Up);
                 }
                 return Some(Stop);
             }

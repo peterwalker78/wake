@@ -27,6 +27,8 @@ struct Pretend {
     next_idea: u32,
     /// Behind the remote: projects someone pushed to (made up; nothing is asked or pulled).
     behind: Vec<Behind>,
+    /// Groups kept on their own, with or without projects in them.
+    groups: Vec<String>,
 }
 
 pub struct DemoSource {
@@ -456,7 +458,10 @@ impl DemoSource {
         procs[5].rss_bytes = a + b;
         procs[10].agent = Some(Agent::Claude);
 
-        Self { state: Mutex::new(Pretend { behind: demo_behind(&projects), projects, sessions, ideas, procs, pauses: Vec::new(), next_idea: 8 }), questions: crate::questions::Demo::new() }
+        Self {
+            state: Mutex::new(Pretend { behind: demo_behind(&projects), projects, sessions, ideas, procs, pauses: Vec::new(), next_idea: 8, groups: Vec::new() }),
+            questions: crate::questions::Demo::new(),
+        }
     }
 }
 
@@ -570,7 +575,22 @@ impl Pretend {
             resources: Some(crate::disk::demo_resources(&self.procs, &self.sessions)),
             disk: Some(crate::disk::demo_report()),
             attribution: Some(crate::disk::demo_attribution(&self.sessions)),
+            groups: self.all_groups(),
         }
+    }
+
+    /// The groups kept on their own, in their order, then those only a project names, A to Z.
+    fn all_groups(&self) -> Vec<String> {
+        let mut extra: Vec<String> = Vec::new();
+        for g in self.projects.iter().filter_map(|p| p.group.clone()) {
+            if !self.groups.iter().chain(extra.iter()).any(|x| x.eq_ignore_ascii_case(&g)) {
+                extra.push(g);
+            }
+        }
+        extra.sort_by_key(|g| g.to_lowercase());
+        let mut out = self.groups.clone();
+        out.extend(extra);
+        out
     }
 }
 
@@ -920,9 +940,56 @@ impl Source for DemoSource {
 
     fn set_project_group(&self, id: &str, group: Option<&str>) -> Result<ProjectSummary, String> {
         let mut st = self.state.lock().unwrap();
+        let group = group.map(str::trim).filter(|g| !g.is_empty()).map(String::from);
         let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
-        p.group = group.map(str::trim).filter(|g| !g.is_empty()).map(String::from);
-        Ok(p.clone())
+        p.group = group.clone();
+        let out = p.clone();
+        if let Some(g) = group
+            && !st.groups.contains(&g)
+        {
+            st.groups.push(g);
+        }
+        Ok(out)
+    }
+
+    fn add_group(&self, name: &str) -> Result<String, String> {
+        let name: String = name.trim().chars().take(40).collect();
+        if name.is_empty() {
+            return Err("A group needs a name.".into());
+        }
+        let mut st = self.state.lock().unwrap();
+        if let Some(same) = st.all_groups().into_iter().find(|g| g.eq_ignore_ascii_case(&name)) {
+            if !st.groups.contains(&same) {
+                st.groups.push(same.clone());
+            }
+            return Ok(same);
+        }
+        st.groups.push(name.clone());
+        Ok(name)
+    }
+
+    fn order_groups(&self, order: &[String]) -> Result<(), String> {
+        let mut st = self.state.lock().unwrap();
+        let known = st.all_groups();
+        let mut out: Vec<String> = Vec::new();
+        for g in order.iter().chain(known.iter()) {
+            if known.contains(g) && !out.contains(g) {
+                out.push(g.clone());
+            }
+        }
+        st.groups = out;
+        Ok(())
+    }
+
+    fn remove_group(&self, name: &str) -> Result<usize, String> {
+        let mut st = self.state.lock().unwrap();
+        st.groups.retain(|g| g != name);
+        let mut moved = 0;
+        for p in st.projects.iter_mut().filter(|p| p.group.as_deref() == Some(name)) {
+            p.group = None;
+            moved += 1;
+        }
+        Ok(moved)
     }
 
     fn set_project_importance(&self, id: &str, importance: Option<&str>) -> Result<ProjectSummary, String> {

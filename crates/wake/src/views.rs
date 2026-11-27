@@ -807,6 +807,7 @@ pub fn render_chips(ui: &Ui) {
             chips.add_next(&w::spacer());
             chips.add(&w::label(PURPOSE_PROJECTS, &["meta"]), PURPOSE_PRIO);
             chips.add_next(&organise_menu(ui));
+            chips.add_next(&new_group_button(ui));
             chips.add_next(&layout_switch(ui));
             chips.add_next(&crate::disk::details_button(ui));
             let ui = ui.clone();
@@ -1409,17 +1410,19 @@ fn projects(ui: &Ui) {
         }
         (list, st.adding, app::compact(&st) || st.lay.tight)
     };
-    // Never rebuild under someone typing a folder into "Track a folder".
+    // Never rebuild under someone typing a folder into "Track a folder", nor under a project being
+    // dragged (it would drop the drag); it draws again when the drag ends.
     let vw = &ui.w.views[&View::Projects];
-    if adding && (app::typing_in(ui, &vw.top) || app::typing_in(ui, &vw.list)) {
+    if (adding && (app::typing_in(ui, &vw.top) || app::typing_in(ui, &vw.list))) || DRAGGING.with(|d| d.get()) {
         return;
     }
     let mut sig_list = list.clone();
     for p in &mut sig_list {
         p.last_at = None;
     }
+    let groups = ui.st.borrow().ov.as_ref().map(|ov| ov.groups.clone()).unwrap_or_default();
     let (layout, grouping) = (prefs::projects_layout(), prefs::projects_group());
-    let sig = format!("{adding}{compact}{}{}{:?}{layout}{grouping}", serde_json::to_string(&sig_list).unwrap_or_default(), crate::behind::sig(ui), prefs::sort_of(View::Projects));
+    let sig = format!("{adding}{compact}{}{}{:?}{layout}{grouping}{groups:?}", serde_json::to_string(&sig_list).unwrap_or_default(), crate::behind::sig(ui), prefs::sort_of(View::Projects));
     let Some(had_focus) = begin(ui, View::Projects, sig) else { return };
     let vw = &ui.w.views[&View::Projects];
     w::clear(&vw.top);
@@ -1487,47 +1490,374 @@ fn projects(ui: &Ui) {
     // A grid of cards, one per project, in its colour: the next step first, then what is open and
     // what is loose in git. Arrows, Enter, p and the panel work on it as on any list.
     // In sections (the person's groups, or by activity), each a grid of cards or a boxed list.
-    let sections = project_sections(&list, &grouping);
-    let headed = sections.len() > 1 || sections.first().is_some_and(|s| !s.0.is_empty());
-    for (title, items) in &sections {
+    // In the person's groups, a project can be dragged from one group to another (or out of
+    // them), and a group with nothing in it yet is a place to drop one.
+    let sections = project_sections(&list, &grouping, &groups);
+    let headed = sections.len() > 1 || sections.first().is_some_and(|s| !s.title.is_empty());
+    for sec in &sections {
+        let mut zone: Vec<gtk::Widget> = Vec::new();
         if headed {
-            vw.list.append(&section_row(title, items.len()));
+            let h = group_heading(ui, sec);
+            vw.list.append(&h);
+            zone.push(h.upcast());
         }
-        if layout == "list" {
-            let n = items.len();
-            for (i, p) in items.iter().enumerate() {
-                vw.list.append(&project_item(ui, p, (i == 0, i + 1 == n)));
+        if sec.items.is_empty() {
+            let r = drop_hint_row(matches!(sec.target, Some(None)));
+            vw.list.append(&r);
+            zone.push(r.upcast());
+        } else if layout == "list" {
+            let n = sec.items.len();
+            for (i, p) in sec.items.iter().enumerate() {
+                let r = project_item(ui, p, (i == 0, i + 1 == n));
+                if sec.target.is_some() {
+                    drag_project(ui, &r, &p.id);
+                }
+                vw.list.append(&r);
+                zone.push(r.upcast());
             }
         } else {
             let grid = card_grid(ui, "pgrid", 4);
             if headed {
                 grid.add_css_class("ingroup");
             }
-            for p in items {
-                grid.insert(&project_card(ui, p), -1);
+            for p in &sec.items {
+                let c = project_card(ui, p);
+                if sec.target.is_some() {
+                    drag_project(ui, &c, &p.id);
+                }
+                grid.insert(&c, -1);
             }
-            vw.list.append(&grid_row(&grid));
+            let r = grid_row(&grid);
+            vw.list.append(&r);
+            zone.push(r.upcast());
+        }
+        if let Some(target) = &sec.target {
+            drop_into(ui, &zone, target.clone());
         }
     }
     finish(ui, View::Projects, had_focus);
 }
 
+/// A section of the Projects view: its heading, its projects, and, in the person's groups, the
+/// group a project dropped on it goes into (`Some(None)`: no group).
+struct Section<'a> {
+    title: String,
+    items: Vec<&'a ProjectSummary>,
+    target: Option<Option<String>>,
+}
+
+thread_local! {
+    /// A project is being dragged: the view waits to draw again until it is dropped.
+    static DRAGGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// What a dragged project carries: its id, marked as Wake's so text dragged in from elsewhere is
+/// never taken for a project. A dragged group carries its name.
+const DRAG_PREFIX: &str = "wake-project:";
+const GROUP_PREFIX: &str = "wake-group:";
+
+/// Lets a project's row or card be dragged to another group.
+fn drag_project(ui: &Ui, w: &impl IsA<gtk::Widget>, id: &str) {
+    drag_payload(ui, w, format!("{DRAG_PREFIX}{id}"));
+}
+
+/// Lets a group's heading be dragged onto another group, to put it in that group's place.
+fn drag_group(ui: &Ui, w: &impl IsA<gtk::Widget>, name: &str) {
+    w.set_cursor_from_name(Some("grab"));
+    w.set_tooltip_text(Some("Drag to put the group in another place"));
+    drag_payload(ui, w, format!("{GROUP_PREFIX}{name}"));
+}
+
+fn drag_payload(ui: &Ui, w: &impl IsA<gtk::Widget>, payload: String) {
+    let src = gtk::DragSource::new();
+    src.set_actions(gdk::DragAction::MOVE);
+    let at = std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0)));
+    {
+        let at = at.clone();
+        src.connect_prepare(move |_, x, y| {
+            at.set((x, y));
+            Some(gdk::ContentProvider::for_value(&payload.to_value()))
+        });
+    }
+    {
+        let w = w.clone().upcast::<gtk::Widget>();
+        src.connect_drag_begin(move |s, _| {
+            DRAGGING.with(|d| d.set(true));
+            let (x, y) = at.get();
+            s.set_icon(Some(&gtk::WidgetPaintable::new(Some(&w))), x as i32, y as i32);
+        });
+    }
+    {
+        let ui = ui.clone();
+        src.connect_drag_end(move |_, _, _| {
+            DRAGGING.with(|d| d.set(false));
+            // Whatever came in while it was held.
+            let ui = ui.clone();
+            glib::idle_add_local_once(move || render_view(&ui));
+        });
+    }
+    w.add_controller(src);
+}
+
+/// Makes `zone` (a section's heading and its rows, or its grid) a place to drop a project: it goes
+/// into `target` (None: no group). The whole section lights up while one is held over it.
+fn drop_into(ui: &Ui, zone: &[gtk::Widget], target: Option<String>) {
+    for z in zone {
+        let t = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
+        let (ui2, target2) = (ui.clone(), target.clone());
+        t.connect_drop(move |_, v, _, _| {
+            let Ok(s) = v.get::<String>() else { return false };
+            if let Some(id) = s.strip_prefix(DRAG_PREFIX) {
+                move_to_group(&ui2, id, target2.clone());
+            } else if let Some(name) = s.strip_prefix(GROUP_PREFIX) {
+                // Into that group's place; onto "Not in a group", last.
+                let order = group_order(&ui2);
+                let to = match &target2 {
+                    Some(g) => order.iter().position(|x| x == g),
+                    None => order.len().checked_sub(1),
+                };
+                if let (Some(from), Some(to)) = (order.iter().position(|x| x == name), to) {
+                    move_group(&ui2, from, to);
+                }
+            } else {
+                return false;
+            }
+            true
+        });
+        let lit = zone.to_vec();
+        t.connect_enter(move |_, _, _| {
+            for w in &lit {
+                w.add_css_class("dropping");
+            }
+            gdk::DragAction::MOVE
+        });
+        let lit = zone.to_vec();
+        t.connect_leave(move |_| {
+            for w in &lit {
+                w.remove_css_class("dropping");
+            }
+        });
+        z.add_controller(t);
+    }
+}
+
+/// Puts a project in a group (None: in none), saying so; nothing if it is there already.
+fn move_to_group(ui: &Ui, id: &str, group: Option<String>) {
+    let Some(p) = ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.iter().find(|p| p.id == id).cloned()) else { return };
+    if p.group == group {
+        return;
+    }
+    let said = match &group {
+        Some(g) => format!("{} is in {g}.", p.name),
+        None => format!("{} is in no group.", p.name),
+    };
+    let id = id.to_string();
+    app::bg(
+        ui,
+        move |src| src.set_project_group(&id, group.as_deref()),
+        move |ui, r| match r {
+            Ok(_) => {
+                app::toast(ui, &said, false);
+                app::refresh(ui);
+            }
+            Err(e) => app::toast(ui, &e, true),
+        },
+    );
+}
+
+/// The person's groups, in their order.
+fn group_order(ui: &Ui) -> Vec<String> {
+    ui.st.borrow().ov.as_ref().map(|ov| ov.groups.clone()).unwrap_or_default()
+}
+
+/// Moves the group at `from` to `to` in the person's order (it takes that place; the others make
+/// room).
+fn move_group(ui: &Ui, from: usize, to: usize) {
+    let mut order = group_order(ui);
+    if from == to || from >= order.len() || to >= order.len() {
+        return;
+    }
+    let g = order.remove(from);
+    order.insert(to, g);
+    app::bg(
+        ui,
+        move |src| src.order_groups(&order),
+        |ui, r| match r {
+            Ok(()) => app::refresh(ui),
+            Err(e) => app::toast(ui, &e, true),
+        },
+    );
+}
+
+/// A section's heading; a group's can be dragged to another place, and has a ⋯ menu to move or
+/// remove the group.
+fn group_heading(ui: &Ui, sec: &Section) -> gtk::ListBoxRow {
+    let r = section_row(&sec.title, sec.items.len());
+    if let Some(Some(name)) = &sec.target
+        && let Some(b) = r.child().and_downcast::<gtk::Box>()
+    {
+        b.append(&w::spacer());
+        b.append(&group_menu(ui, name, sec.items.len()));
+        drag_group(ui, &r, name);
+    }
+    r
+}
+
+/// A group's ⋯: Move up, Move down, Remove group (its projects stay, in no group).
+fn group_menu(ui: &Ui, name: &str, n: usize) -> gtk::MenuButton {
+    let mb = gtk::MenuButton::new();
+    mb.set_child(Some(&w::icon(w::icons::MORE)));
+    mb.add_css_class("flat");
+    mb.set_widget_name("group-more");
+    mb.set_tooltip_text(Some(&format!("{name}: move or remove the group")));
+    mb.update_property(&[gtk::accessible::Property::Label(&format!("{name} group options"))]);
+    mb.set_valign(gtk::Align::Center);
+    mb.set_focus_on_click(false);
+    let pop = gtk::Popover::new();
+    let items = w::vbox(2, &["moremenu"]);
+    // Up and down in the person's order (or drag the heading), for the keyboard too.
+    let order = group_order(ui);
+    if let Some(at) = order.iter().position(|g| g == name) {
+        for (label, to) in [("Move up", at.checked_sub(1)), ("Move down", Some(at + 1).filter(|t| *t < order.len()))] {
+            let Some(to) = to else { continue };
+            let b = gtk::Button::with_label(label);
+            b.add_css_class("menuitem");
+            let (ui, pop) = (ui.clone(), pop.clone());
+            b.connect_clicked(move |_| {
+                pop.popdown();
+                move_group(&ui, at, to);
+            });
+            items.append(&b);
+        }
+    }
+    let b = gtk::Button::with_label("Remove group");
+    b.add_css_class("menuitem");
+    b.set_tooltip_text(Some(if n == 0 { "It has no projects in it." } else { "Its projects stay, in no group." }));
+    let (ui, pop2, name) = (ui.clone(), pop.clone(), name.to_string());
+    b.connect_clicked(move |_| {
+        pop2.popdown();
+        let name2 = name.clone();
+        let name3 = name.clone();
+        app::bg(
+            &ui,
+            move |src| src.remove_group(&name2),
+            move |ui, r| match r {
+                Ok(0) => {
+                    app::toast(ui, &format!("Removed the group {name3}."), false);
+                    app::refresh(ui);
+                }
+                Ok(n) => {
+                    let rest = if n == 1 { "Its project is now in no group.".to_string() } else { format!("Its {n} projects are now in no group.") };
+                    app::toast(ui, &format!("Removed the group {name3}. {rest}"), false);
+                    app::refresh(ui);
+                }
+                Err(e) => app::toast(ui, &e, true),
+            },
+        );
+    });
+    items.append(&b);
+    pop.set_child(Some(&items));
+    mb.set_popover(Some(&pop));
+    mb
+}
+
+/// A group with no projects in it yet (or, `ungrouped`, every project in a group): a place to drop
+/// one.
+fn drop_hint_row(ungrouped: bool) -> gtk::ListBoxRow {
+    let r = gtk::ListBoxRow::new();
+    r.set_selectable(false);
+    r.set_activatable(false);
+    r.set_focusable(false);
+    r.add_css_class("grouprow");
+    r.add_css_class("droprow");
+    let words =
+        if ungrouped { "Every project is in a group. Drag one here to take it out of its group." } else { "No projects in this group yet. Drag one here, or pick the group in a project's ⋯ menu." };
+    let l = w::label(words, &["dim", "drophint"]);
+    l.set_wrap(true);
+    l.set_xalign(0.0);
+    r.set_child(Some(&l));
+    r
+}
+
+/// "+ New group": a group of the person's own, empty until projects are put in it.
+fn new_group_button(ui: &Ui) -> gtk::MenuButton {
+    let mb = gtk::MenuButton::new();
+    mb.set_child(Some(&gtk::Label::new(Some("+ New group"))));
+    mb.add_css_class("organise");
+    mb.set_tooltip_text(Some("Add a group to put projects in"));
+    let pop = gtk::Popover::new();
+    let items = w::vbox(6, &["moremenu", "newgroup"]);
+    items.append(&w::label("New group", &["caption-heading", "menuhead"]));
+    let entry = gtk::Entry::builder().placeholder_text("Its name, then Enter").max_length(40).build();
+    entry.set_widget_name("new-group-entry");
+    let err = w::label("", &["err"]);
+    err.set_visible(false);
+    {
+        let (ui, pop, err) = (ui.clone(), pop.clone(), err.clone());
+        entry.connect_activate(move |e| {
+            let name = e.text().trim().to_string();
+            if name.is_empty() {
+                return;
+            }
+            let (pop, err, e) = (pop.clone(), err.clone(), e.clone());
+            app::bg(
+                &ui,
+                move |src| src.add_group(&name),
+                move |ui, r| match r {
+                    Ok(name) => {
+                        pop.popdown();
+                        e.set_text("");
+                        // Groups show only when the projects are grouped by them.
+                        if prefs::projects_group() != "groups" {
+                            prefs::change(ui, |s| s.projects_group = "groups".into());
+                            ui.st.borrow_mut().chips_drawn.clear();
+                            render_chips(ui);
+                        }
+                        app::toast(ui, &format!("Added the group {name}. Drag projects into it."), false);
+                        app::refresh(ui);
+                    }
+                    Err(m) => {
+                        err.set_text(&m);
+                        err.set_visible(true);
+                    }
+                },
+            );
+        });
+    }
+    items.append(&entry);
+    items.append(&err);
+    pop.set_child(Some(&items));
+    {
+        let entry = entry.clone();
+        pop.connect_show(move |_| {
+            entry.grab_focus();
+        });
+    }
+    mb.set_popover(Some(&pop));
+    mb
+}
+
 /// The projects in sections: by the person's own groups (then those in none), by activity
 /// (worked out: needs you, at work, paused, this week, older), or one section with no heading.
-fn project_sections<'a>(list: &'a [ProjectSummary], grouping: &str) -> Vec<(String, Vec<&'a ProjectSummary>)> {
+fn project_sections<'a>(list: &'a [ProjectSummary], grouping: &str, groups: &[String]) -> Vec<Section<'a>> {
+    let plain = |v: Vec<(String, Vec<&'a ProjectSummary>)>| v.into_iter().map(|(title, items)| Section { title, items, target: None }).collect();
     match grouping {
-        "groups" if list.iter().any(|p| p.group.is_some()) => {
-            let mut names: Vec<&str> = list.iter().filter_map(|p| p.group.as_deref()).collect();
-            names.sort_by_key(|n| n.to_lowercase());
-            names.dedup();
-            let mut out: Vec<(String, Vec<&ProjectSummary>)> = names.iter().map(|n| (n.to_string(), list.iter().filter(|p| p.group.as_deref() == Some(n)).collect())).collect();
-            let rest: Vec<&ProjectSummary> = list.iter().filter(|p| p.group.is_none()).collect();
-            if !rest.is_empty() {
-                out.push(("Not in a group".into(), rest));
+        // Every group, even one with nothing in it yet, then those in none (a place to drag a
+        // project out of its group, so it shows even when empty).
+        "groups" if !groups.is_empty() || list.iter().any(|p| p.group.is_some()) => {
+            // In the person's order (the core keeps it); any other a project names, after.
+            let mut names: Vec<String> = groups.to_vec();
+            for g in list.iter().filter_map(|p| p.group.as_ref()) {
+                if !names.contains(g) {
+                    names.push(g.clone());
+                }
             }
+            let mut out: Vec<Section> =
+                names.into_iter().map(|n| Section { items: list.iter().filter(|p| p.group.as_deref() == Some(n.as_str())).collect(), title: n.clone(), target: Some(Some(n)) }).collect();
+            out.push(Section { title: "Not in a group".into(), items: list.iter().filter(|p| p.group.is_none()).collect(), target: Some(None) });
             out
         }
-        "activity" => {
+        "activity" => plain({
             let week = glib::DateTime::now_local().ok().and_then(|n| n.add_days(-7).ok());
             let recent = |p: &ProjectSummary| p.last_at.as_deref().and_then(fmt::parse).and_then(|t| t.to_local().ok()).zip(week.clone()).is_some_and(|(t, w)| t > w);
             let kind = |p: &ProjectSummary| {
@@ -1549,18 +1879,45 @@ fn project_sections<'a>(list: &'a [ProjectSummary], grouping: &str) -> Vec<(Stri
                 .map(|(k, t)| (t.to_string(), list.iter().filter(|p| kind(p) == k).collect::<Vec<_>>()))
                 .filter(|(_, v)| !v.is_empty())
                 .collect()
-        }
-        _ => vec![(String::new(), list.iter().collect())],
+        }),
+        _ => plain(vec![(String::new(), list.iter().collect())]),
     }
 }
 
-/// A project's importance as a tag, when it isn't normal.
-fn importance_tag(p: &ProjectSummary) -> Option<gtk::Box> {
-    match p.importance.as_deref() {
-        Some("high") => Some(w::state_tag("High", "imp-high")),
-        Some("low") => Some(w::state_tag("Low", "imp-low")),
-        _ => None,
+/// A project's importance as three joined choices (High, Normal, Low): one click changes it.
+fn importance_switch(ui: &Ui, p: &ProjectSummary) -> gtk::Box {
+    let b = w::hbox(0, &["segs", "imp"]);
+    b.set_valign(gtk::Align::Center);
+    b.set_halign(gtk::Align::Start);
+    b.update_property(&[gtk::accessible::Property::Label(&format!("{} importance", p.name))]);
+    for (val, label) in [(Some("high"), "High"), (None, "Normal"), (Some("low"), "Low")] {
+        let btn = gtk::Button::with_label(label);
+        btn.add_css_class("seg");
+        let on = p.importance.as_deref() == val;
+        if on {
+            btn.add_css_class("on");
+        }
+        btn.set_tooltip_text(Some(&format!("Importance: {}", label.to_lowercase())));
+        // A click here leaves the keyboard where it was (Menu or ⋯ has importance for the keys).
+        btn.set_focus_on_click(false);
+        let (ui, id) = (ui.clone(), p.id.clone());
+        btn.connect_clicked(move |_| {
+            if on {
+                return;
+            }
+            let id = id.clone();
+            app::bg(
+                &ui,
+                move |src| src.set_project_importance(&id, val),
+                |ui, r| match r {
+                    Ok(_) => app::refresh(ui),
+                    Err(e) => app::toast(ui, &e, true),
+                },
+            );
+        });
+        b.append(&btn);
     }
+    b
 }
 
 /// A project's ⋯ on its card or row: importance and group, where you see the project.
@@ -1594,9 +1951,6 @@ fn project_item(ui: &Ui, p: &ProjectSummary, edge: (bool, bool)) -> gtk::ListBox
     dot.add_css_class("tag");
     top.append(&dot);
     top.append(&w::label(&p.name, &["pname"]));
-    if let Some(t) = importance_tag(p) {
-        top.append(&t);
-    }
     if let Some(g) = p.group.as_deref().filter(|_| prefs::projects_group() != "groups") {
         let t = w::state_tag(g, "group");
         t.set_valign(gtk::Align::Center);
@@ -1632,7 +1986,13 @@ fn project_item(ui: &Ui, p: &ProjectSummary, edge: (bool, bool)) -> gtk::ListBox
         t.set_tooltip_text(b.tooltip_text().as_deref());
         end.append(&t);
     }
+    if !p.removed {
+        end.append(&importance_switch(ui, p));
+    }
     let last = w::label(&fmt::ago(p.last_at.as_deref()), &["num", "dim"]);
+    // One width for every row, so the importance choices line up down the list.
+    last.set_width_chars(11);
+    last.set_xalign(1.0);
     let id = p.id.clone();
     live_text(ui, View::Projects, &last, move |st| st.ov.as_ref()?.projects.iter().find(|x| x.id == id).map(|p| fmt::ago(p.last_at.as_deref())));
     end.append(&last);
@@ -1788,9 +2148,6 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
     head.append(&dot);
     let name = w::clip(&p.name, &["title-3"]);
     head.append(&name);
-    if let Some(t) = importance_tag(p) {
-        head.append(&t);
-    }
     if let Some(pause) = &p.paused {
         let pill = w::label(&format!("paused {}", fmt::short_when(Some(&pause.at))), &["pill", "paused"]);
         pill.set_tooltip_text(Some(&pause.note));
@@ -1870,6 +2227,9 @@ fn project_card(ui: &Ui, p: &ProjectSummary) -> gtk::FlowBoxChild {
         g.set_max_width_chars(1);
         g.set_hexpand(true);
         body.append(&g);
+        let imp = importance_switch(ui, p);
+        imp.set_margin_top(4);
+        body.append(&imp);
     }
     card.append(&body);
     let c = gtk::FlowBoxChild::new();

@@ -226,25 +226,86 @@ impl Writer {
     }
 }
 
-/// Read a JSON file; None if missing or invalid. Refuses forbidden names.
+/// The largest JSON file Wake reads.
+pub const JSON_CAP: u64 = 64 << 20;
+/// The largest single line of a transcript Wake reads; a longer one is skipped.
+pub const LINE_CAP: usize = 64 << 20;
+
+/// Read a JSON file; None if missing, invalid, not a regular file or over [`JSON_CAP`]. Refuses
+/// forbidden names.
 pub fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+    read_json_capped(path, JSON_CAP, false)
+}
+
+/// [`read_json`] with its own size cap; `no_follow` also refuses a symlink (for a file another
+/// program writes, such as the plugin's request). Never waits on a pipe.
+pub fn read_json_capped<T: for<'de> Deserialize<'de>>(path: &Path, cap: u64, no_follow: bool) -> Option<T> {
+    use std::io::Read;
     if is_forbidden(path) {
         return None;
     }
-    let bytes = fs::read(path).ok()?;
+    let flags = libc::O_NONBLOCK | if no_follow { libc::O_NOFOLLOW } else { 0 };
+    let f = fs::OpenOptions::new().read(true).custom_flags(flags).open(path).ok()?;
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    f.take(cap + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > cap {
+        return None;
+    }
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Each parsable JSON line of a file, streamed.
-pub fn iter_jsonl(path: &Path) -> impl Iterator<Item = Value> {
-    let reader = if is_forbidden(path) { None } else { fs::File::open(path).ok().map(BufReader::new) };
-    reader.into_iter().flat_map(|r| r.split(b'\n')).filter_map(|line| {
-        let line = line.ok()?;
-        let t = line.trim_ascii();
-        if t.is_empty() {
-            return None;
+/// The next line of `r` into `buf` (newline included), keeping at most `cap` bytes: a longer line
+/// is read past without being held whole. (bytes read, ended with a newline, was too long).
+pub fn read_line_capped(r: &mut impl BufRead, buf: &mut Vec<u8>, cap: usize) -> std::io::Result<(usize, bool, bool)> {
+    let (mut n, mut over) = (0, false);
+    loop {
+        let avail = match r.fill_buf() {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if avail.is_empty() {
+            return Ok((n, false, over));
         }
-        serde_json::from_slice(t).ok()
+        let (len, ended) = memchr::memchr(b'\n', avail).map_or((avail.len(), false), |i| (i + 1, true));
+        if !over && buf.len() + len > cap {
+            over = true;
+            *buf = Vec::new();
+        }
+        if !over {
+            buf.extend_from_slice(&avail[..len]);
+        }
+        r.consume(len);
+        n += len;
+        if ended {
+            return Ok((n, true, over));
+        }
+    }
+}
+
+/// Each parsable JSON line of a file, streamed (a line over [`LINE_CAP`] is skipped).
+pub fn iter_jsonl(path: &Path) -> impl Iterator<Item = Value> {
+    let mut reader = if is_forbidden(path) { None } else { fs::File::open(path).ok().map(BufReader::new) };
+    let mut buf = Vec::new();
+    std::iter::from_fn(move || {
+        let r = reader.as_mut()?;
+        loop {
+            buf.clear();
+            match read_line_capped(r, &mut buf, LINE_CAP) {
+                Ok((0, _, _)) | Err(_) => return None,
+                Ok((_, _, true)) => continue,
+                Ok(_) => {}
+            }
+            let t = buf.trim_ascii();
+            if !t.is_empty()
+                && let Ok(v) = serde_json::from_slice(t)
+            {
+                return Some(v);
+            }
+        }
     })
 }
 

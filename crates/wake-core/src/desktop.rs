@@ -35,44 +35,83 @@ const FORBIDDEN: &[&str] = &["\n", "\r", ";", "&&", "|", "`", "$("];
 /// 124 = timed out, 126 = could not start.
 pub type Runner = Arc<dyn Fn(&[String], Duration) -> (i32, String) + Send + Sync>;
 
-/// Spawn, collect output, and give up (killing only that child) after `timeout`. A program that is
-/// not installed is `ErrorKind::NotFound`, a timeout `ErrorKind::TimedOut` (never matched by text,
-/// which depends on the locale).
+/// Spawn in a process group of its own, collect output, and give up after `timeout`: then the whole
+/// group gets SIGTERM (so git can remove its lock files), and SIGKILL half a second later. Output
+/// is read only until the same deadline: a grandchild that keeps the pipe open (an ssh master, a
+/// daemon) is left to it, never waited for. A program that is not installed is
+/// `ErrorKind::NotFound`, a timeout `ErrorKind::TimedOut` (never matched by text, which depends on
+/// the locale).
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<(i32, String, String)> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    use std::os::unix::process::CommandExt;
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     let mut child = cmd.spawn()?;
-    let mut out = child.stdout.take();
-    let mut err = child.stderr.take();
-    let t_out = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        if let Some(o) = out.as_mut() {
-            let _ = o.take(16 * 1024 * 1024).read_to_end(&mut s);
-        }
-        s
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        if let Some(e) = err.as_mut() {
-            let _ = e.take(1024 * 1024).read_to_end(&mut s);
-        }
-        s
-    });
-    let start = Instant::now();
+    let deadline = Instant::now() + timeout;
+    // Each pipe is read in pieces as they come (an empty piece: the end), so what arrived before
+    // the deadline is kept even when the pipe never closes.
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
+    read_pipe(child.stdout.take(), true, 16 * 1024 * 1024, tx.clone());
+    read_pipe(child.stderr.take(), false, 1024 * 1024, tx);
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill(); // our own helper child, never an agent
-                let _ = child.wait();
+            Ok(None) if Instant::now() > deadline => {
+                end_group(&mut child); // our own helper and what it started, never an agent
                 return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
             Err(e) => return Err(e),
         }
     };
-    let o = String::from_utf8_lossy(&t_out.join().unwrap_or_default()).into_owned();
-    let e = String::from_utf8_lossy(&t_err.join().unwrap_or_default()).into_owned();
-    Ok((status.code().unwrap_or(1), o, e))
+    let (mut o, mut e, mut open) = (Vec::new(), Vec::new(), 2);
+    let stop = deadline.max(Instant::now() + Duration::from_millis(100));
+    while open > 0 {
+        let left = stop.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(left) {
+            Ok((_, v)) if v.is_empty() => open -= 1,
+            Ok((true, v)) => o.extend_from_slice(&v),
+            Ok((false, v)) => e.extend_from_slice(&v),
+            Err(_) => break,
+        }
+    }
+    Ok((status.code().unwrap_or(1), String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned()))
+}
+
+/// Reads `pipe` (at most `cap` bytes) on a thread of its own, sending each piece tagged `is_out`,
+/// then an empty piece at the end.
+fn read_pipe(pipe: Option<impl Read + Send + 'static>, is_out: bool, cap: u64, tx: std::sync::mpsc::Sender<(bool, Vec<u8>)>) {
+    std::thread::spawn(move || {
+        if let Some(p) = pipe {
+            let mut p = p.take(cap);
+            let mut buf = vec![0u8; 64 * 1024];
+            while let Ok(n @ 1..) = p.read(&mut buf) {
+                if tx.send((is_out, buf[..n].to_vec())).is_err() {
+                    return;
+                }
+            }
+        }
+        let _ = tx.send((is_out, Vec::new()));
+    });
+}
+
+/// SIGTERM to the process group `child` leads, SIGKILL to it half a second later if the child is
+/// still there, then reap the child.
+pub fn end_group(child: &mut std::process::Child) {
+    let group = child.id() as libc::pid_t;
+    // SAFETY: plain kill(2) on the group the child leads (spawned with process_group(0)); the child
+    // is not reaped yet, so its pid, and so the group id, can't have been reused.
+    unsafe { libc::kill(-group, libc::SIGTERM) };
+    for _ in 0..50 {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // SAFETY: as above; try_wait just said the child is still there.
+    unsafe { libc::kill(-group, libc::SIGKILL) };
+    let _ = child.wait();
 }
 
 /// A detached launch (`setsid -f …`, a new terminal window): only whether it started counts. Its
@@ -85,7 +124,11 @@ fn run_detached(mut cmd: Command, timeout: Duration) -> (i32, String) {
     loop {
         match child.try_wait() {
             Ok(Some(st)) => return (st.code().unwrap_or(1), String::new()),
-            Ok(None) if start.elapsed() > timeout => return (0, String::new()), // still starting: it is detached
+            Ok(None) if start.elapsed() > timeout => {
+                // Still starting: it is detached. Reaped whenever it ends, so it never lingers as a zombie.
+                std::thread::spawn(move || child.wait());
+                return (0, String::new());
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
             Err(_) => return (126, String::new()),
         }
@@ -397,7 +440,8 @@ pub fn entry_name(text: &str) -> Option<String> {
 /// person's `~/.local/bin` if that isn't in it. A terminal app from Flatpak runs commands on the
 /// host with a PATH of its own, so the command can't rely on inheriting Wake's.
 fn command_path() -> String {
-    let mut path = std::env::var("PATH").unwrap_or_default();
+    // An empty or relative entry would look in whatever folder the window starts in.
+    let mut path = std::env::var("PATH").unwrap_or_default().split(':').filter(|d| d.starts_with('/')).collect::<Vec<_>>().join(":");
     if let Some(home) = std::env::var_os("HOME") {
         let bin = PathBuf::from(home).join(".local/bin");
         let bin = bin.to_string_lossy();
@@ -538,6 +582,30 @@ pub(crate) mod tests {
         assert_eq!(app_name_in(&proc, 13, &dirs), None, "no entry for it: no name");
         assert_eq!(unescape_unit("org.my\\x2dterm"), "org.my-term");
         assert_eq!(entry_name("[Desktop Action x]\nName=No\n"), None);
+    }
+
+    #[test]
+    fn a_grandchild_holding_the_pipe_or_a_hung_child_never_holds_wake() {
+        // The child exits at once; what it left behind keeps its output pipe open for 30 s.
+        let t = Instant::now();
+        let mut c = Command::new("sh");
+        c.args(["-c", "sleep 30 & echo hi"]);
+        let (code, out, _) = run_with_timeout(c, Duration::from_millis(800)).unwrap();
+        assert_eq!((code, out.as_str()), (0, "hi\n"));
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        // A hung child: the group is ended at the deadline, the grandchild with it.
+        let mark = TmpDir::new("group");
+        let pidfile = mark.0.join("pid");
+        let mut c = Command::new("sh");
+        c.args(["-c", &format!("sleep 30 & echo $! > {}; wait", shell_quote(&pidfile.to_string_lossy()))]);
+        let t = Instant::now();
+        let e = run_with_timeout(c, Duration::from_millis(300)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        let pid: u32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let gone = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| s.contains(") Z "));
+        assert!(gone, "the grandchild was ended with its group");
     }
 
     #[test]

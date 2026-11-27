@@ -355,7 +355,7 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
             // Claude's own recap, when it came after the person last wrote.
             let recap = acc.filter(|a| a.away_at.as_deref().unwrap_or("") >= u_at).and_then(|a| a.away_summary.as_deref());
             let asked = if closing && index::ends_with_question(text) {
-                text.map(|t| (question_text(t), "asked a question", t_at))
+                text.map(|t| (question_text(index::without_trailing_code(t)), "asked a question", t_at))
             } else if let Some(d) = text.filter(|_| closing).and_then(asks_decision) {
                 Some((d, "asked you to decide", t_at))
             } else {

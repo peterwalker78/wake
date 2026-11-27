@@ -138,8 +138,6 @@ impl Look {
         let Some(loc) = loc else {
             return fail("This agent has no window; showing a preview.", vec![]);
         };
-        self.end_monitor();
-        *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let mut steps: Vec<String> = Vec::new();
         match kind {
             LookKind::Slipstream => {
@@ -150,6 +148,7 @@ impl Look {
                 if dry_run {
                     return ActionResult { ok: true, message: "Dry run.".into(), steps };
                 }
+                self.forget_last_look();
                 let (code, out) = (self.run)(&start, TIMEOUT);
                 let (ok, message) = parse_start_reply(&out);
                 if code != 0 || !ok {
@@ -171,6 +170,7 @@ impl Look {
                 if dry_run {
                     return ActionResult { ok: true, message: "Dry run.".into(), steps };
                 }
+                self.forget_last_look();
                 let (code, desk) = (self.run)(&current, TIMEOUT);
                 let desk = desk.trim().to_string();
                 if code != 0 || !util_id_ok(&desk) {
@@ -277,7 +277,17 @@ impl Look {
 
     /// Some(stayed) once Slipstream has ended the look by itself; taken (cleared) by reading.
     pub fn ended(&self) -> Option<bool> {
-        self.ended.lock().unwrap_or_else(|e| e.into_inner()).take()
+        let e = self.ended.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if e.is_some() {
+            self.end_monitor(); // its job is done: stop it and reap it
+        }
+        e
+    }
+
+    /// Before a real look starts: the earlier look's watch stopped and its answer dropped.
+    fn forget_last_look(&self) {
+        self.end_monitor();
+        *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     fn recheck_if_gone(&self, code: i32) {
@@ -629,7 +639,11 @@ mod tests {
             (0, String::new())
         });
         let look = Look::new(r, "Slipstream", std::env::temp_dir(), 99, false);
+        // A dry run leaves a real look's state alone.
+        *look.ended.lock().unwrap() = Some(true);
         let dry = look.start(Some(&loc()), true);
+        assert_eq!(look.ended(), Some(true), "a dry run touched the real look");
+        assert_eq!(look.ended(), None, "read once");
         assert!(dry.ok);
         assert_eq!(dry.steps.len(), 1, "straight to the window: nothing to pick first");
         assert!(dry.steps[0].ends_with("--method io.github.peterwalker78.Slipstream.Look.Start 3264"), "{}", dry.steps[0]);

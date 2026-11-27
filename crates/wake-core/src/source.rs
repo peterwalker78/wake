@@ -85,7 +85,8 @@ struct Inner {
     side_error: Mutex<Option<String>>,
     stop: AtomicBool,
     background: AtomicBool,
-    plugin: Mutex<(Option<Instant>, Option<f64>)>,
+    /// (last card written, the request file's mtime last seen, last jump made for a request)
+    plugin: Mutex<(Option<Instant>, Option<f64>, Option<Instant>)>,
     /// Runs read-only commands for `screen` (`claude logs`).
     runner: Runner,
     look: Look,
@@ -173,7 +174,7 @@ impl Live {
                 side_error: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 background: AtomicBool::new(false),
-                plugin: Mutex::new((None, None)),
+                plugin: Mutex::new((None, None, None)),
                 questions,
                 remote: Mutex::new(RemoteState::default()),
                 notifier: Mutex::new(remote::runner_notifier(cfg.runner.clone())),
@@ -264,20 +265,20 @@ impl Live {
             disk::lower_priority();
             let measured = lock(&d.disk).report.as_ref().and_then(|r| r.measured_at.as_deref().and_then(util::parse_iso));
             // A measurement under an hour old (from disk.json) waits for its hour; else start soon,
-            // after Wake's own start-up work.
-            let mut next_full = Instant::now()
-                + match measured {
-                    Some(t) if util::now() - t < disk::EVERY.as_secs_f64() => Duration::from_secs_f64(disk::EVERY.as_secs_f64() - (util::now() - t)),
-                    _ => Duration::from_secs(20),
-                };
+            // after Wake's own start-up work. Wall-clock seconds, so a suspend counts as time gone.
+            let every = disk::EVERY.as_secs_f64();
+            let mut next_full = match measured {
+                Some(t) if util::now() - t < every => t + every,
+                _ => util::now() + 20.0,
+            };
             while !d.stop.load(Ordering::SeqCst) {
                 let asked = std::mem::take(&mut lock(&d.disk).asked);
-                let full = Instant::now() >= next_full || asked.iter().any(|a| a.is_empty());
+                let full = util::now() >= next_full || asked.iter().any(|a| a.is_empty());
                 if full {
                     if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.measure_disk(None))) {
                         log::note_error(&d.paths, "Measuring the disk", &panic_text(&e));
                     }
-                    next_full = Instant::now() + disk::EVERY;
+                    next_full = util::now() + every;
                 } else {
                     for p in asked {
                         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.measure_disk(Some(&p)))) {
@@ -285,7 +286,7 @@ impl Live {
                         }
                     }
                 }
-                while !d.stop.load(Ordering::SeqCst) && Instant::now() < next_full && lock(&d.disk).asked.is_empty() {
+                while !d.stop.load(Ordering::SeqCst) && util::now() < next_full && lock(&d.disk).asked.is_empty() {
                     std::thread::sleep(Duration::from_millis(500));
                 }
             }
@@ -406,8 +407,11 @@ impl Live {
         self.inner.store.writer.write_json(&self.inner.paths.data.join("card").join("card.json"), &card).map_err(|e| e.0)
     }
 
+    /// The plugin asks to jump to a session. Only a live session on the card Wake wrote, at most
+    /// one jump every 3 s, and never a reopen: anyone who can write the request file gets no more
+    /// than the plugin's own button.
     fn card_request(&self, req_path: &Path, dry_run: bool) -> Option<ActionResult> {
-        let req: Value = store::read_json(req_path).unwrap_or(Value::Null);
+        let req: Value = store::read_json_capped(req_path, 64 * 1024, true).unwrap_or(Value::Null);
         let rid = match req.get("id") {
             Some(Value::String(s)) => s.clone(),
             Some(Value::Number(n)) => n.to_string(),
@@ -415,16 +419,29 @@ impl Live {
         };
         let done = self.inner.paths.data.join("card").join("last-request");
         let last = std::fs::read_to_string(&done).unwrap_or_default();
-        if rid.is_empty() || rid == last.trim() || req.get("action").and_then(Value::as_str) != Some("jump") {
+        if rid.is_empty() || rid.len() > 128 || rid == last.trim() || req.get("action").and_then(Value::as_str) != Some("jump") {
             return None;
         }
         let _ = self.inner.store.writer.write_atomic(&done, rid.as_bytes());
         let at = req.get("at").and_then(Value::as_str).and_then(util::parse_iso)?;
-        if util::now() - at > 30.0 {
+        let age = util::now() - at;
+        if !(-5.0..=30.0).contains(&age) {
             return None;
         }
         let session = req.get("session").and_then(Value::as_str)?;
-        Some(self.go_to(session, dry_run))
+        let card: Value = store::read_json(&self.inner.paths.data.join("card").join("card.json"))?;
+        let on_card = card.get("sessions").and_then(Value::as_array).is_some_and(|rows| rows.iter().any(|r| r.get("id").and_then(Value::as_str) == Some(session)));
+        if !on_card || !self.inner.live().get(session).is_some_and(|i| i.alive) {
+            return None;
+        }
+        {
+            let mut g = lock(&self.inner.plugin);
+            if g.2.is_some_and(|t| t.elapsed() < Duration::from_secs(3)) {
+                return None;
+            }
+            g.2 = Some(Instant::now());
+        }
+        Some(self.go_to_logged(session, dry_run, false))
     }
 }
 
@@ -661,7 +678,10 @@ impl Inner {
                 }
                 // Settings may turn the schedule off; an explicit ask still goes through.
                 let every = lock(&self.opts).remote_every;
-                let due = every.is_some_and(|every| lock(&self.remote).checks.get(&r.state.path).is_none_or(|c| c.at.elapsed() >= every));
+                // By the wall clock too (when the last answer came), which keeps running through a
+                // suspend; an Instant doesn't.
+                let old = |c: &RepoCheck, every: Duration| c.at.elapsed() >= every || c.asked_at.as_deref().and_then(util::parse_iso).is_some_and(|t| util::now() - t >= every.as_secs_f64());
+                let due = every.is_some_and(|every| lock(&self.remote).checks.get(&r.state.path).is_none_or(|c| old(c, every)));
                 if due || wanted {
                     let c = remote::check_repo(&r.state.path);
                     lock(&self.remote).checks.insert(r.state.path.clone(), c);
@@ -1109,14 +1129,7 @@ impl Source for Live {
     }
 
     fn go_to(&self, session: &str, dry_run: bool) -> ActionResult {
-        let (r, what, target) = self.go_to_steps(session, dry_run);
-        if !dry_run {
-            // Titles can be prompt text: the log gets the session's short id instead.
-            let i = &self.inner;
-            let title = i.title_for(session, i.live().get(session), &i.store.load_projects());
-            log::record_action(&i.paths, what, &target, r.ok, &without(&r.message, &title), &r.steps);
-        }
-        r
+        self.go_to_logged(session, dry_run, true)
     }
 
     fn processes(&self) -> ProcOverview {
@@ -1469,7 +1482,20 @@ impl Live {
     }
 
     /// Go to a session; also says what that was (go to / reopen) and to what, for Wake's log.
-    fn go_to_steps(&self, session: &str, dry_run: bool) -> (ActionResult, &'static str, String) {
+    /// Go to a session and log it; `may_reopen` false (the plugin's request) never starts an
+    /// ended one again.
+    fn go_to_logged(&self, session: &str, dry_run: bool, may_reopen: bool) -> ActionResult {
+        let (r, what, target) = self.go_to_steps(session, dry_run, may_reopen);
+        if !dry_run {
+            // Titles can be prompt text: the log gets the session's short id instead.
+            let i = &self.inner;
+            let title = i.title_for(session, i.live().get(session), &i.store.load_projects());
+            log::record_action(&i.paths, what, &target, r.ok, &without(&r.message, &title), &r.steps);
+        }
+        r
+    }
+
+    fn go_to_steps(&self, session: &str, dry_run: bool, may_reopen: bool) -> (ActionResult, &'static str, String) {
         let i = &self.inner;
         let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
         if session.is_empty() {
@@ -1509,6 +1535,9 @@ impl Live {
                 ActionResult { ok: false, message: format!("{title} is in {window}. This desktop doesn't let Wake bring it forward, so switch to it yourself."), steps: b.steps }
             };
             return (r, "go to", target);
+        }
+        if !may_reopen {
+            return (fail("That session has ended."), "go to", format!("session {}", short_id(session)));
         }
         let Some(acc) = acc else {
             return (fail("No session with that id."), "reopen", format!("session {session}"));
@@ -2043,6 +2072,8 @@ mod tests {
         let env = Env::new();
         let bus = FakeBus::new();
         let (l, _, _fp) = make(&env, &bus);
+        // A live background session: on the card, and a jump opens a window attached to it.
+        write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01"}));
         assert!(l.plugin_tick(true).is_none());
         let card: Value = store::read_json(&env.paths.data.join("card/card.json")).unwrap();
         for k in ["working", "waiting", "idle", "ideas", "top", "sessions", "updatedAt"] {
@@ -2050,14 +2081,31 @@ mod tests {
         }
         fs::create_dir_all(&env.paths.plugin_state).unwrap();
         let req = env.paths.plugin_state.join("request.json");
-        fs::write(&req, serde_json::json!({"id": "r1", "action": "jump", "session": "sess-aaaa", "at": util::now_iso()}).to_string()).unwrap();
+        let ask = |id: &str, session: &str, at: &str| fs::write(&req, serde_json::json!({"id": id, "action": "jump", "session": session, "at": at}).to_string()).unwrap();
+        // An ended session is never reopened for the plugin.
+        ask("r0", "sess-bbbb", &util::now_iso());
+        assert!(l.plugin_tick(true).is_none());
+        ask("r1", "sess-aaaa", &util::now_iso());
         let r = l.plugin_tick(true).expect("acted on the request");
         assert!(r.ok && r.message.starts_with("Dry run."), "{r:?}");
         assert_eq!(fs::read_to_string(env.paths.data.join("card/last-request")).unwrap(), "r1");
-        // the same request again (touched) is ignored; an old one is recorded but not acted on
-        fs::write(&req, serde_json::json!({"id": "r1", "action": "jump", "session": "sess-aaaa", "at": util::now_iso()}).to_string() + " ").unwrap();
+        // At most one jump every 3 s.
+        ask("r1b", "sess-aaaa", &util::now_iso());
         assert!(l.plugin_tick(true).is_none());
-        fs::write(&req, serde_json::json!({"id": "r2", "action": "jump", "session": "sess-aaaa", "at": "2020-01-01T00:00:00Z"}).to_string()).unwrap();
+        lock(&l.inner.plugin).2 = None;
+        // the same request again (touched) is ignored; an old one or one from the future is
+        // recorded but not acted on
+        fs::write(&req, serde_json::json!({"id": "r1b", "action": "jump", "session": "sess-aaaa", "at": util::now_iso()}).to_string() + " ").unwrap();
+        assert!(l.plugin_tick(true).is_none());
+        ask("r2", "sess-aaaa", "2020-01-01T00:00:00Z");
+        assert!(l.plugin_tick(true).is_none());
+        ask("r3", "sess-aaaa", &util::iso_from_epoch(util::now() + 60.0));
+        assert!(l.plugin_tick(true).is_none());
+        // A request that is a symlink is never read.
+        let real = env.paths.plugin_state.join("elsewhere.json");
+        fs::write(&real, serde_json::json!({"id": "r4", "action": "jump", "session": "sess-aaaa", "at": util::now_iso()}).to_string()).unwrap();
+        fs::remove_file(&req).unwrap();
+        std::os::unix::fs::symlink(&real, &req).unwrap();
         assert!(l.plugin_tick(true).is_none());
         assert!(bus.writes().is_empty());
     }

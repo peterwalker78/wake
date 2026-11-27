@@ -37,7 +37,8 @@ pub const PULL: &str = "git pull --ff-only";
 /// Environment for talking to a remote: never prompt, never pop up a password dialog.
 pub const NET_ENV: [(&str, &str); 6] = [
     ("GIT_TERMINAL_PROMPT", "0"),
-    ("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=8"),
+    // No shared connection: an ssh master left behind would hold the output pipe open.
+    ("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=8 -o ControlMaster=no -o ControlPath=none"),
     ("GIT_ASKPASS", "/bin/false"),
     ("SSH_ASKPASS", "/bin/false"),
     ("SSH_ASKPASS_REQUIRE", "never"),
@@ -137,6 +138,11 @@ fn host(p: &Path, remote: &str) -> String {
     host_of_url(&gitinfo::git(p, &["ls-remote", "--get-url", remote]).unwrap_or_default())
 }
 
+/// A full commit id: 40 hex characters (SHA-1) or 64 (SHA-256).
+fn is_sha(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// "GitHub" for a github.com URL, "GitLab", "Codeberg", else "the remote".
 pub fn host_of_url(url: &str) -> String {
     let url = url.to_lowercase();
@@ -199,10 +205,15 @@ pub fn check_repo(path: &str) -> RepoCheck {
     let mut c = RepoCheck { path: path.into(), upstream: String::new(), host: "the remote".into(), outcome: Outcome::NoUpstream, remote_sha: None, problem: None, asked_at: None, at: Instant::now() };
     let Some(t) = tracking(p) else { return c };
     c.upstream = t.short.clone();
-    c.host = host(p, &t.remote);
-    let asked = gitinfo::git_code(p, &["ls-remote", &t.remote, &t.remote_ref], &NET_ENV, NET_TIMEOUT);
+    let url = gitinfo::git(p, &["ls-remote", "--get-url", &t.remote]).unwrap_or_default().trim().to_string();
+    c.host = host_of_url(&url);
+    // Asked by address from outside the repo, so nothing in the repo's own config (a credential
+    // helper, an upload-pack or proxy command, put there by whoever made it) runs in the background.
+    let url = if url.starts_with('.') { p.join(&url).to_string_lossy().into_owned() } else { url };
+    let asked = if url.is_empty() { Err(GitError("no address for the remote".into())) } else { gitinfo::git_code(Path::new("/"), &["ls-remote", &url, &t.remote_ref], &NET_ENV, NET_TIMEOUT) };
     match asked {
         Ok((0, out, _)) => match out.lines().find_map(|l| l.split_once('\t').filter(|(_, r)| *r == t.remote_ref).map(|(s, _)| s.trim().to_string())) {
+            Some(sha) if !is_sha(&sha) => c.problem = Some(format!("{} gave an answer Wake can't read", c.host)),
             Some(sha) => {
                 c.remote_sha = Some(sha);
                 c.asked_at = Some(util::now_iso());
@@ -429,7 +440,14 @@ pub fn notify_argv(n: &Notice) -> Vec<String> {
     ]
     .iter()
     .map(|s| s.to_string())
-    .chain([util::gvariant_str_quote(&n.summary), util::gvariant_str_quote(&n.body), "@as []".into(), "{'urgency': <byte 2>}".into(), "0".into()])
+    // The body may be read as markup (the summary never is): a project named "R&D" stays as written.
+    .chain([
+        util::gvariant_str_quote(&n.summary),
+        util::gvariant_str_quote(&n.body.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")),
+        "@as []".into(),
+        "{'urgency': <byte 2>}".into(),
+        "0".into(),
+    ])
     .collect()
 }
 
@@ -611,6 +629,11 @@ pub(crate) mod tests {
         assert_eq!(c.upstream, "origin/main");
         assert!(c.asked_at.is_some());
         assert_eq!(c.host, "the remote");
+        // A command in the repo's own config never runs for the background check.
+        let mark = t.s.0.join("ran");
+        g(&t.here, &["config", "remote.origin.uploadpack", &format!("touch {}; git-upload-pack", mark.display())]);
+        assert_eq!(check_repo(&s(&t.here)).outcome, Outcome::InStep { ahead: 0 });
+        assert!(!mark.exists());
     }
 
     #[test]
@@ -808,6 +831,16 @@ pub(crate) mod tests {
         assert_eq!(a[12], "'It\\'s behind'");
         assert_eq!(a[13], "'a\\\\b'");
         assert_eq!(a[15], "{'urgency': <byte 2>}");
+        let a = notify_argv(&Notice { project: "p".into(), summary: "R&D".into(), body: "R&D <b>".into() });
+        assert_eq!((a[12].as_str(), a[13].as_str()), ("'R&D'", "'R&amp;D &lt;b&gt;'"));
+    }
+
+    #[test]
+    fn only_a_full_commit_id_counts() {
+        assert!(is_sha(&"a".repeat(40)) && is_sha(&"0".repeat(64)));
+        for bad in ["", "abc", &"g".repeat(40), &"a".repeat(41), "--upload-pack=x"] {
+            assert!(!is_sha(bad), "{bad}");
+        }
     }
 
     #[test]

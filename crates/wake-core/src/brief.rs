@@ -89,7 +89,7 @@ fn path_ok(p: &str) -> bool {
 /// The command typed into the tab, or None when the path can't be typed safely.
 pub fn command(agent: Agent, path: &Path) -> Option<String> {
     let p = path.to_str().filter(|p| path_ok(p))?;
-    Some(format!("{} \"$(cat '{p}')\"", agent.id()))
+    Some(format!("{} -- \"$(cat '{p}')\"", agent.id()))
 }
 
 /// None when `cmd` is exactly the command Wake types for a brief in `briefs` (one of the agents,
@@ -98,7 +98,7 @@ pub fn check_command(cmd: &str, briefs: &Path) -> Option<String> {
     let refuse = || Some("Refused to type this command: it isn't Wake's command for a brief.".to_string());
     let Some((prog, rest)) = cmd.split_once(' ') else { return refuse() };
     let Some(agent) = Agent::from_id(prog) else { return refuse() };
-    let Some(path) = rest.strip_prefix("\"$(cat '").and_then(|r| r.strip_suffix("')\"")) else { return refuse() };
+    let Some(path) = rest.strip_prefix("-- \"$(cat '").and_then(|r| r.strip_suffix("')\"")) else { return refuse() };
     let p = Path::new(path);
     let in_briefs = p.parent() == Some(briefs);
     let id_named = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".md")).is_some_and(id_ok);
@@ -137,7 +137,7 @@ mod tests {
         let briefs = Path::new("/home/me/.local/share/wake/briefs");
         let p = briefs.join("b0123456789ab.md");
         let c = command(Agent::Claude, &p).unwrap();
-        assert_eq!(c, "claude \"$(cat '/home/me/.local/share/wake/briefs/b0123456789ab.md')\"");
+        assert_eq!(c, "claude -- \"$(cat '/home/me/.local/share/wake/briefs/b0123456789ab.md')\"");
         assert_eq!(check_command(&c, briefs), None);
         assert_eq!(check_command(&command(Agent::Codex, &p).unwrap(), briefs), None);
         for bad in [
@@ -169,9 +169,9 @@ mod tests {
         let typed = command(Agent::Claude, &p).unwrap();
         assert_eq!(check_command(&typed, &dir.join("briefs")), None);
         // A shell function stands in for claude; $# proves the brief is one argument.
-        let script = format!("f() {{ printf '%s|%s' \"$#\" \"$1\"; }}; {}", typed.replacen("claude", "f", 1));
+        let script = format!("f() {{ printf '%s|%s|%s' \"$#\" \"$1\" \"$2\"; }}; {}", typed.replacen("claude", "f", 1));
         let out = std::process::Command::new("bash").arg("-c").arg(&script).output().unwrap();
-        assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("1|{text}"));
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("2|--|{text}"));
         assert!(!Path::new("/tmp/pwned-wake").exists());
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);

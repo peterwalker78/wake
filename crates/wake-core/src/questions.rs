@@ -6,7 +6,8 @@
 //! One question runs at a time (each claude process holds about 0.5 GB); others
 //! wait in a queue. Claude may only search and read: "just a question" runs in
 //! `<data>/questions/` with WebSearch and WebFetch; a project question runs in the project's folder
-//! with read-only tools added. Nothing that changes files is ever allowed.
+//! with reading inside that folder and WebSearch (no WebFetch). Nothing that changes files is ever
+//! allowed, only the person's own settings load (`--setting-sources user`) and no hooks run.
 //!
 //! Store: `<data>/questions/threads/<id>.json`, one file per thread, written atomically; a file that
 //! can't be understood is moved aside (`<id>.json.broken-<time>`), never overwritten.
@@ -34,6 +35,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -45,8 +47,15 @@ use crate::util;
 
 /// Tools for "just a question".
 pub const JUST_TOOLS: &str = "WebSearch,WebFetch";
-/// Tools for a question about a project: reading and searching only.
-pub const PROJECT_TOOLS: &str = "Read,Grep,Glob,WebSearch,WebFetch";
+/// Tools for a question about a project: reading and searching only. No WebFetch: what it reads
+/// in the project must not be able to send anything out.
+pub const PROJECT_TOOLS: &str = "Read,Grep,Glob,WebSearch";
+/// Allowed without asking in a project question: reading inside the question's folder only (a
+/// path rule; Claude applies Read rules to Grep and Glob too). Reading elsewhere would need a
+/// permission no one is there to give.
+pub const PROJECT_ALLOWED: &str = "Read(./**),WebSearch";
+/// Settings for every question: none of the person's or the project's hooks run.
+const QUESTION_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
 /// Denied whatever else a settings file may allow.
 pub const DENIED_TOOLS: &str = "Edit,Write,Bash,NotebookEdit";
 /// Added to Claude's system prompt for every question.
@@ -377,16 +386,17 @@ pub fn plain_error_for(ai: Ai, raw: &str) -> String {
 /// The arguments for one question. `resume` continues `session`; otherwise a new conversation
 /// starts under that id (so Wake knows it before Claude writes anything).
 pub fn claude_args(session: &str, resume: bool, project: bool) -> Vec<String> {
-    let tools = if project { PROJECT_TOOLS } else { JUST_TOOLS };
+    let (tools, allowed) = if project { (PROJECT_TOOLS, PROJECT_ALLOWED) } else { (JUST_TOOLS, JUST_TOOLS) };
     let mut a: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].map(String::from).to_vec();
     a.push(if resume { "--resume".into() } else { "--session-id".into() });
     a.push(session.into());
-    for (flag, v) in [("--tools", tools), ("--allowedTools", tools), ("--disallowedTools", DENIED_TOOLS)] {
+    for (flag, v) in [("--tools", tools), ("--allowedTools", allowed), ("--disallowedTools", DENIED_TOOLS)] {
         a.push(flag.into());
         a.push(v.into());
     }
-    // Nothing may ask for permission (no one is there to answer); no MCP servers (they could act).
-    a.extend(["--permission-prompts", "none", "--strict-mcp-config", "--append-system-prompt", SYSTEM_NOTE].map(String::from));
+    // Nothing may ask for permission (no one is there to answer); no MCP servers (they could act);
+    // only the person's own settings, never the project's, and no hooks at all.
+    a.extend(["--permission-prompts", "none", "--strict-mcp-config", "--setting-sources", "user", "--settings", QUESTION_SETTINGS, "--append-system-prompt", SYSTEM_NOTE].map(String::from));
     a
 }
 
@@ -427,7 +437,8 @@ pub fn codex_args(resume: Option<&str>) -> Vec<String> {
 /// The arguments for one question to Gemini: headless, streaming JSON, plan (read-only) mode and
 /// Wake's admin policy; the question comes on stdin and `-p` adds Wake's note after it.
 pub fn gemini_args(session: &str, resume: bool, policy: &Path) -> Vec<String> {
-    let mut a: Vec<String> = ["--output-format", "stream-json", "--approval-mode", "plan", "--admin-policy"].map(String::from).to_vec();
+    // No MCP server and no extension starts: a project's own config could name any command.
+    let mut a: Vec<String> = ["--output-format", "stream-json", "--approval-mode", "plan", "--allowed-mcp-server-names", "none", "--extensions", "none", "--admin-policy"].map(String::from).to_vec();
     a.push(policy.to_string_lossy().into_owned());
     a.push(if resume { "--resume".into() } else { "--session-id".into() });
     a.push(session.into());
@@ -679,7 +690,12 @@ struct Shared {
     dirs: Vec<String>,
     st: Mutex<St>,
     cv: Condvar,
+    /// An answer with no output for this long is stopped ([`IDLE_LIMIT`]; shorter in tests).
+    idle_limit: Mutex<Duration>,
 }
+
+/// A running answer that prints nothing for this long has stalled: Wake stops it.
+pub const IDLE_LIMIT: Duration = Duration::from_secs(600);
 
 /// The questions engine: threads in memory, the queue, and the one worker that runs claude.
 /// Cheap to clone. Nothing starts until the first question.
@@ -749,7 +765,9 @@ impl Questions {
             }
         }
         let tools = Mutex::new(HashMap::from([(Ai::Claude, claude)]));
-        Questions { sh: Arc::new(Shared { store, tools, current: Mutex::new(Ai::Claude), dirs, st: Mutex::new(St { seq: 1, ..St::default() }), cv: Condvar::new() }) }
+        Questions {
+            sh: Arc::new(Shared { store, tools, current: Mutex::new(Ai::Claude), dirs, st: Mutex::new(St { seq: 1, ..St::default() }), cv: Condvar::new(), idle_limit: Mutex::new(IDLE_LIMIT) }),
+        }
     }
 
     /// Use `program` for `ai` (Live sets the installed ones; tests a fake).
@@ -1131,7 +1149,9 @@ impl Questions {
             .stderr(Stdio::piped())
             // Started from inside a Claude Code session, claude would refuse to nest.
             .env_remove("CLAUDECODE")
-            .env_remove("CLAUDE_CODE_ENTRYPOINT");
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
+            // Its own process group, so a stop reaches whatever it started too.
+            .process_group(0);
         if ai == Ai::Gemini {
             // Signed out, gemini would open a browser to sign in (and read the question as the
             // answer to "continue?"); this way it only prints a link and fails, which Wake reports.
@@ -1196,6 +1216,25 @@ impl Questions {
                 })
                 .ok()
         });
+        // A stalled answer (nothing printed for the idle limit) is stopped as the Stop button would.
+        let quiet_since = Arc::new(Mutex::new(std::time::Instant::now()));
+        let finished = Arc::new(AtomicBool::new(false));
+        let stalled = Arc::new(AtomicBool::new(false));
+        {
+            let (quiet, done, stall, c) = (quiet_since.clone(), finished.clone(), stalled.clone(), child.clone());
+            let limit = *self.sh.idle_limit.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = std::thread::Builder::new().name("wake-question-watch".into()).spawn(move || {
+                let tick = (limit / 10).min(Duration::from_secs(5));
+                while !done.load(Ordering::SeqCst) {
+                    std::thread::sleep(tick);
+                    if quiet.lock().unwrap_or_else(|e| e.into_inner()).elapsed() > limit && !done.load(Ordering::SeqCst) {
+                        stall.store(true, Ordering::SeqCst);
+                        stop_child(c);
+                        return;
+                    }
+                }
+            });
+        }
         if let Some(out) = stdout {
             let mut r = BufReader::new(out);
             let mut line = Vec::new();
@@ -1203,7 +1242,7 @@ impl Questions {
                 line.clear();
                 match r.read_until(b'\n', &mut line) {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => {}
+                    Ok(_) => *quiet_since.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now(),
                 }
                 let ev = parse_line_for(ai, &String::from_utf8_lossy(&line));
                 if ev == Event::Other {
@@ -1240,6 +1279,7 @@ impl Questions {
                 Err(_) => break None,
             }
         };
+        finished.store(true, Ordering::SeqCst);
         if let Some(h) = err_reader {
             let _ = h.join();
         }
@@ -1248,6 +1288,7 @@ impl Questions {
             None => {
                 let err = err_text.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 match status {
+                    _ if stalled.load(Ordering::SeqCst) => Err(format!("{} went quiet for too long, so Wake stopped it.", ai.name())),
                     Some(s) if s.success() && !ans.text.trim().is_empty() => Ok(()),
                     Some(s) if s.success() => Err(format!("{} ended without an answer.", ai.name())),
                     _ if !err.trim().is_empty() => Err(plain_error_for(ai, &err)),
@@ -1261,17 +1302,18 @@ impl Questions {
     }
 }
 
-/// SIGTERM to the child Wake spawned (through its handle, so never a reused pid), then SIGKILL
-/// if it is still there three seconds later.
+/// SIGTERM to the child Wake spawned and its process group (through its handle, so never a reused
+/// pid), then SIGKILL if it is still there three seconds later.
 fn stop_child(child: Arc<Mutex<Child>>) {
     let _ = std::thread::Builder::new().name("wake-question-stop".into()).spawn(move || {
         {
             let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
             if matches!(c.try_wait(), Ok(None)) {
                 // SAFETY: the child is not yet reaped (try_wait said so, under the lock the reaper
-                // also takes), so its pid is still this process.
+                // also takes), so its pid, which is also its group's id (process_group(0)), is
+                // still this process's.
                 unsafe {
-                    libc::kill(c.id() as libc::pid_t, libc::SIGTERM);
+                    libc::kill(-(c.id() as libc::pid_t), libc::SIGTERM);
                 }
             }
         }
@@ -1283,7 +1325,10 @@ fn stop_child(child: Arc<Mutex<Child>>) {
         }
         let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(c.try_wait(), Ok(None)) {
-            let _ = c.kill();
+            // SAFETY: as above, under the same lock.
+            unsafe {
+                libc::kill(-(c.id() as libc::pid_t), libc::SIGKILL);
+            }
         }
     });
 }
@@ -1383,9 +1428,16 @@ mod tests {
         let p = claude_args("sid", true, true);
         assert_eq!(p[5..7], ["--resume".to_string(), "sid".to_string()]);
         let after = |f: &str| p.iter().position(|x| x == f).map(|i| p[i + 1].clone()).unwrap();
-        assert_eq!(after("--tools"), "Read,Grep,Glob,WebSearch,WebFetch");
-        for bad in ["Edit", "Write", "Bash", "NotebookEdit"] {
+        assert_eq!(after("--tools"), "Read,Grep,Glob,WebSearch");
+        assert_eq!(after("--allowedTools"), "Read(./**),WebSearch", "reading only inside the project");
+        for bad in ["Edit", "Write", "Bash", "NotebookEdit", "WebFetch", "Read"] {
             assert!(!after("--allowedTools").split(',').any(|t| t == bad));
+        }
+        // Only the person's settings, and no hooks, for either kind.
+        for v in [&a, &p] {
+            let after = |f: &str| v.iter().position(|x| x == f).map(|i| v[i + 1].clone()).unwrap();
+            assert_eq!(after("--setting-sources"), "user");
+            assert_eq!(serde_json::from_str::<Value>(&after("--settings")).unwrap()["disableAllHooks"], true);
         }
     }
 
@@ -1625,6 +1677,18 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
     }
 
     #[test]
+    fn an_answer_that_goes_quiet_is_stopped() {
+        let env = Env::new();
+        let q = Questions::new(&env.paths, fake_claude(&env, &format!("cat > /dev/null; echo '{START}'; exec sleep 30")));
+        *q.sh.idle_limit.lock().unwrap() = Duration::from_millis(500);
+        let started = Instant::now();
+        q.ask(None, "hello?", just(&q)).unwrap();
+        let s = wait_idle(&q);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert_eq!(s.threads[0].turns[0].error.as_deref(), Some("Claude went quiet for too long, so Wake stopped it."));
+    }
+
+    #[test]
     fn a_missing_claude_is_a_plain_note_and_an_interrupted_answer_says_so() {
         let env = Env::new();
         let q = Questions::new(&env.paths, env.root.join("no-such-claude"));
@@ -1768,6 +1832,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
         assert_eq!(after(&g, "--output-format"), "stream-json");
         assert_eq!(after(&g, "--session-id"), "sid");
         assert!(!g.iter().any(|x| x == "--yolo" || x == "-y" || x == "auto_edit"));
+        assert_eq!((after(&g, "--allowed-mcp-server-names"), after(&g, "--extensions")), ("none".into(), "none".into()));
         assert_eq!(after(&gemini_args("sid", true, Path::new("/p")), "--resume"), "sid");
         // the policy denies everything, then allows reading and searching only
         let t: toml::Table = GEMINI_POLICY.parse().unwrap();

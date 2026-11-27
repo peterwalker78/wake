@@ -321,8 +321,21 @@ pub fn clean_prompt(content: &Value) -> Option<String> {
 
 pub fn ends_with_question(text: Option<&str>) -> bool {
     let Some(t) = text else { return false };
-    let t = t.trim_end().trim_end_matches(['*', '_', '`', ')', '"', '\'', ' ', '\n']);
+    let t = without_trailing_code(t).trim_end_matches(['*', '_', '`', ')', '"', '\'', ' ', '\n']);
     t.ends_with('?')
+}
+
+/// `text` without a fenced code block at its very end (code ending in `?` is not a question).
+pub fn without_trailing_code(text: &str) -> &str {
+    let t = text.trim_end();
+    let Some(body) = t.strip_suffix("```") else { return t };
+    if !body.is_empty() && !body.ends_with('\n') {
+        return t; // a fence closes on a line of its own
+    }
+    match body.trim_end_matches('\n').rfind("```") {
+        Some(open) if open == 0 || body[..open].ends_with('\n') => body[..open].trim_end(),
+        _ => t,
+    }
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
@@ -695,11 +708,14 @@ pub fn scan_file(path: &Path, acc: &mut Acc, offset: u64, line_fn: LineFn) -> st
     let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
     loop {
         buf.clear();
-        let n = r.read_until(b'\n', &mut buf)?;
-        if n == 0 || buf.last() != Some(&b'\n') {
+        let (n, ended, too_long) = store::read_line_capped(&mut r, &mut buf, store::LINE_CAP)?;
+        if n == 0 || !ended {
             break;
         }
         pos += n as u64;
+        if too_long {
+            continue; // one giant line (a pasted file, say) is skipped, never held whole
+        }
         let line = buf.trim_ascii();
         if !line.is_empty() {
             line_fn(acc, line);
@@ -951,12 +967,10 @@ pub fn summarize_subagent(f: &SubFile, steps: bool, now: f64, home: &Path) -> Su
         let mut buf = Vec::new();
         loop {
             buf.clear();
-            match r.read_until(b'\n', &mut buf) {
-                Ok(0) | Err(_) => break,
+            match store::read_line_capped(&mut r, &mut buf, store::LINE_CAP) {
+                Ok((0, _, _)) | Ok((_, false, _)) | Err(_) => break,
+                Ok((_, _, true)) => continue,
                 Ok(_) => {}
-            }
-            if buf.last() != Some(&b'\n') {
-                break;
             }
             let line = &buf[..];
             let head = &line[..line.len().min(800)];
@@ -1521,6 +1535,8 @@ impl Indexer {
         if !self.loaded.load(Ordering::SeqCst) {
             self.load();
         }
+        // A top folder that can't be read this pass says nothing about what was deleted.
+        let readable = [self.paths.claude.join("projects"), self.paths.codex.join("sessions")].iter().all(|d| fs::read_dir(d).map_or_else(|e| e.kind() == std::io::ErrorKind::NotFound, |_| true));
         let found = self.discover();
         {
             let mut st = self.write();
@@ -1562,11 +1578,16 @@ impl Indexer {
             }
             self.write().done += 1;
         }
-        // transcripts Claude has deleted: keep the summary, flag it
-        let gone: Vec<(String, String)> = self.read().files.iter().filter(|(p, _)| !seen.contains(*p)).map(|(p, r)| (p.clone(), r.session.clone())).collect();
+        // transcripts Claude has deleted: keep the summary, flag it (only when the file is really
+        // gone and is still the session's transcript: one moved elsewhere is not deleted)
+        let gone: Vec<(String, String)> = if readable { self.read().files.iter().filter(|(p, _)| !seen.contains(*p)).map(|(p, r)| (p.clone(), r.session.clone())).collect() } else { Vec::new() };
         for (p, sid) in gone {
+            if Path::new(&p).exists() {
+                continue;
+            }
             if let Some(mut acc) = self.read_acc(&sid)
                 && !acc.deleted_by_claude
+                && acc.source.as_deref() == Some(p.as_str())
             {
                 acc.deleted_by_claude = true;
                 let _ = self.writer.write_json(&self.session_path(&sid), &acc);
@@ -1575,8 +1596,11 @@ impl Indexer {
             self.write().files.remove(&p);
             dirty += 1;
         }
-        let stale: Vec<String> =
-            self.read().sessions.values().filter(|a| !a.deleted_by_claude && a.source.as_ref().is_some_and(|s| !seen.contains(s) && !Path::new(s).exists())).map(|a| a.id.clone()).collect();
+        let stale: Vec<String> = if readable {
+            self.read().sessions.values().filter(|a| !a.deleted_by_claude && a.source.as_ref().is_some_and(|s| !seen.contains(s) && !Path::new(s).exists())).map(|a| a.id.clone()).collect()
+        } else {
+            Vec::new()
+        };
         for sid in stale {
             let mut full = self.read_acc(&sid).or_else(|| self.read().sessions.get(&sid).map(|a| (**a).clone()));
             if let Some(full) = full.as_mut() {
@@ -1889,6 +1913,27 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_transcript_or_an_unreadable_folder_is_not_a_deletion() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = setup();
+        // The projects folder can't be read for one pass: nothing is marked deleted.
+        let projects = f.env.paths.claude.join("projects");
+        fs::set_permissions(&projects, fs::Permissions::from_mode(0o000)).unwrap();
+        f.ix.run();
+        fs::set_permissions(&projects, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!f.summary("sess-bbbb").deleted_by_claude);
+        // Moved to another project folder: still there, never deleted.
+        let old = f.env.transcript("sess-bbbb");
+        let new = projects.join("-moved").join(old.file_name().unwrap());
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+        fs::rename(&old, &new).unwrap();
+        f.ix.run();
+        let s = f.ix.read_acc("sess-bbbb").unwrap();
+        assert!(!s.deleted_by_claude);
+        assert_eq!(s.source.as_deref(), Some(new.to_string_lossy().as_ref()));
+    }
+
+    #[test]
     fn python_index_carried_over() {
         let env = Env::new();
         let old = env.paths.old_index_dir().join("sessions");
@@ -1961,6 +2006,12 @@ mod tests {
     fn helpers() {
         assert!(ends_with_question(Some("Shall I go ahead?**")));
         assert!(!ends_with_question(Some("Done. Any questions? No.")));
+        // Code ending in `?` is not a question; the words before a closing block still count.
+        assert!(!ends_with_question(Some("Here is the fix:\n\n```rust\nlet x = y?\n```")));
+        assert!(!ends_with_question(Some("Here is the fix:\n```\nwhat?\n```\n")));
+        assert!(ends_with_question(Some("Shall I apply it?\n\n```diff\n+x\n```")));
+        assert_eq!(without_trailing_code("Shall I apply it?\n\n```diff\n+x\n```"), "Shall I apply it?");
+        assert_eq!(without_trailing_code("Ends with ``` inline"), "Ends with ``` inline");
         assert_eq!(clean_prompt(&Value::from("<command-name>/clear</command-name>")), None);
         assert_eq!(clean_prompt(&serde_json::json!([{"type": "tool_result", "content": "x"}])), None);
         assert_eq!(clean_prompt(&serde_json::json!([{"type": "image"}])).as_deref(), Some("[image]"));

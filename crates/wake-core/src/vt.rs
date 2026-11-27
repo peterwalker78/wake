@@ -26,6 +26,22 @@ pub struct Grid {
 }
 
 const SCROLLBACK: usize = 400;
+/// The second cell of a wide character; never shown.
+const WIDE_TAIL: char = '\0';
+
+/// A row as text: wide characters' second cells left out, trailing blanks trimmed.
+fn text_of(row: &[char]) -> String {
+    row.iter().filter(|&&c| c != WIDE_TAIL).collect::<String>().trim_end().to_string()
+}
+
+/// Characters a terminal draws two cells wide: the East Asian wide and fullwidth blocks and the
+/// emoji blocks (a small table, close enough for a preview).
+fn is_wide(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x115F | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xA000..=0xA4CF
+        | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1F64F | 0x1F680..=0x1F6FF | 0x1F900..=0x1F9FF | 0x20000..=0x3FFFD)
+}
 
 impl Grid {
     pub fn new(rows: usize, cols: usize) -> Grid {
@@ -41,7 +57,7 @@ impl Grid {
     /// Scrollback, then the screen, trailing blanks trimmed.
     pub fn lines(&self) -> Vec<String> {
         let mut v: Vec<String> = self.scrollback.clone();
-        v.extend(self.cells.iter().map(|r| r.iter().collect::<String>().trim_end().to_string()));
+        v.extend(self.cells.iter().map(|r| text_of(r)));
         while v.last().is_some_and(|l| l.is_empty()) {
             v.pop();
         }
@@ -52,31 +68,32 @@ impl Grid {
         vec![' '; self.cols]
     }
 
-    fn scroll_up(&mut self, n: usize) {
-        for _ in 0..n {
-            let gone = self.cells.remove(self.top);
-            if self.top == 0 && self.main.is_none() {
-                self.scrollback.push(gone.iter().collect::<String>().trim_end().to_string());
-                if self.scrollback.len() > SCROLLBACK {
-                    self.scrollback.remove(0);
-                }
-            }
-            let b = self.blank();
-            self.cells.insert(self.bottom, b);
+    /// Lines `top..=bottom` move up `n` (at most the region's height, so a huge count is cheap).
+    /// `keep`: lines leaving the top of the screen go to the scrollback (scrolling, not deleting).
+    fn scroll_up(&mut self, n: usize, keep: bool) {
+        let (top, bottom) = (self.top, self.bottom);
+        let n = n.min(bottom + 1 - top);
+        if keep && top == 0 && self.main.is_none() {
+            // Only the last SCROLLBACK lines can survive.
+            let from = n.saturating_sub(SCROLLBACK);
+            self.scrollback.extend(self.cells[from..n].iter().map(|r| text_of(r)));
+            let over = self.scrollback.len().saturating_sub(SCROLLBACK);
+            self.scrollback.drain(..over);
         }
+        self.cells[top..=bottom].rotate_left(n);
+        self.cells[bottom + 1 - n..=bottom].iter_mut().for_each(|r| r.fill(' '));
     }
 
     fn scroll_down(&mut self, n: usize) {
-        for _ in 0..n {
-            self.cells.remove(self.bottom);
-            let b = self.blank();
-            self.cells.insert(self.top, b);
-        }
+        let (top, bottom) = (self.top, self.bottom);
+        let n = n.min(bottom + 1 - top);
+        self.cells[top..=bottom].rotate_right(n);
+        self.cells[top..top + n].iter_mut().for_each(|r| r.fill(' '));
     }
 
     fn line_feed(&mut self) {
         if self.row == self.bottom {
-            self.scroll_up(1);
+            self.scroll_up(1, true);
         } else if self.row + 1 < self.rows {
             self.row += 1;
         }
@@ -100,15 +117,21 @@ impl Grid {
 
 impl vte::Perform for Grid {
     fn print(&mut self, c: char) {
-        if self.wrap_next {
+        let w = if is_wide(c) { 2 } else { 1 };
+        // A wide character that won't fit in the last column wraps whole.
+        if self.wrap_next || self.col + w > self.cols {
             self.col = 0;
             self.line_feed();
             self.wrap_next = false;
         }
         self.cells[self.row][self.col] = c;
-        if self.col + 1 < self.cols {
-            self.col += 1;
+        if w == 2 {
+            self.cells[self.row][self.col + 1] = WIDE_TAIL;
+        }
+        if self.col + w < self.cols {
+            self.col += w;
         } else {
+            self.col = self.cols - 1;
             self.wrap_next = true;
         }
     }
@@ -216,11 +239,11 @@ impl vte::Perform for Grid {
                 if action == 'L' {
                     self.scroll_down(n(0))
                 } else {
-                    self.scroll_up(n(0))
+                    self.scroll_up(n(0), false) // deleted, not scrolled off
                 }
                 self.top = top;
             }
-            'S' => self.scroll_up(n(0)),
+            'S' => self.scroll_up(n(0), true),
             'T' => self.scroll_down(n(0)),
             'r' => {
                 let top = n(0) - 1;
@@ -315,6 +338,28 @@ mod tests {
         let mut g = Grid::new(4, 10);
         g.feed(&bytes);
         assert_eq!(g.lines().last().map(String::as_str), Some("next"));
+    }
+
+    #[test]
+    fn huge_counts_are_cheap_and_deleted_lines_never_reach_the_scrollback() {
+        let t = std::time::Instant::now();
+        let mut g = Grid::new(50, 200);
+        g.feed("x\x1b[65535S\x1b[65535T\x1b[65535L\x1b[65535M\x1b[65535@\x1b[65535P".repeat(500).as_bytes());
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(g.scrollback.len() <= SCROLLBACK);
+        // Deleting lines at the top of the screen (CSI M) drops them; scrolling (CSI S) keeps them.
+        assert_eq!(play(3, 10, "one\r\ntwo\x1b[1;1H\x1b[M"), vec!["two"]);
+        assert_eq!(play(3, 10, "one\r\ntwo\x1b[S"), vec!["one", "two"]);
+        assert_eq!(play(4, 10, "a\r\nb\r\nc\x1b[2;1H\x1b[L"), vec!["a", "", "b", "c"]);
+    }
+
+    #[test]
+    fn wide_characters_take_two_cells() {
+        // A redraw after a wide character lands where the terminal drew it.
+        assert_eq!(play(3, 10, "日本x\x1b[1;5Hy"), vec!["日本y"]);
+        assert_eq!(play(3, 10, "🙂ab"), vec!["🙂ab"]);
+        // One that doesn't fit in the last column wraps whole.
+        assert_eq!(play(3, 10, "123456789日"), vec!["123456789", "日"]);
     }
 
     /// `WAKE_VT_SAMPLE=<file> WAKE_VT_SIZE=rows,cols cargo test -p wake-core vt::tests::sample -- --ignored --nocapture`

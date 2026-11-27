@@ -838,11 +838,12 @@ fn build(app: &gtk::Application, opts: &Opts) {
     }
     ui.src.set_options(&core);
     {
-        // "Follow the system": the desktop went light or dark.
+        // "Follow the system": the desktop went light or dark. "Desktop" accent: its colour changed
+        // (Settings' Desktop swatch shows it whatever the accent).
         let ui = ui.clone();
         theme::watch_system(move || {
             let p = prefs::get();
-            if p.theme == "system" && theme::apply(&p.theme, &p.accent) {
+            if theme::apply(&p.theme, &p.accent) {
                 redraw_all(&ui);
             }
         });

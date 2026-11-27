@@ -90,7 +90,14 @@ pub fn sections(s: &Settings, ais: &[AiChoice]) -> Vec<(&'static str, Vec<Row>)>
     };
     let look = vec![
         row("theme", "Theme", "", Kind::Segments, vec![ch("dark", "Dark"), ch("light", "Light"), ch("system", "System")], &s.theme),
-        row("accent", "Accent", "", Kind::Swatches, theme::ACCENTS.iter().map(|(n, ..)| ch(n, &cap(n))).collect(), &s.accent),
+        row(
+            "accent",
+            "Accent",
+            "The first is your desktop's own accent colour, when it has one.",
+            Kind::Swatches,
+            std::iter::once(ch("desktop", "Desktop")).chain(theme::ACCENTS.iter().map(|(n, ..)| ch(n, &cap(n)))).collect(),
+            &s.accent,
+        ),
         switch("motion", "Motion", "Panels slide and rows fade, briefly. Off keeps everything still.", s.motion != "reduced"),
     ];
     let open = vec![row("start", "Start on", "", Kind::Dropdown, View::ALL.iter().filter(|v| **v != View::Settings).map(|v| ch(v.id(), v.name())).collect(), &s.start_view)];
@@ -261,7 +268,12 @@ fn swatches(ui: &Ui, r: &Row) -> gtk::Box {
         s.add_css_class(&format!("acc-{}", c.id));
         s.set_focusable(false);
         s.set_valign(gtk::Align::Center);
-        s.set_tooltip_text(Some(&c.label));
+        let tip = match c.id.as_str() {
+            "desktop" if theme::desktop_accent().is_none() => "Desktop: your desktop has no accent colour, so Wake uses its own".to_string(),
+            "desktop" => "Desktop: your desktop's accent colour".to_string(),
+            _ => c.label.clone(),
+        };
+        s.set_tooltip_text(Some(&tip));
         let on = c.id == r.current;
         if on {
             s.add_css_class("on");

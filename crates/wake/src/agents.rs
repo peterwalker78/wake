@@ -70,7 +70,7 @@ fn cols(hide: u8) -> Vec<Col> {
         (if short { "State" } else { "State · idle" }, 126, false, false),
         (if short { "Mem" } else { "Memory" }, 84, false, false),
         ("Where", 160, false, false),
-        ("Why stale", 140, false, false),
+        ("Why stale", 120, false, false),
         ("", 56, false, false),
     ];
     all.into_iter().enumerate().filter(|(i, _)| hide & (1 << i) == 0).map(|(_, c)| c).collect()

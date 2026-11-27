@@ -574,7 +574,16 @@ pub fn render_status(ui: &Ui) {
         (st.ov_error.clone(), st.last_ok, st.procs.as_ref().map(|p| p.generated_at.clone()))
     };
     let secs = last_ok.map_or(0, |t| (glib::monotonic_time() - t) / 1_000_000);
-    let (icon, words, class, tip) = if ui.demo {
+    // A crash last time is said calmly, once, with the way to the log; a read failing now comes first.
+    let crashed = app::crashed_last_time() && err.is_none() && secs <= 15;
+    let (icon, words, class, tip) = if crashed {
+        (
+            w::icons::INFO,
+            "Wake closed unexpectedly last time. Its log says what happened.".to_string(),
+            "info",
+            "Wake noted the crash in its log, on this computer only. Nothing was sent anywhere.".to_string(),
+        )
+    } else if ui.demo {
         (w::icons::INFO, "You're looking at made-up data. Nothing here is real.".to_string(), "info", "Demo mode: made-up sessions and agents.".to_string())
     } else if let Some(err) = &err {
         (w::icons::WARNING, err.clone(), "bad", err.clone())
@@ -602,6 +611,12 @@ pub fn render_status(ui: &Ui) {
     let l = w::wrap(&words, &[]);
     l.set_xalign(0.0);
     s.append(&l);
+    if crashed {
+        let ui2 = ui.clone();
+        let b = w::button("Open the log", None, &["sm"], move || app::open_log(&ui2));
+        b.set_valign(gtk::Align::Center);
+        s.append(&b);
+    }
     let fresh = procs_at.as_deref().map(|t| format!("\nAgent processes read {}.", fmt::ago(Some(t)))).unwrap_or_default();
     s.set_tooltip_text(Some(&format!("{tip}{fresh}")));
 }

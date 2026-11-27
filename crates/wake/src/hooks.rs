@@ -270,6 +270,34 @@ pub fn apply_show(ui: &Ui, show: &str) {
                 dialogs::pause(ui, &id);
             }
         }
+        // The banner after Wake closed unexpectedly (in real use, only from the log, never in a demo).
+        "crash" => {
+            crate::app::set_crashed(true);
+            views::render_status(ui);
+        }
+        // The main menu as it opens, for a screenshot: its items moved into the window, under the
+        // button, in GTK's own nodes (popover > contents), as `dropdown` draws a list. The menu
+        // is a surface of its own, which a shot of the window leaves out.
+        "menu" => {
+            if let Some(pop) = ui.w.menu.popover()
+                && let Some(items) = pop.child()
+                && let Some(overlay) = ui.window.child().and_downcast::<gtk::Overlay>()
+                && let Some(at) = ui.w.menu.compute_point(&ui.window, &gtk::graphene::Point::new(0.0, 0.0))
+            {
+                pop.set_child(None::<&gtk::Widget>);
+                let fake = w::named_box("popover");
+                fake.add_css_class("menu");
+                let contents = w::named_box("contents");
+                contents.set_parent(&fake);
+                items.set_parent(&contents);
+                // Its right edge under the button's, as GTK places it at the window's edge.
+                fake.set_halign(gtk::Align::End);
+                fake.set_valign(gtk::Align::Start);
+                fake.set_margin_end((ui.window.width() - at.x() as i32 - ui.w.menu.width()).max(4));
+                fake.set_margin_top(at.y() as i32 + ui.w.menu.height());
+                overlay.add_overlay(&fake);
+            }
+        }
         "stale" => agents::stop_all_stale(ui),
         "stale-only" => {
             ui.st.borrow_mut().stale_only = true;
@@ -282,7 +310,9 @@ pub fn apply_show(ui: &Ui, show: &str) {
                 agents::stop_one(ui, pid);
             }
         }
-        _ => eprintln!("wake: --show takes scroll[:px], panel-scroll[:px], agents-open, switcher, switcher-subs, session[:id], project[:id], pause, stale, stop[:pid], toast[:text] or track"),
+        _ => eprintln!(
+            "wake: --show takes scroll[:px], panel-scroll[:px], agents-open, switcher, switcher-subs, session[:id], project[:id], pause, crash, menu, stale, stop[:pid], toast[:text] or track"
+        ),
     }
 }
 

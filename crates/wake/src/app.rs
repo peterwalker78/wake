@@ -397,6 +397,11 @@ pub fn bg_or<T: Send + 'static>(ui: &Ui, work: impl FnOnce(&dyn Source) -> T + S
     });
 }
 
+/// The log's word for a crash on the UI thread, the one that closes Wake. A panic in background
+/// work is caught (Wake carries on and says so) and logged under `BACKGROUND_CRASH`.
+const CRASH: &str = "Crash";
+const BACKGROUND_CRASH: &str = "Crash in background work";
+
 /// A crash anywhere, the UI thread included, leaves its message and place in Wake's log before the
 /// usual report.
 fn log_panics() {
@@ -406,9 +411,53 @@ fn log_panics() {
         let p = info.payload();
         let msg = p.downcast_ref::<&str>().copied().or_else(|| p.downcast_ref::<String>().map(String::as_str)).unwrap_or("no message");
         let at = info.location().map(|l| format!(" at {}:{}", l.file(), l.line())).unwrap_or_default();
-        wake_core::log::note_error(&paths, "Crash", &format!("{msg}{at}"));
+        let ui_thread = std::thread::current().name() == Some("main");
+        wake_core::log::note_error(&paths, if ui_thread { CRASH } else { BACKGROUND_CRASH }, &format!("{msg}{at}"));
         previous(info);
     }));
+}
+
+/// Wake closed unexpectedly last time: shown once, in the banner, with a way to open the log.
+static CRASHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True while the banner should say Wake closed unexpectedly last time.
+pub fn crashed_last_time() -> bool {
+    CRASHED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Shows (or, once the log has been opened, stops showing) that Wake closed unexpectedly.
+pub fn set_crashed(on: bool) {
+    CRASHED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the log's latest entry is a crash that closed Wake: nothing (not even a start) was
+/// written after it. Noting this start after it means the next start won't say so again.
+fn check_last_crash(paths: &wake_core::store::Paths) -> bool {
+    let crashed = wake_core::log::recent(paths, 1).first().is_some_and(|l| is_crash_line(l));
+    if crashed {
+        wake_core::log::record_action(paths, "open", "Wake", true, "Opened again after it closed unexpectedly.", &[]);
+    }
+    crashed
+}
+
+/// A log line the panic hook wrote for a crash on the UI thread.
+fn is_crash_line(line: &str) -> bool {
+    line.contains(&format!("  error  {CRASH}  failed  "))
+}
+
+/// Opens Wake's log in the desktop's usual app for it. Reads only; nothing is sent anywhere.
+pub fn open_log(ui: &Ui) {
+    let p = wake_core::log::path(&wake_core::store::Paths::from_env());
+    set_crashed(false);
+    views::render_status(ui);
+    if !p.exists() {
+        toast(ui, "Wake's log is empty: Wake hasn't needed to note anything yet.", false);
+        return;
+    }
+    let uri = gio::File::for_path(&p).uri();
+    if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
+        toast(ui, &format!("Wake couldn't open its log ({}). It is in {}.", e.message(), crate::fmt::tilde(&p)), true);
+    }
 }
 
 pub fn run(opts: Opts) -> glib::ExitCode {
@@ -416,6 +465,7 @@ pub fn run(opts: Opts) -> glib::ExitCode {
     let real = !opts.demo && opts.screenshot.is_none();
     prefs::init(real);
     if real {
+        set_crashed(check_last_crash(&wake_core::store::Paths::from_env()));
         log_panics();
     }
     let app = gtk::Application::builder().application_id(APP_ID).build();
@@ -815,7 +865,7 @@ fn build(app: &gtk::Application, opts: &Opts) {
         ui.w.add_btn.connect_clicked(move |_| open_capture(&ui2));
     }
     {
-        // The main menu: Settings, the keys, and the demo board.
+        // The main menu: Settings, the keys, Ask, and Wake's log.
         let pop = gtk::Popover::new();
         let items = w::vbox(2, &["moremenu"]);
         // Each with its shortcut at the end, as menus show them.
@@ -842,6 +892,9 @@ fn build(app: &gtk::Application, opts: &Opts) {
         item("Keyboard shortcuts", "F1", Box::new(move || dialogs::keys(&ui2)));
         let ui2 = ui.clone();
         item("Ask a question", "Ctrl+6", Box::new(move || set_view(&ui2, View::Questions)));
+        // What Wake did and the errors it showed, in the desktop's usual app for a text file.
+        let ui2 = ui.clone();
+        item("Open Wake's log", "", Box::new(move || open_log(&ui2)));
         pop.set_child(Some(&items));
         ui.w.menu.set_popover(Some(&pop));
     }
@@ -2365,6 +2418,12 @@ mod tests {
         assert_eq!(loc_of(&s, false).0, "no window", "a background job opens with attach");
     }
 
+    #[test]
+    fn only_a_crash_that_closed_wake_counts() {
+        assert!(is_crash_line("2026-11-27 10:00:00 UTC  error  Crash  failed  boom at src/app.rs:1"));
+        assert!(!is_crash_line("2026-11-27 10:00:00 UTC  error  Crash in background work  failed  boom"));
+        assert!(!is_crash_line("2026-11-27 10:00:00 UTC  open  Wake  ok  Opened again after it closed unexpectedly."));
+    }
 
     #[test]
     fn the_place_and_the_go_button_say_the_same() {

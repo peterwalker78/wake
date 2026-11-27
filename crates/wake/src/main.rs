@@ -20,6 +20,7 @@ mod motion;
 mod panel;
 mod peek;
 mod prefs;
+mod projects;
 mod questions;
 mod scope;
 mod setview;

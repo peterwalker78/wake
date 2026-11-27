@@ -1413,7 +1413,7 @@ fn project(ui: &Ui, id: &str) {
     } else if p.removed {
         let ui2 = ui.clone();
         let id2 = p.id.clone();
-        let b = w::button("Track again", None, &["primary"], move || crate::views::restore_project(&ui2, &id2));
+        let b = w::button("Track again", None, &["primary"], move || crate::projects::restore_project(&ui2, &id2));
         b.set_widget_name("primary");
         act.append(&b);
         act.append(&w::clip("Wake is not tracking this project.", &["meta"]));

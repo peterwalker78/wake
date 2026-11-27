@@ -1145,6 +1145,30 @@ impl Source for Live {
         self.inner.proc_overview()
     }
 
+    fn go_to_window(&self, pid: u32, dry_run: bool) -> ActionResult {
+        let i = &self.inner;
+        let fail = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
+        let ov = i.proc_overview();
+        let Some(row) = ov.procs.iter().find(|p| p.pid == pid && p.kind == ProcKind::Dashboard) else {
+            return fail("That agent list has closed.");
+        };
+        let Some(loc) = row.location.clone() else {
+            return fail("Wake can't tell which window Claude's agent list is in.");
+        };
+        let window = loc.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"));
+        let b = i.look.bring(loc.pid, dry_run);
+        let r = if b.ok {
+            let pre = if dry_run { "Dry run. " } else { "" };
+            ActionResult { ok: true, message: format!("{pre}Went to Claude's agent list, in {window}."), steps: b.steps }
+        } else {
+            ActionResult { ok: false, message: format!("Claude's agent list is in {window}. This desktop doesn't let Wake bring it forward, so switch to it yourself."), steps: b.steps }
+        };
+        if !dry_run {
+            log::record_action(&i.paths, "go to", &format!("agent list (PID {pid})"), r.ok, &r.message, &r.steps);
+        }
+        r
+    }
+
     // ---- Disk, resources and attribution (added 2026-11-20) ----
 
     fn measure_disk(&self, project: Option<&str>) {

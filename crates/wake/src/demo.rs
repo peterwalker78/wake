@@ -477,6 +477,12 @@ impl DemoSource {
                 Some("not tied to any session; its terminal has gone"),
             ),
         ];
+        // Claude's agent list, open in a terminal window.
+        let mut list = proc(45120, 3120, ProcKind::Dashboard, None, State::Unknown, None, 152, Some(0.3), None, None);
+        list.title = Some("Claude's agent list".into());
+        list.command = "claude agents".into();
+        list.location = Some(Location { pid: 3120, app: Some("Terminal".into()) });
+        procs.push(list);
         procs[4].command = "claude attach bg-5f2c --pty".into();
         let (a, b) = (procs[3].rss_bytes, procs[4].rss_bytes);
         procs[3].children = vec![44872];
@@ -844,6 +850,14 @@ impl Source for DemoSource {
             return ActionResult { ok: false, message: "Claude deleted this conversation, so it can't be reopened.".into(), steps: Vec::new() };
         };
         ActionResult { ok: true, message, steps }
+    }
+
+    fn go_to_window(&self, pid: u32, _dry_run: bool) -> ActionResult {
+        let st = self.st();
+        match st.procs.iter().find(|p| p.pid == pid && p.kind == ProcKind::Dashboard).and_then(|p| p.location.clone()) {
+            Some(l) => ActionResult { ok: true, message: format!("Demo: would bring the window of process {} forward.", l.pid), steps: vec![format!("Look.Start {}", l.pid)] },
+            None => ActionResult { ok: false, message: "That agent list has closed.".into(), steps: Vec::new() },
+        }
     }
 
     fn processes(&self) -> ProcOverview {

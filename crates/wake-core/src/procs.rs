@@ -205,6 +205,8 @@ pub enum Role {
     PtyHost,
     Attach(String),
     SpareProc,
+    /// `claude agents`: Claude's list of background sessions.
+    Dashboard,
     Main,
 }
 
@@ -223,6 +225,9 @@ pub fn role_of(argv: &[String]) -> Role {
     }
     if has("--bg-spare") {
         return Role::SpareProc;
+    }
+    if argv.get(1).map(String::as_str) == Some("agents") {
+        return Role::Dashboard;
     }
     Role::Main
 }
@@ -645,6 +650,7 @@ impl Explorer {
         }
 
         let mut daemons = Vec::new();
+        let mut dashboards: Vec<Vec<AgentProc>> = Vec::new();
         let mut sessions: Vec<Vec<AgentProc>> = Vec::new();
         let mut spares: Vec<Vec<AgentProc>> = Vec::new();
         let mut strays: Vec<Vec<AgentProc>> = Vec::new();
@@ -674,6 +680,16 @@ impl Explorer {
                     daemons.push(r);
                 }
                 Role::PtyHost | Role::Attach(_) => {}
+                // Claude's agent list: where it is shown, and nothing that would make it a session.
+                Role::Dashboard => {
+                    let mut r = mk(c, ProcKind::Dashboard);
+                    r.title = Some("Claude's agent list".into());
+                    r.location = (inp.locate)(c.p.pid, None);
+                    let mut group = Vec::new();
+                    fold(&mut r, &hosts_of(c.p.pid), &mut group);
+                    group.insert(0, r);
+                    dashboards.push(group);
+                }
                 Role::SpareProc | Role::Main => {
                     if sub_parent.contains_key(&c.p.pid) {
                         continue; // folded under its session below
@@ -831,8 +847,10 @@ impl Explorer {
         spares.sort_by_key(|g| g[0].pid);
         strays.sort_by_key(|g| g[0].pid);
 
+        dashboards.sort_by_key(|g| g[0].pid);
         let mut procs = daemons;
         procs.extend(sessions.into_iter().flatten());
+        procs.extend(dashboards.into_iter().flatten());
         procs.extend(spares.into_iter().flatten());
         procs.extend(strays.into_iter().flatten());
         procs.extend(loose.into_iter().flatten());
@@ -1830,6 +1848,34 @@ pub(crate) mod tests {
         let mut kids = row(&o, 54).children.clone();
         kids.sort();
         assert_eq!(kids, [51, 53]);
+    }
+
+    /// `claude agents` in a terminal window is Claude's agent list: no session, no project, never
+    /// stale however long it has been open, and its window is where it is.
+    #[test]
+    fn claudes_agent_list_is_its_own_kind_and_never_stale() {
+        let mut r = Rig::new();
+        let h = 3600.0;
+        r.add(100, 1, &[V, "daemon", "run"], V, 100_000, 30.0 * h);
+        r.add(340, 339, &["claude", "agents"], V, 160_000, 20.0 * h);
+        r.add(341, 1, &["claude"], V, 200_000, 20.0 * h);
+        r.entry(341, "s-real", None, false, 10.0 * h);
+        let mut ex = Explorer::new(r.fp.root());
+        ex.jobs_dir = Some(r.jobs.0.clone());
+        let view = |i: &LiveInfo| SessionView { title: None, project_name: Some("wake".into()), state: Some(State::Idle), idle_since: i.status_updated_at, used: true };
+        let locate = |pid: u32, _: Option<&str>| -> Option<Location> { (pid == 340).then(|| Location { pid: 330, app: Some("Term".into()) }) };
+        let notes = HashMap::new();
+        let o = ex.processes(&Inputs { live: &r.live, view: &view, locate: &locate, notes: &notes, windows_known: true, now: r.now });
+        let d = row(&o, 340);
+        assert_eq!(d.kind, ProcKind::Dashboard);
+        assert_eq!(d.title.as_deref(), Some("Claude's agent list"));
+        assert_eq!((d.session_id.as_deref(), d.project_name.as_deref(), d.stale_reason.as_deref()), (None, None, None));
+        assert_eq!(d.location.as_ref().map(|l| l.pid), Some(330));
+        assert!(d.tasks.is_empty());
+        assert_eq!(o.stale_count, 1, "only the real session, idle 10 h with no window");
+        assert_eq!(row(&o, 341).kind, ProcKind::Session);
+        assert_eq!(role_of(&["claude".into(), "agents".into()]), Role::Dashboard);
+        assert_eq!(role_of(&["claude".into(), "--resume".into(), "agents".into()]), Role::Main, "only as its command");
     }
 
     #[test]

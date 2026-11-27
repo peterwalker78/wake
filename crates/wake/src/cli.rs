@@ -484,13 +484,14 @@ fn doctor_log(d: &mut Doctor, paths: &store::Paths) {
 
 /// One line saying what each kind and state in the table means, for only those that appear.
 fn ps_legend(seen: &[&str]) -> Option<String> {
-    const WORDS: [(&str, &str); 7] = [
+    const WORDS: [(&str, &str); 8] = [
         ("daemon", "Claude's background service that keeps background sessions running"),
         ("session", "an agent working on one task"),
         ("terminal", "the terminal a background session runs in or is shown in"),
         ("spare", "started ahead of time, not used yet"),
         ("stray", "an agent process Wake can't tie to a session"),
         ("subagent", "a helper the session above it started"),
+        ("agent list", "Claude's list of your background sessions (claude agents), open in a window"),
         ("lost track", "Wake can't tell what it is doing"),
     ];
     let parts: Vec<String> = WORDS.iter().filter(|(w, _)| seen.contains(w)).map(|(w, m)| format!("{w} = {m}")).collect();
@@ -574,7 +575,7 @@ fn cmd_ps() -> u8 {
     out!("{}", procs::headline(&o));
     out!();
     let h = ["PID", "KIND", "MEM", "CPU", "STATE", "IDLE", "WHERE", "TASK", "PROJECT"];
-    out!("{:<9} {:<8} {:>6} {:>5}  {:<10} {:<8} {:<16} {:<34} {}", h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
+    out!("{:<9} {:<10} {:>6} {:>5}  {:<10} {:<8} {:<16} {:<34} {}", h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
     let mut seen: Vec<&str> = Vec::new();
     for p in &o.procs {
         // pty hosts and attach clients fold in silently; a subagent folds in but keeps its task
@@ -587,8 +588,11 @@ fn cmd_ps() -> u8 {
             ProcKind::Spare => "spare",
             ProcKind::Stray => "stray",
             ProcKind::Subagent => "subagent",
+            ProcKind::Dashboard => "agent list",
         };
         let state = match p.state {
+            // Claude's agent list has no session to be in any state.
+            _ if p.kind == ProcKind::Dashboard => "-",
             State::Working => "working",
             State::Waiting => "waiting",
             State::Idle => "idle",
@@ -618,7 +622,7 @@ fn cmd_ps() -> u8 {
         }
         let cpu = p.cpu_percent.map_or_else(|| "-".into(), |c| format!("{c:.0}%"));
         out!(
-            "{:<9} {:<8} {:>6} {:>5}  {:<10} {:<8} {:<16} {:<34} {}",
+            "{:<9} {:<10} {:>6} {:>5}  {:<10} {:<8} {:<16} {:<34} {}",
             pid,
             kind,
             util::bytes(p.rss_bytes),

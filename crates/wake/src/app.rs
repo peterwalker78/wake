@@ -1876,6 +1876,11 @@ pub fn go_to(ui: &Ui, id: &str) {
     );
 }
 
+/// Brings forward the window showing Claude's agent list (process `pid`).
+pub fn go_to_window(ui: &Ui, pid: u32) {
+    bg(ui, move |src| src.go_to_window(pid, false), |ui, r| toast(ui, if r.message.is_empty() { if r.ok { "Done." } else { "That didn't work." } } else { &r.message }, !r.ok));
+}
+
 // ---------- new idea ----------
 
 /// New idea (+ or c): the Find pop-up on its New idea tab.

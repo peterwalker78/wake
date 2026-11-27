@@ -84,6 +84,7 @@ fn kind_words(k: ProcKind) -> &'static str {
         ProcKind::Spare => "spare session, not used yet",
         ProcKind::Stray => "agent process with no session",
         ProcKind::Subagent => "subagent of the session above",
+        ProcKind::Dashboard => "Claude's agent list",
     }
 }
 
@@ -372,7 +373,7 @@ pub fn render(ui: &Ui) {
                         ui2.st.borrow_mut().show_background = on;
                         render(&ui2);
                     });
-                    b.set_tooltip_text(Some("Claude's daemon, terminal hosts and unused spare sessions: they run on their own, and Wake never stops the daemon."));
+                    b.set_tooltip_text(Some("Claude's daemon, its agent list, terminal hosts and unused spare sessions: they run on their own, and Wake never stops the daemon."));
                     line.append(&b);
                 }
             }
@@ -447,7 +448,7 @@ fn box_edge(top: bool) -> gtk::ListBoxRow {
 fn group_words(group: &str) -> Option<&'static str> {
     match group {
         "Look stale" => Some("Idle for hours with nothing attached, or a spare nobody used. Stopping one frees its memory; the conversation is kept."),
-        "In the background" => Some("Claude's daemon (it runs your background sessions; Wake never stops it), terminal hosts and spare sessions."),
+        "In the background" => Some("Claude's daemon (it runs your background sessions; Wake never stops it), its agent list, terminal hosts and spare sessions."),
         "Not matched" => Some("Agent processes Wake can't match to a session or window. Check before stopping."),
         _ => None,
     }
@@ -552,6 +553,9 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     let state = w::vbox(3, &[]);
     if a.kind == ProcKind::Daemon {
         state.append(&w::wrap("keeps background sessions alive", &["ev"]));
+    } else if a.kind == ProcKind::Dashboard {
+        // No session, so no state to show: what it is for instead.
+        state.append(&w::wrap("lists your background sessions", &["ev"]));
     } else {
         state.append(&w::state_badge(a.state));
         let idle = idle_words(&ui.st.borrow(), a);
@@ -592,6 +596,14 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     let sess = session_of(&ui.st.borrow(), a).cloned();
     let where_: gtk::Widget = match (sess.as_ref().and_then(|s| panel::go_button(ui, s, false)), where_words(a), &a.job_id) {
         (Some(b), ..) => {
+            b.set_valign(gtk::Align::Center);
+            b.upcast()
+        }
+        // Claude's agent list: the way to its window, in a session's words.
+        (None, Some(t), _) if a.kind == ProcKind::Dashboard => {
+            let (ui2, pid) = (ui.clone(), a.pid);
+            let b = w::button(&format!("Go to {t}"), None, &["sm"], move || app::go_to_window(&ui2, pid));
+            b.update_property(&[gtk::accessible::Property::Label(&format!("Go to {t}, Claude's agent list"))]);
             b.set_valign(gtk::Align::Center);
             b.upcast()
         }
@@ -1678,6 +1690,7 @@ pub fn stop_words(a: &AgentProc) -> Vec<String> {
         ],
         (ProcKind::Spare, ..) => vec!["It is a spare Claude nobody has used yet; stopping it loses nothing.".into()],
         (ProcKind::Subagent, ..) => vec!["It is a helper its session started. Stopping it ends that piece of work; the session carries on.".into(), later],
+        (ProcKind::Dashboard, ..) => vec!["It is Claude's list of your background sessions. Stopping it closes the list; the sessions carry on.".into(), later],
         (_, Some(_), _) => vec!["Claude stops this background session cleanly. Its conversation is kept, and you can resume it later.".into()],
         (_, None, Some(_)) => vec![
             format!(

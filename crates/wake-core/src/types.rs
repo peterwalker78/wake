@@ -369,6 +369,9 @@ pub enum ProcKind {
     /// (agent-notify's rule): a helper that session started. Folded into that session's row and
     /// memory; never a spare, a stray, a session of its own, or stale on its own.
     Subagent,
+    /// Claude's list of background sessions (`claude agents`), open in a window: no session, no
+    /// project, never stale.
+    Dashboard,
 }
 
 /// What agent-notify's note for this process says; the same data the screensaver's scope draws from.

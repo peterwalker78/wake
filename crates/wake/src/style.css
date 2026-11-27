@@ -1,7 +1,8 @@
 /* Wake: a calm operator console in Slipstream's palette.
    Every colour is a named colour (@bg, @ink, @amber, ...). theme.rs defines them twice, a dark set
    (Slipstream's: bg #0A0D12, ink #E7ECF3, cyan #38CEFF, mint #42E6A4, amber #FFB547, rose #FF7A8A,
-   violet #B79CFF) and a light set, plus the chosen accent and the project dot colours
+   violet #B79CFF) and a light set, plus the chosen accent (the desktop's own by default; theme.rs
+   derives @accent, @on_accent and @tertiary, a deep shade of its hue, from it) and the project dot colours
    (pc_ and the colour's name). Text colours are at least 4.5:1 on every background in both sets; @faint is for
    lines and dots only. The peek preview is a terminal and stays dark in both. */
 
@@ -504,6 +505,7 @@ window.wake .segs > button.seg:hover { color: @ink; background-color: @row; }
 window.wake .segs > button.seg.on { background-color: @rowhi; color: @ink; font-weight: 700; box-shadow: inset 0 0 0 1px @line3; }
 window.wake .segs > button.seg:disabled { color: @faint; background: none; }
 /* Accent swatches. */
+window.wake button.swatch.acc-desktop { background-color: @acc_desktop; }
 window.wake button.swatch.acc-cyan { background-color: @acc_cyan; } window.wake button.swatch.acc-mint { background-color: @acc_mint; }
 window.wake button.swatch.acc-violet { background-color: @acc_violet; } window.wake button.swatch.acc-blue { background-color: @acc_blue; }
 window.wake .setswatches { padding: 0 6px; }

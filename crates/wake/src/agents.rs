@@ -84,6 +84,7 @@ fn kind_words(k: ProcKind) -> &'static str {
         ProcKind::Spare => "spare session, not used yet",
         ProcKind::Stray => "agent process with no session",
         ProcKind::Subagent => "subagent of the session above",
+        ProcKind::Dashboard => "Claude's agent list",
     }
 }
 
@@ -137,7 +138,7 @@ fn followers(p: &ProcOverview) -> Vec<scope::Agent> {
         .filter_map(|a| {
             let n = a.note.as_ref()?;
             let name = if n.name.is_empty() { a.project_name.clone().or(a.title.clone()).unwrap_or_default() } else { n.name.clone() };
-            Some(scope::Agent { pid: a.pid, name, active: !n.idle, helpers: n.helpers.clone() })
+            Some(scope::Agent { pid: a.pid, name, active: !n.idle, helpers: n.helpers.clone(), tasks: n.tasks.clone() })
         })
         .collect()
 }
@@ -209,7 +210,26 @@ fn signature(st: &app::AppState, p: &ProcOverview) -> String {
             let subs = session_of(st, a).map(|s| (s.subagents.total, s.subagents.running));
             // The Go button's words follow where its session is.
             let place = session_of(st, a).map(|s| app::loc_of(s, st.ov.as_ref().is_some_and(|o| o.locations_unsure.is_some())).0);
-            let key = (a.pid, a.ppid, a.kind, a.state, &a.title, &a.project_name, &a.location, &a.job_id, &a.stale_reason, &a.children, &a.note, &a.session_id, a.state == State::Working, subs, place);
+            // Its tasks by what they are; how long each has run ticks in place.
+            let tasks: Vec<(&str, &str)> = a.tasks.iter().map(|t| (t.kind.as_str(), t.label.as_str())).collect();
+            let key = (
+                a.pid,
+                a.ppid,
+                a.kind,
+                a.state,
+                &a.title,
+                &a.project_name,
+                &a.location,
+                &a.job_id,
+                &a.stale_reason,
+                &a.children,
+                &a.note,
+                &a.session_id,
+                a.state == State::Working,
+                subs,
+                place,
+                tasks,
+            );
             serde_json::to_string(&key).unwrap_or_default()
         })
         .collect();
@@ -314,7 +334,20 @@ pub fn render(ui: &Ui) {
     let mut last_group = "";
     // Whether a group's box is open (a folded group has none to close).
     let mut boxed = false;
+    // The session whose tasks are still to be listed: after its subagents, before the next row.
+    let mut tasks_of: Option<(&str, &AgentProc)> = None;
+    let flush = |tasks_of: &mut Option<(&str, &AgentProc)>| {
+        if let Some((group, s)) = tasks_of.take() {
+            for r in task_rows(ui, s, &cols, hide) {
+                r.add_css_class(&group_class(group));
+                vw.list.append(&r);
+            }
+        }
+    };
     for (group, a) in rows {
+        if a.kind != ProcKind::Subagent {
+            flush(&mut tasks_of);
+        }
         let hidden = group == "In the background" && !show_bg;
         if hidden && group == last_group {
             continue;
@@ -340,7 +373,7 @@ pub fn render(ui: &Ui) {
                         ui2.st.borrow_mut().show_background = on;
                         render(&ui2);
                     });
-                    b.set_tooltip_text(Some("Claude's daemon, terminal hosts and unused spare sessions: they run on their own, and Wake never stops the daemon."));
+                    b.set_tooltip_text(Some("Claude's daemon, its agent list, terminal hosts and unused spare sessions: they run on their own, and Wake never stops the daemon."));
                     line.append(&b);
                 }
             }
@@ -362,7 +395,11 @@ pub fn render(ui: &Ui) {
         for want in wanted(ui, a) {
             vw.list.append(&build(ui, a, &want, &cols, hide));
         }
+        if a.kind != ProcKind::Subagent {
+            tasks_of = Some((group, a));
+        }
     }
+    flush(&mut tasks_of);
     if boxed {
         let bottom = box_edge(false);
         bottom.add_css_class(&group_class(last_group));
@@ -411,18 +448,19 @@ fn box_edge(top: bool) -> gtk::ListBoxRow {
 fn group_words(group: &str) -> Option<&'static str> {
     match group {
         "Look stale" => Some("Idle for hours with nothing attached, or a spare nobody used. Stopping one frees its memory; the conversation is kept."),
-        "In the background" => Some("Claude's daemon (it runs your background sessions; Wake never stops it), terminal hosts and spare sessions."),
+        "In the background" => Some("Claude's daemon (it runs your background sessions; Wake never stops it), its agent list, terminal hosts and spare sessions."),
         "Not matched" => Some("Agent processes Wake can't match to a session or window. Check before stopping."),
         _ => None,
     }
 }
 
 fn wave_cell(ui: &Ui, a: &AgentProc) -> gtk::Widget {
-    // A readout only while it works: an idle agent's flat line says nothing its state doesn't.
-    match a.note.as_ref().filter(|_| a.state == State::Working) {
+    // A readout only while it works, or has a task running: an idle agent's flat line says nothing its
+    // state doesn't, but its tasks' waves do.
+    match a.note.as_ref().filter(|n| a.state == State::Working || !n.tasks.is_empty()) {
         Some(n) => {
             let what = format!("PID {}, {}", a.pid, if n.idle { "idle" } else { "working" });
-            let area = scope::compact(&ui.scope, a.pid, scope::rows(&n.helpers).len(), &what);
+            let area = scope::compact(&ui.scope, a.pid, scope::rows(&n.helpers, &n.tasks).len(), &what);
             ui.readouts.borrow_mut().push(area.clone());
             area.upcast()
         }
@@ -515,6 +553,9 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     let state = w::vbox(3, &[]);
     if a.kind == ProcKind::Daemon {
         state.append(&w::wrap("keeps background sessions alive", &["ev"]));
+    } else if a.kind == ProcKind::Dashboard {
+        // No session, so no state to show: what it is for instead.
+        state.append(&w::wrap("lists your background sessions", &["ev"]));
     } else {
         state.append(&w::state_badge(a.state));
         let idle = idle_words(&ui.st.borrow(), a);
@@ -555,6 +596,14 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     let sess = session_of(&ui.st.borrow(), a).cloned();
     let where_: gtk::Widget = match (sess.as_ref().and_then(|s| panel::go_button(ui, s, false)), where_words(a), &a.job_id) {
         (Some(b), ..) => {
+            b.set_valign(gtk::Align::Center);
+            b.upcast()
+        }
+        // Claude's agent list: the way to its window, in a session's words.
+        (None, Some(t), _) if a.kind == ProcKind::Dashboard => {
+            let (ui2, pid) = (ui.clone(), a.pid);
+            let b = w::button(&format!("Go to {t}"), None, &["sm"], move || app::go_to_window(&ui2, pid));
+            b.update_property(&[gtk::accessible::Property::Label(&format!("Go to {t}, Claude's agent list"))]);
             b.set_valign(gtk::Align::Center);
             b.upcast()
         }
@@ -1152,6 +1201,46 @@ fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, co
     outer
 }
 
+/// A session's background tasks, each a tree row under it in the subagent rows' parts: the kind as
+/// a quiet word where "subagent" goes, the label as the title, and how long it has run. Never
+/// selected (the keys walk sessions and subagents as before).
+fn task_rows(ui: &Ui, a: &AgentProc, cols: &[Col], hide: u8) -> Vec<gtk::ListBoxRow> {
+    let n = a.tasks.len();
+    a.tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let row = gtk::ListBoxRow::new();
+            row.add_css_class("boxed");
+            row.add_css_class("treerow");
+            row.set_widget_name(&format!("task-{}-{i}", a.pid));
+            row.add_css_class(&format!("tasks-{}", a.pid));
+            row.set_selectable(false);
+            row.set_activatable(false);
+            row.set_focusable(false);
+            let kind = crate::why::task_kind(&t.kind);
+            let task = w::vbox(2, &["pj"]);
+            let title = w::clip(&t.label, &["title"]);
+            title.set_width_chars(9);
+            task.append(&title);
+            // When the PID column makes way (a narrower window, or the wave column gone, whose
+            // place the line takes), so does the kind word in it: it goes under the label instead.
+            if hide & 0b11 != 0 {
+                task.append(&w::clip(kind, &["desc"]));
+            }
+            let age = w::clip(&crate::why::task_age(t.started_at.as_deref()), &["ev"]);
+            let started = t.started_at.clone();
+            live_text(ui, View::Agents, &age, move |_| Some(crate::why::task_age(started.as_deref())));
+            let link = if i + 1 == n { Link::Last } else { Link::Mid };
+            row.set_child(Some(&tree_row(&connector(link, None), w::clip(kind, &["tree"]).upcast(), task.upcast(), age.upcast(), cols, hide)));
+            let what = if t.kind == "monitor" { "Something this session is watching in the background" } else { "A command this session is running in the background" };
+            let pid = t.pid.map(|p| format!("\nProcess {p}")).unwrap_or_default();
+            row.set_tooltip_text(Some(&format!("{what}:\n{}{pid}", t.label)));
+            row
+        })
+        .collect()
+}
+
 /// The row named `name` in the list (rows on their way out have no name).
 fn find_named_row(ui: &Ui, name: &str) -> Option<gtk::ListBoxRow> {
     let list = &ui.w.views[&View::Agents].list;
@@ -1601,6 +1690,7 @@ pub fn stop_words(a: &AgentProc) -> Vec<String> {
         ],
         (ProcKind::Spare, ..) => vec!["It is a spare Claude nobody has used yet; stopping it loses nothing.".into()],
         (ProcKind::Subagent, ..) => vec!["It is a helper its session started. Stopping it ends that piece of work; the session carries on.".into(), later],
+        (ProcKind::Dashboard, ..) => vec!["It is Claude's list of your background sessions. Stopping it closes the list; the sessions carry on.".into(), later],
         (_, Some(_), _) => vec!["Claude stops this background session cleanly. Its conversation is kept, and you can resume it later.".into()],
         (_, None, Some(_)) => vec![
             format!(
@@ -1755,6 +1845,9 @@ fn fold_away(ui: &Ui, gone: &[u32]) -> bool {
             let grp = row.css_classes().into_iter().map(|c| c.to_string()).find(|c| c.starts_with("grp-"));
             rows.push(row);
             rows.extend(tree_rows(ui, pid));
+            // Its tasks go with it.
+            let tasks = format!("tasks-{pid}");
+            rows.extend(w::children(&list).filter(|x| x.has_css_class(&tasks)).filter_map(|x| x.downcast::<gtk::ListBoxRow>().ok()));
             if let Some(grp) = grp {
                 let mut members = Vec::new();
                 for x in w::children(&list) {
@@ -1943,6 +2036,9 @@ mod tests {
             children: vec![],
             start_ticks: Some(start),
             helpers: None,
+            tasks: Vec::new(),
+            others: Vec::new(),
+            others_rss_bytes: 0,
         }
     }
 

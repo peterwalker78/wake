@@ -1652,6 +1652,9 @@ mod tests {
             children: vec![],
             start_ticks: None,
             helpers: None,
+            tasks: Vec::new(),
+            others: Vec::new(),
+            others_rss_bytes: 0,
         };
         let mut ov = ProcOverview { procs: vec![p(42, None, true), p(7, Some("sid"), false), p(8, None, true)], stale_count: 2, stale_rss_bytes: 200, ..Default::default() };
         h.label_procs(&mut ov);

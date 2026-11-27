@@ -838,11 +838,12 @@ fn build(app: &gtk::Application, opts: &Opts) {
     }
     ui.src.set_options(&core);
     {
-        // "Follow the system": the desktop went light or dark.
+        // "Follow the system": the desktop went light or dark. "Desktop" accent: its colour changed
+        // (Settings' Desktop swatch shows it whatever the accent).
         let ui = ui.clone();
         theme::watch_system(move || {
             let p = prefs::get();
-            if p.theme == "system" && theme::apply(&p.theme, &p.accent) {
+            if theme::apply(&p.theme, &p.accent) {
                 redraw_all(&ui);
             }
         });
@@ -1873,6 +1874,11 @@ pub fn go_to(ui: &Ui, id: &str) {
             }
         },
     );
+}
+
+/// Brings forward the window showing Claude's agent list (process `pid`).
+pub fn go_to_window(ui: &Ui, pid: u32) {
+    bg(ui, move |src| src.go_to_window(pid, false), |ui, r| toast(ui, if r.message.is_empty() { if r.ok { "Done." } else { "That didn't work." } } else { &r.message }, !r.ok));
 }
 
 // ---------- new idea ----------

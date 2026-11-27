@@ -1497,7 +1497,7 @@ mod tests {
         assert!(inline("run `git status` now").contains(">git status</span>"));
         assert_eq!(inline("snake_case_name stays"), "snake_case_name stays");
         assert_eq!(inline("2 * 3 * 4"), "2 * 3 * 4");
-        assert_eq!(inline("see [the docs](https://example.com)"), "see <span foreground=\"#38CEFF\">the docs</span>");
+        assert_eq!(inline("see [the docs](https://example.com)"), "see <span foreground=\"#42D3FF\">the docs</span>", "the accent: the desktop's, and with none (as in tests) Wake's own");
         assert_eq!(inline("**unclosed"), "**unclosed");
     }
 

@@ -62,6 +62,9 @@ pub trait Source: Send + Sync {
     /// Go to a session: bring the terminal window showing it forward, or open a new terminal window
     /// running `claude attach` / the resume command. Blocks on D-Bus.
     fn go_to(&self, session: &str, dry_run: bool) -> ActionResult;
+    /// Bring forward the window showing Claude's agent list (process `pid`, a Dashboard row). Refuses
+    /// any other process. Blocks on D-Bus.
+    fn go_to_window(&self, pid: u32, dry_run: bool) -> ActionResult;
     /// Agent processes, sampled now (CPU needs two samples a second or more apart).
     fn processes(&self) -> ProcOverview;
     /// Stop one agent process. Refuses anything that isn't one of this user's agent processes, and,

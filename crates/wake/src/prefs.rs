@@ -2,7 +2,8 @@
 //! (wake-core's `settings`), changed by the Settings view, written back off the UI thread.
 //!
 //! A demo or a screenshot never writes the file. For screenshots, `WAKE_THEME`, `WAKE_ACCENT` and
-//! `WAKE_DENSITY` override what the file says, for that run only.
+//! `WAKE_DENSITY` override what the file says, for that run only (and `WAKE_DESKTOP_ACCENT`, read
+//! in theme.rs, stands in for the desktop's accent colour).
 
 use std::cell::{Cell, RefCell};
 

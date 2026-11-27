@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::live::LiveInfo;
-use crate::types::{ActionResult, Agent, AgentProc, Location, ProcKind, ProcOverview, ProjectResources, Resources, SessionResources, State, StopHow, WorkingNote};
+use crate::types::{ActionResult, Agent, AgentProc, Location, ProcKind, ProcOverview, ProjectResources, Resources, SessionResources, State, StopHow, TaskSummary, WorkingNote};
 use crate::{sys, util};
 
 /// Idle this long with no terminal window and no attach client counts as stale.
@@ -205,6 +205,8 @@ pub enum Role {
     PtyHost,
     Attach(String),
     SpareProc,
+    /// `claude agents`: Claude's list of background sessions.
+    Dashboard,
     Main,
 }
 
@@ -223,6 +225,9 @@ pub fn role_of(argv: &[String]) -> Role {
     }
     if has("--bg-spare") {
         return Role::SpareProc;
+    }
+    if argv.get(1).map(String::as_str) == Some("agents") {
+        return Role::Dashboard;
     }
     Role::Main
 }
@@ -280,6 +285,69 @@ pub fn short_command(argv: &[String]) -> String {
     }
     let s = out.join(" ");
     if s.chars().count() > 120 { format!("{}…", util::take_chars(&s, 119)) } else { s }
+}
+
+/// Shells, by the name the kernel gives their process.
+const SHELLS: &[&str] = &["bash", "sh", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh"];
+
+pub fn is_shell(comm: &str) -> bool {
+    SHELLS.contains(&comm)
+}
+
+/// The most tasks listed for one session.
+const MOST_TASKS: usize = 12;
+
+/// A task's label: what it runs on one line, secret-looking values hidden (as `short_command`),
+/// at most 60 characters.
+fn task_label(text: &str) -> String {
+    let words: Vec<String> = text.split_whitespace().map(|w| w.chars().filter(|c| !c.is_control()).collect()).collect();
+    util::take_chars(&short_command(&words), 60)
+}
+
+/// The shell word at the start of `s` (after spaces), with its quotes taken off: `'a'"'"'b'` is
+/// `a'b`. Stops at the first space or `;`, `&`, `|` outside quotes.
+fn shell_word(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.trim_start().chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => out.extend(chars.by_ref().take_while(|&c| c != '\'')),
+            '"' => {
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' => out.extend(chars.next()),
+                        c => out.push(c),
+                    }
+                }
+            }
+            '\\' => out.extend(chars.next()),
+            c if c.is_whitespace() || matches!(c, ';' | '&' | '|') => break,
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// What a shell found among a session's processes is running, for its task row: the script after
+/// `-c` (and, when that script only sets up and then `eval`s a command, that command), else the
+/// first program it has started, else its own command line.
+fn shell_label(p: &ProcInfo, kids: &[&ProcInfo]) -> String {
+    let flag = p.argv.iter().skip(1).position(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('c'));
+    let script = flag.and_then(|i| p.argv.iter().skip(i + 2).find(|a| !a.starts_with('-')));
+    if let Some(script) = script {
+        let run = match script.rfind("eval ") {
+            Some(at) if at == 0 || script[..at].ends_with(' ') => shell_word(&script[at + 5..]),
+            _ => script.clone(),
+        };
+        if !run.trim().is_empty() {
+            return task_label(&run);
+        }
+    }
+    match kids.iter().find(|k| !is_shell(&k.comm)) {
+        Some(k) => task_label(&short_command(&k.argv)),
+        None => task_label(&short_command(&p.argv)),
+    }
 }
 
 /// What the rest of Wake knows about a session, for a row.
@@ -433,7 +501,33 @@ impl Explorer {
                 Some(Cand { p, agent, role })
             })
             .collect();
-        let mut seen: Vec<u32> = cands.iter().map(|c| c.p.pid).collect();
+        let cand_pids: HashSet<u32> = cands.iter().map(|c| c.p.pid).collect();
+        let mut kids_of: HashMap<u32, Vec<&ProcInfo>> = HashMap::new();
+        for p in &all {
+            kids_of.entry(p.ppid).or_default().push(p);
+        }
+        // Every agent session's other processes: whatever runs below it that is not an agent
+        // (shells, builds, test runs), stopping at agents, which are rows of their own. Each
+        // process belongs to the nearest agent above it, so none is counted twice.
+        let others: HashMap<u32, Vec<&ProcInfo>> = cands
+            .iter()
+            .filter(|c| matches!(c.role, Role::Main | Role::SpareProc))
+            .map(|c| {
+                let mut found: Vec<&ProcInfo> = Vec::new();
+                let mut stack: Vec<u32> = vec![c.p.pid];
+                while let Some(pid) = stack.pop() {
+                    for k in kids_of.get(&pid).map_or(&[][..], Vec::as_slice) {
+                        if k.pid != c.p.pid && !cand_pids.contains(&k.pid) && found.len() < 4096 && !found.iter().any(|f| f.pid == k.pid) {
+                            found.push(k);
+                            stack.push(k.pid);
+                        }
+                    }
+                }
+                found.sort_by_key(|p| p.pid);
+                (c.p.pid, found)
+            })
+            .collect();
+        let mut seen: Vec<u32> = cands.iter().map(|c| c.p.pid).chain(others.values().flatten().map(|p| p.pid)).collect();
         seen.sort();
         self.samples.lock().unwrap_or_else(|e| e.into_inner()).retain(|pid, _| seen.binary_search(pid).is_ok());
         let cand_of: HashMap<u32, &Cand> = cands.iter().map(|c| (c.p.pid, c)).collect();
@@ -473,27 +567,52 @@ impl Explorer {
             pid
         };
 
-        let mk = |c: &Cand, kind: ProcKind| AgentProc {
-            pid: c.p.pid,
-            ppid: c.p.ppid,
-            kind,
-            agent: Some(c.agent),
-            command: short_command(&c.p.argv),
-            session_id: None,
-            job_id: None,
-            title: None,
-            project_name: None,
-            state: State::Unknown,
-            idle_seconds: None,
-            rss_bytes: c.p.rss_bytes,
-            cpu_percent: self.cpu(c.p, now_i),
-            started_at: Some(util::iso_from_epoch(started(c.p))),
-            location: None,
-            note: inp.notes.get(&c.p.pid).cloned(),
-            stale_reason: None,
-            children: Vec::new(),
-            start_ticks: Some(c.p.start_ticks),
-            helpers: None,
+        let mk = |c: &Cand, kind: ProcKind| {
+            let below = others.get(&c.p.pid).map_or(&[][..], Vec::as_slice);
+            let others_rss: u64 = below.iter().map(|p| p.rss_bytes).sum();
+            // Its own CPU and theirs; one just started (no second sample yet) adds nothing for now.
+            let others_cpu: f32 = below.iter().filter_map(|p| self.cpu(p, now_i)).sum();
+            AgentProc {
+                pid: c.p.pid,
+                ppid: c.p.ppid,
+                kind,
+                agent: Some(c.agent),
+                command: short_command(&c.p.argv),
+                session_id: None,
+                job_id: None,
+                title: None,
+                project_name: None,
+                state: State::Unknown,
+                idle_seconds: None,
+                rss_bytes: c.p.rss_bytes + others_rss,
+                cpu_percent: self.cpu(c.p, now_i).map(|own| own + others_cpu),
+                started_at: Some(util::iso_from_epoch(started(c.p))),
+                location: None,
+                note: inp.notes.get(&c.p.pid).cloned(),
+                stale_reason: None,
+                children: Vec::new(),
+                start_ticks: Some(c.p.start_ticks),
+                helpers: None,
+                tasks: Vec::new(),
+                others: below.iter().map(|p| p.pid).collect(),
+                others_rss_bytes: others_rss,
+            }
+        };
+        // The shells among a session's own child processes, as its tasks (for a session with no
+        // job record to list them).
+        let shell_tasks = |pid: u32| -> Vec<TaskSummary> {
+            let mut shells: Vec<&ProcInfo> = kids_of.get(&pid).map_or(&[][..], Vec::as_slice).iter().copied().filter(|k| is_shell(&k.comm) && !cand_pids.contains(&k.pid)).collect();
+            shells.sort_by_key(|k| (k.start_ticks, k.pid));
+            shells
+                .iter()
+                .take(MOST_TASKS)
+                .map(|k| TaskSummary {
+                    kind: "shell".into(),
+                    label: shell_label(k, kids_of.get(&k.pid).map_or(&[][..], Vec::as_slice)),
+                    started_at: Some(util::iso_from_epoch(started(k))),
+                    pid: Some(k.pid),
+                })
+                .collect()
         };
         let age = |c: &Cand| inp.now - started(c.p);
         // Only a session Claude's daemon hosts, or one left behind with init (or the user's systemd)
@@ -531,6 +650,7 @@ impl Explorer {
         }
 
         let mut daemons = Vec::new();
+        let mut dashboards: Vec<Vec<AgentProc>> = Vec::new();
         let mut sessions: Vec<Vec<AgentProc>> = Vec::new();
         let mut spares: Vec<Vec<AgentProc>> = Vec::new();
         let mut strays: Vec<Vec<AgentProc>> = Vec::new();
@@ -560,6 +680,16 @@ impl Explorer {
                     daemons.push(r);
                 }
                 Role::PtyHost | Role::Attach(_) => {}
+                // Claude's agent list: where it is shown, and nothing that would make it a session.
+                Role::Dashboard => {
+                    let mut r = mk(c, ProcKind::Dashboard);
+                    r.title = Some("Claude's agent list".into());
+                    r.location = (inp.locate)(c.p.pid, None);
+                    let mut group = Vec::new();
+                    fold(&mut r, &hosts_of(c.p.pid), &mut group);
+                    group.insert(0, r);
+                    dashboards.push(group);
+                }
                 Role::SpareProc | Role::Main => {
                     if sub_parent.contains_key(&c.p.pid) {
                         continue; // folded under its session below
@@ -606,7 +736,12 @@ impl Explorer {
                         if r.note.is_none() {
                             r.note.clone_from(&info.note);
                         }
-                        r.helpers = info.job_id.as_deref().and_then(|j| self.job_record(j)).map(|rec| helpers(&rec));
+                        let record = info.job_id.as_deref().and_then(|j| self.job_record(j));
+                        r.helpers = record.as_ref().map(helpers);
+                        r.tasks = match &record {
+                            Some(rec) => tasks(rec),
+                            None => shell_tasks(c.p.pid),
+                        };
                         let mut group = Vec::new();
                         let mut extra: Vec<&Cand> = hosts_of(c.p.pid);
                         let att: Vec<&Cand> = info.job_id.as_ref().and_then(|j| attaches.get(j)).cloned().unwrap_or_default();
@@ -623,6 +758,7 @@ impl Explorer {
                     } else {
                         r.session_id = codex_sid;
                         r.state = State::Unknown;
+                        r.tasks = shell_tasks(c.p.pid);
                         let mut group = Vec::new();
                         fold(&mut r, &hosts_of(c.p.pid), &mut group);
                         group.insert(0, r);
@@ -711,8 +847,10 @@ impl Explorer {
         spares.sort_by_key(|g| g[0].pid);
         strays.sort_by_key(|g| g[0].pid);
 
+        dashboards.sort_by_key(|g| g[0].pid);
         let mut procs = daemons;
         procs.extend(sessions.into_iter().flatten());
+        procs.extend(dashboards.into_iter().flatten());
         procs.extend(spares.into_iter().flatten());
         procs.extend(strays.into_iter().flatten());
         procs.extend(loose.into_iter().flatten());
@@ -749,6 +887,8 @@ pub fn resources(ov: &ProcOverview, project_of: &dyn Fn(&str) -> Option<String>)
         let cpu = std::iter::once(r.cpu_percent).chain(kids.iter().map(|k| k.cpu_percent)).try_fold(0.0f32, |a, c| c.map(|c| a + c));
         let mut pids = vec![r.pid];
         pids.extend(r.children.iter().copied());
+        pids.extend(r.others.iter().copied());
+        pids.extend(kids.iter().flat_map(|k| k.others.iter().copied()));
         let project = project_of(&sid);
         match projects.iter_mut().find(|p| p.project == project) {
             Some(p) => {
@@ -762,7 +902,15 @@ pub fn resources(ov: &ProcOverview, project_of: &dyn Fn(&str) -> Option<String>)
             }
             None => projects.push(ProjectResources { project, rss_bytes: r.rss_bytes, cpu_percent: cpu, sessions: 1, processes: pids.len() as u32 }),
         }
-        sessions.push(SessionResources { session: sid, pid: r.pid, start_ticks: r.start_ticks, rss_bytes: r.rss_bytes, own_rss_bytes: r.rss_bytes.saturating_sub(kids_rss), cpu_percent: cpu, pids });
+        sessions.push(SessionResources {
+            session: sid,
+            pid: r.pid,
+            start_ticks: r.start_ticks,
+            rss_bytes: r.rss_bytes,
+            own_rss_bytes: r.rss_bytes.saturating_sub(kids_rss + r.others_rss_bytes),
+            cpu_percent: cpu,
+            pids,
+        });
     }
     projects.sort_by_key(|p| std::cmp::Reverse(p.rss_bytes));
     Resources { sessions, projects, total_rss_bytes: ov.total_rss_bytes }
@@ -771,9 +919,10 @@ pub fn resources(ov: &ProcOverview, project_of: &dyn Fn(&str) -> Option<String>)
 /// A subagent process counts as a parent job's `fan` entry when they started this close together.
 const FAN_MATCH: f64 = 30.0;
 
-/// One running subagent in a job record's `fan`.
+/// One running entry in a job record's `fan`: a subagent, a shell or a monitor.
 #[derive(Debug, Clone, PartialEq)]
 struct FanAgent {
+    kind: String,
     label: String,
     /// Epoch seconds (`startedAt` is in milliseconds).
     started: Option<f64>,
@@ -785,6 +934,11 @@ struct FanAgent {
 /// `agent` without `doneAt` is running; its `label` is its task, on one line, at most 60
 /// characters. A malformed entry ends the list there.
 fn fan_agents(record: &serde_json::Value) -> Vec<FanAgent> {
+    fan_running(record, &["agent"])
+}
+
+/// The running entries of the kinds given, read by the same rules as subagents.
+fn fan_running(record: &serde_json::Value, kinds: &[&str]) -> Vec<FanAgent> {
     use serde_json::Value;
     let entries: Vec<&Value> = match record.get("fan") {
         Some(Value::Array(items)) => items.iter().collect(),
@@ -798,7 +952,8 @@ fn fan_agents(record: &serde_json::Value) -> Vec<FanAgent> {
             Value::Null => continue,
             _ => break,
         };
-        let running = entry.get("kind").and_then(Value::as_str) == Some("agent") && entry.get("doneAt").is_none_or(Value::is_null);
+        let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
+        let running = kinds.contains(&kind) && entry.get("doneAt").is_none_or(Value::is_null);
         if !running {
             continue;
         }
@@ -809,7 +964,7 @@ fn fan_agents(record: &serde_json::Value) -> Vec<FanAgent> {
         };
         let label: String = label.chars().filter(|c| !c.is_control()).collect();
         let label = util::take_chars(label.trim(), 60);
-        out.push(FanAgent { label, started: entry.get("startedAt").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s / 1000.0), taken: false });
+        out.push(FanAgent { kind: kind.to_string(), label, started: entry.get("startedAt").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s / 1000.0), taken: false });
         if out.len() == 64 {
             break;
         }
@@ -820,6 +975,17 @@ fn fan_agents(record: &serde_json::Value) -> Vec<FanAgent> {
 /// The running subagents' tasks, up to eight, as the screensaver's helper lines show them.
 pub fn helpers(record: &serde_json::Value) -> Vec<String> {
     fan_agents(record).into_iter().map(|f| f.label).filter(|l| !l.is_empty()).take(8).collect()
+}
+
+/// The background tasks a job record has running (`fan` entries of kind `shell` or `monitor` not
+/// yet done), in the order it lists them, each label with secret-looking values hidden.
+pub fn tasks(record: &serde_json::Value) -> Vec<TaskSummary> {
+    fan_running(record, &["shell", "monitor"])
+        .into_iter()
+        .filter(|f| !f.label.is_empty())
+        .take(MOST_TASKS)
+        .map(|f| TaskSummary { label: task_label(&f.label), kind: f.kind, started_at: f.started.map(util::iso_from_epoch), pid: None })
+        .collect()
 }
 
 /// A `bg-spare` process no job has claimed yet: its claim socket (`--bg-spare <sock>`) is still
@@ -1185,8 +1351,8 @@ pub(crate) mod tests {
         };
         let locate = |pid: u32, job: Option<&str>| -> Option<Location> { if pid == 400 || pid == 600 || job == Some("jobA") { Some(Location { pid: 3264, app: Some("Term".into()) }) } else { None } };
         let mut notes = HashMap::new();
-        notes.insert(201, WorkingNote { name: "claude: alpha".into(), idle: true, helpers: vec![] });
-        notes.insert(4242, WorkingNote { name: "claude: gone".into(), idle: true, helpers: vec![] });
+        notes.insert(201, WorkingNote { name: "claude: alpha".into(), idle: true, helpers: vec![], tasks: vec![] });
+        notes.insert(4242, WorkingNote { name: "claude: gone".into(), idle: true, helpers: vec![], tasks: vec![] });
         ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, windows_known: true, now })
     }
 
@@ -1286,6 +1452,34 @@ pub(crate) mod tests {
         fs::write(fp.root().join("42/stat"), "42 (codex) S 1 42 42 0 -1 4194304 1 1 1 1 200 100 0 0 20 0 1 0 5 1000 100\n").unwrap();
         let cpu = ex.processes(&inp).procs[0].cpu_percent.unwrap();
         assert!((cpu - 100.0 * (300.0 - 100.0) / crate::sys::clock_ticks() as f32 / 2.0).abs() < 5.0, "{cpu}");
+    }
+
+    #[test]
+    fn cpu_counts_the_processes_below_an_agent() {
+        let fp = FakeProc::new();
+        let uid = crate::sys::uid();
+        fp.add(42, 1, &["codex"], "/usr/bin/codex", 1000, 100, 5, uid);
+        fp.add(43, 42, &["/bin/sh", "-c", "make"], "/bin/sh", 500, 10, 6, uid);
+        let ex = Explorer::new(fp.root());
+        let live = HashMap::new();
+        let view = |_: &LiveInfo| SessionView::default();
+        let locate = |_: u32, _: Option<&str>| -> Option<Location> { None };
+        let notes = HashMap::new();
+        let inp = Inputs { live: &live, view: &view, locate: &locate, notes: &notes, windows_known: true, now: util::now() };
+        let first = ex.processes(&inp);
+        assert_eq!((first.procs.len(), first.procs[0].cpu_percent), (1, None), "the shell is no row of its own");
+        {
+            let mut s = ex.samples.lock().unwrap();
+            for pid in [42, 43] {
+                s.get_mut(&pid).unwrap().2 -= std::time::Duration::from_secs(2);
+            }
+        }
+        fs::write(fp.root().join("42/stat"), "42 (codex) S 1 42 42 0 -1 4194304 1 1 1 1 200 100 0 0 20 0 1 0 5 1000 100\n").unwrap();
+        fs::write(fp.root().join("43/stat"), "43 (sh) S 42 43 43 0 -1 4194304 1 1 1 1 110 0 0 0 20 0 1 0 6 1000 100\n").unwrap();
+        let cpu = ex.processes(&inp).procs[0].cpu_percent.unwrap();
+        let hz = crate::sys::clock_ticks() as f32;
+        let want = 100.0 * (200.0 + 100.0) / hz / 2.0;
+        assert!((cpu - want).abs() < 5.0, "{cpu} vs {want}");
     }
 
     #[test]
@@ -1585,7 +1779,11 @@ pub(crate) mod tests {
         let mut kids = s.children.clone();
         kids.sort();
         assert_eq!(kids, [110, 113, 115, 117]);
-        assert_eq!(s.rss_bytes, (300_000 + 40_000 + 200_000 + 50_000 + 90_000) * 1024);
+        // The bash under it (112, 114) counts into it; the sh under codex (116) into codex's row.
+        assert_eq!(s.rss_bytes, (300_000 + 40_000 + 200_000 + 50_000 + 90_000 + 3_000 + 3_000 + 1_000) * 1024);
+        assert_eq!((s.others.as_slice(), row(&o, 115).others.as_slice()), (&[112, 114][..], &[116][..]));
+        // Its tasks are the job record's, not its processes'.
+        assert_eq!(s.tasks.iter().map(|t| (t.kind.as_str(), t.label.as_str(), t.pid)).collect::<Vec<_>>(), [("shell", "cargo test", None)]);
         // idle 7 h with nothing attached: the session itself may be stale, and says so plainly
         assert!(s.stale_reason.as_deref().unwrap().starts_with("idle for 7 h"), "{:?}", s.stale_reason);
         for (pid, title) in [(113, Some("Review the parser")), (115, Some("Port codex")), (117, None)] {
@@ -1603,7 +1801,7 @@ pub(crate) mod tests {
         assert!(at(111) < at(113) && at(111) < at(115) && at(111) < at(117));
         assert!(o.procs.iter().all(|p| !matches!(p.kind, ProcKind::Spare | ProcKind::Stray)));
         // memory counted once; only the session itself is stale
-        let kb: u64 = [100u64, 110, 111, 113, 115, 117].iter().map(|p| read_proc(r.fp.root(), *p as u32).unwrap().rss_bytes).sum();
+        let kb: u64 = [100u64, 110, 111, 112, 113, 114, 115, 116, 117].iter().map(|p| read_proc(r.fp.root(), *p as u32).unwrap().rss_bytes).sum();
         assert_eq!(o.total_rss_bytes, kb);
         assert_eq!((o.stale_count, o.stale_rss_bytes), (1, s.rss_bytes));
     }
@@ -1652,6 +1850,34 @@ pub(crate) mod tests {
         assert_eq!(kids, [51, 53]);
     }
 
+    /// `claude agents` in a terminal window is Claude's agent list: no session, no project, never
+    /// stale however long it has been open, and its window is where it is.
+    #[test]
+    fn claudes_agent_list_is_its_own_kind_and_never_stale() {
+        let mut r = Rig::new();
+        let h = 3600.0;
+        r.add(100, 1, &[V, "daemon", "run"], V, 100_000, 30.0 * h);
+        r.add(340, 339, &["claude", "agents"], V, 160_000, 20.0 * h);
+        r.add(341, 1, &["claude"], V, 200_000, 20.0 * h);
+        r.entry(341, "s-real", None, false, 10.0 * h);
+        let mut ex = Explorer::new(r.fp.root());
+        ex.jobs_dir = Some(r.jobs.0.clone());
+        let view = |i: &LiveInfo| SessionView { title: None, project_name: Some("wake".into()), state: Some(State::Idle), idle_since: i.status_updated_at, used: true };
+        let locate = |pid: u32, _: Option<&str>| -> Option<Location> { (pid == 340).then(|| Location { pid: 330, app: Some("Term".into()) }) };
+        let notes = HashMap::new();
+        let o = ex.processes(&Inputs { live: &r.live, view: &view, locate: &locate, notes: &notes, windows_known: true, now: r.now });
+        let d = row(&o, 340);
+        assert_eq!(d.kind, ProcKind::Dashboard);
+        assert_eq!(d.title.as_deref(), Some("Claude's agent list"));
+        assert_eq!((d.session_id.as_deref(), d.project_name.as_deref(), d.stale_reason.as_deref()), (None, None, None));
+        assert_eq!(d.location.as_ref().map(|l| l.pid), Some(330));
+        assert!(d.tasks.is_empty());
+        assert_eq!(o.stale_count, 1, "only the real session, idle 10 h with no window");
+        assert_eq!(row(&o, 341).kind, ProcKind::Session);
+        assert_eq!(role_of(&["claude".into(), "agents".into()]), Role::Dashboard);
+        assert_eq!(role_of(&["claude".into(), "--resume".into(), "agents".into()]), Role::Main, "only as its command");
+    }
+
     #[test]
     fn helpers_come_from_the_job_fan_in_either_form() {
         let v = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
@@ -1684,7 +1910,85 @@ pub(crate) mod tests {
         assert_eq!((row(&o, 72).kind, row(&o, 72).stale_reason.as_deref()), (ProcKind::Subagent, None));
         assert_eq!(row(&o, 70).children, [72]);
         assert_eq!(o.stale_count, 1);
-        assert_eq!(o.stale_rss_bytes, (200_000 + 150_000) * 1024);
+        assert_eq!(o.stale_rss_bytes, (200_000 + 2_000 + 150_000) * 1024, "the bash between them counts too");
+    }
+
+    #[test]
+    fn tasks_come_from_the_job_fan_with_secrets_hidden() {
+        let v = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        let rec = v(&format!(
+            r#"{{"fan":[{{"kind":"agent","label":"Review"}},{{"kind":"shell","label":"cargo   test\n --offline","startedAt":1795000000000}},{{"kind":"monitor","label":"CI run 42"}},{{"kind":"shell","label":"old","doneAt":5}},{{"kind":"shell","label":""}},{{"kind":"shell","label":"curl --token=abc123 https://x"}},{{"kind":"shell","label":"{}"}}]}}"#,
+            "y".repeat(90)
+        ));
+        let t = tasks(&rec);
+        let got: Vec<(&str, &str)> = t.iter().map(|t| (t.kind.as_str(), t.label.as_str())).collect();
+        let long = "y".repeat(60);
+        assert_eq!(got, [("shell", "cargo test --offline"), ("monitor", "CI run 42"), ("shell", "curl --token=… https://x"), ("shell", long.as_str())]);
+        assert_eq!(t[0].started_at.as_deref(), Some(util::iso_from_epoch(1795000000.0).as_str()));
+        assert_eq!((t[1].started_at.as_deref(), t[1].pid), (None, None));
+        // Subagents are read as before, never as tasks.
+        assert_eq!(helpers(&rec), ["Review"]);
+        let obj = v(r#"{"fan":{"m":{"kind":"monitor","label":"deploy log","doneAt":null}}}"#);
+        assert_eq!(tasks(&obj).len(), 1);
+        assert!(tasks(&v(r#"{"fan":null}"#)).is_empty());
+    }
+
+    #[test]
+    fn a_shells_label_is_the_command_it_runs() {
+        assert_eq!(shell_word(r#"'tr '"'"'\0'"'"' x' && pwd"#), r"tr '\0' x");
+        assert_eq!(shell_word(r#"  "a \"b\"" c"#), r#"a "b""#);
+        assert_eq!(shell_word("cargo;ls"), "cargo");
+        let p =
+            |argv: &[&str]| ProcInfo { pid: 9, ppid: 1, uid: 0, comm: base(argv[0]).into(), argv: argv.iter().map(|a| a.to_string()).collect(), exe: None, rss_bytes: 0, cpu_ticks: 0, start_ticks: 0 };
+        // A wrapper that sets up and then evals the command: the command.
+        let wrapped = p(&["/bin/bash", "-c", "-l", "source /h/.snap/s.sh 2>/dev/null || true && eval 'cargo build --release' \\< /dev/null && pwd -P >| /tmp/x-cwd"]);
+        assert_eq!(shell_label(&wrapped, &[]), "cargo build --release");
+        assert_eq!(shell_label(&p(&["sh", "-lc", "npm run dev"]), &[]), "npm run dev");
+        assert_eq!(shell_label(&p(&["bash", "-c", "API_TOKEN=s3cret ./deploy.sh"]), &[]), "API_TOKEN=… ./deploy.sh");
+        // No script: what it has started, else itself.
+        let kid = p(&["/usr/bin/python3", "serve.py", "--password", "hunter2"]);
+        assert_eq!(shell_label(&p(&["zsh"]), &[&kid]), "python3 serve.py --password …");
+        assert_eq!(shell_label(&p(&["/usr/bin/fish"]), &[]), "fish");
+    }
+
+    /// A session in a terminal (no job record): its shells are its tasks, and everything below it
+    /// that is not an agent counts into its memory, once.
+    #[test]
+    fn a_terminal_sessions_shells_are_its_tasks_and_count_into_it() {
+        let mut r = Rig::new();
+        r.add(70, 1, &["claude"], V, 200_000, 3600.0);
+        r.add(71, 70, &["/bin/bash", "-c", "-l", "source /h/s.sh && eval 'cargo build --release' && pwd -P >| /tmp/c"], "/bin/bash", 2_000, 300.0);
+        r.add(72, 71, &["cargo", "build", "--release"], "/usr/bin/cargo", 400_000, 300.0);
+        r.add(73, 72, &["rustc", "--crate-name", "x"], "/usr/bin/rustc", 900_000, 10.0);
+        r.add(74, 70, &["zsh"], "/usr/bin/zsh", 3_000, 900.0);
+        r.add(75, 74, &["npm", "run", "dev"], "/usr/bin/npm", 80_000, 900.0);
+        r.add(76, 70, &["python3", "helper.py"], "/usr/bin/python3", 10_000, 100.0);
+        // codex run by a shell: an agent of its own, with its own shell below it
+        r.add(77, 70, &["/bin/bash", "-c", "codex exec go"], "/bin/bash", 2_000, 60.0);
+        r.add(78, 77, &["codex", "exec", "go"], "/usr/bin/codex", 50_000, 60.0);
+        r.add(79, 78, &["/bin/sh", "-c", "ls"], "/bin/sh", 1_000, 5.0);
+        r.entry(70, "s-term", None, false, 10.0);
+        let o = r.run();
+        let s = row(&o, 70);
+        let tasks: Vec<(&str, &str, Option<u32>)> = s.tasks.iter().map(|t| (t.kind.as_str(), t.label.as_str(), t.pid)).collect();
+        assert_eq!(tasks, [("shell", "npm run dev", Some(74)), ("shell", "cargo build --release", Some(71)), ("shell", "codex exec go", Some(77))], "oldest first");
+        assert!(s.tasks.iter().all(|t| t.started_at.is_some()));
+        assert_eq!(s.others, [71, 72, 73, 74, 75, 76, 77]);
+        assert_eq!(s.rss_bytes, (200_000 + 2_000 + 400_000 + 900_000 + 3_000 + 80_000 + 10_000 + 2_000 + 50_000 + 1_000) * 1024);
+        let codex = row(&o, 78);
+        assert_eq!((codex.kind, codex.others.as_slice()), (ProcKind::Subagent, &[79][..]));
+        assert!(codex.tasks.is_empty(), "only sessions list tasks");
+        // Each process once: the session's memory is everything from 70 down.
+        let kb: u64 = (70..=79).map(|p| read_proc(r.fp.root(), p).unwrap().rss_bytes).sum();
+        assert_eq!(o.total_rss_bytes, kb);
+        let res = resources(&o, &|_| None);
+        let one = res.session("s-term").unwrap();
+        assert_eq!(one.rss_bytes, kb);
+        assert_eq!(one.own_rss_bytes, 200_000 * 1024);
+        let mut pids = one.pids.clone();
+        pids.sort();
+        assert_eq!(pids, (70..=79).collect::<Vec<u32>>());
+        assert_eq!(res.projects[0].processes, 10);
     }
 
     #[test]

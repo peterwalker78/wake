@@ -19,7 +19,9 @@ use crate::util;
 
 pub const FILE: &str = "settings.toml";
 pub const THEMES: [&str; 3] = ["dark", "light", "system"];
-pub const ACCENTS: [&str; 4] = ["cyan", "mint", "violet", "blue"];
+/// "desktop" follows the desktop's own accent colour (the default since 2026-11-27); the rest are
+/// Wake's presets. A file that names a preset keeps it.
+pub const ACCENTS: [&str; 5] = ["desktop", "cyan", "mint", "violet", "blue"];
 pub const DENSITIES: [&str; 2] = ["reduced", "detailed"];
 /// "full": panels slide, sections open and rows fade (each 150–220 ms); "reduced": nothing moves.
 /// The desktop's own "reduce animation" setting is honoured either way.
@@ -40,6 +42,7 @@ pub struct Settings {
     pub ai: String,
     /// "dark", "light" or "system" (follow the desktop's light/dark preference).
     pub theme: String,
+    /// "desktop" (the desktop's accent colour) or one of Wake's presets.
     pub accent: String,
     /// "reduced" (folded panel sections, small waves) or "detailed".
     pub density: String,
@@ -65,7 +68,7 @@ impl Default for Settings {
         Settings {
             ai: Agent::Claude.id().into(),
             theme: "dark".into(),
-            accent: "cyan".into(),
+            accent: "desktop".into(),
             density: "reduced".into(),
             motion: "full".into(),
             start_view: "monitor".into(),
@@ -304,6 +307,19 @@ mod tests {
         assert_eq!(t["other"]["x"].as_array().map(Vec::len), Some(2));
         assert_eq!(t["look"]["theme"].as_str(), Some("dark"));
         assert!(text.starts_with("# Wake's settings."));
+    }
+
+    #[test]
+    fn the_accent_follows_the_desktop_unless_a_preset_was_saved() {
+        let (_s, dir) = tmp("accent");
+        assert_eq!(load(&dir).0.accent, "desktop", "a new install");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(FILE), "[look]\ntheme = \"light\"\n").unwrap();
+        assert_eq!(load(&dir).0.accent, "desktop", "no accent saved");
+        fs::write(dir.join(FILE), "[look]\naccent = \"cyan\"\n").unwrap();
+        assert_eq!(load(&dir).0.accent, "cyan", "a saved preset is the person's choice, even the old default");
+        fs::write(dir.join(FILE), "[look]\naccent = \"Desktop\"\n").unwrap();
+        assert_eq!(load(&dir).0.accent, "desktop");
     }
 
     #[test]

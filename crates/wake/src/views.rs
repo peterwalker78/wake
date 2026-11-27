@@ -1256,9 +1256,14 @@ fn project_row(ui: &Ui, s: &SessionSummary, n: usize) -> gtk::ListBoxRow {
     r.add_css_class("grouprow");
     r.add_css_class("projrow");
     let b = w::hbox(8, &["projhead"]);
-    if let Some(tag) = project_tag(ui, s.project.as_deref()) {
-        b.append(&tag);
-    }
+    // No colour, no dot: the room stays, so every name starts in the same place.
+    let tag = project_tag(ui, s.project.as_deref()).unwrap_or_else(|| {
+        let gap = w::hbox(0, &[]);
+        gap.set_size_request(6, 6);
+        gap
+    });
+    tag.set_valign(gtk::Align::Center);
+    b.append(&tag);
     b.append(&w::label(&project_label(s.project_name.as_deref()), &["pname"]));
     if n > 1 {
         b.append(&w::label(&n.to_string(), &["dim", "count"]));

@@ -709,6 +709,12 @@ window.wake .notitle, window.wake .titlebar.notitle { min-height: 0; padding: 0;
 list.table > row.herorow, list.table > row.herorow:hover, list.table > row.sectrow, list.table > row.sectrow:hover { border-bottom: none; background-color: transparent; }
 .pagetitle { padding: 28px 32px 4px; }
 .sect { padding: 22px 32px 10px; }
+/* Monitor: a project's name over its box of sessions, set in from the section heading */
+list.table > row.projrow, list.table > row.projrow:hover { border-bottom: none; background-color: transparent; }
+.projhead { padding: 14px 40px 8px; }
+list.table > row.sectrow + row.projrow .projhead { padding-top: 0; }
+.projhead .pname { font-size: 13px; font-weight: 600; }
+.ptitle { font-weight: 600; }
 
 /* cards */
 .card { background-color: @panel; border: 1px solid @line2; border-radius: 12px; }

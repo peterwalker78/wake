@@ -497,6 +497,11 @@ fn attribution<'a>(st: &'a AppState, session: &str) -> Option<&'a Attribution> {
     st.ov.as_ref()?.attribution.as_ref()?.iter().find(|a| a.session == session)
 }
 
+/// Whether Wake only guessed the session's project (from its title or the files it changed).
+pub fn guessed(ui: &Ui, s: &SessionSummary) -> bool {
+    attribution(&ui.st.borrow(), &s.id).is_some_and(Attribution::guessed)
+}
+
 /// The project as a row or the panel should say it: "probably night-shift" for a guess.
 /// disk.rs hook target (in place of `views::project_label`).
 pub fn project_words(ui: &Ui, s: &SessionSummary) -> String {

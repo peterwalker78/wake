@@ -69,14 +69,12 @@ pub trait Source: Send + Sync {
     /// nothing was stopped."), never signalled. May block up to 20 s (`claude stop`).
     fn stop(&self, pid: u32, start_ticks: Option<u64>, how: StopHow, dry_run: bool) -> ActionResult;
 
-    // ---- Hold-to-peek (added 2026-11-20; default bodies so other implementors still compile) ----
+    // ---- Hold-to-peek ----
 
     /// What a background session's terminal shows now (read-only): `claude logs <jobId>`. None for
     /// any other session (a terminal app's own screen can't be read). Blocks up to 2.5 s; repeated
     /// calls within 250 ms share one read.
-    fn screen(&self, _session: &str) -> Option<Screen> {
-        None
-    }
+    fn screen(&self, session: &str) -> Option<Screen>;
     /// How this desktop lets Wake show an agent's window (found once; cheap after that, but the
     /// first call asks D-Bus).
     fn look_kind(&self) -> LookKind {
@@ -96,95 +94,68 @@ pub trait Source: Send + Sync {
         None
     }
 
-    // ---- Questions (added 2026-11-20; default bodies so other implementors still compile) ----
+    // ---- Questions ----
 
     /// Every question thread and what is being answered, or None when nothing changed since `since`
     /// (the `seq` of the last overview; 0 for the first call). Cheap: from memory (the first call
     /// reads the thread files).
-    fn questions(&self, _since: u64) -> Option<QOverview> {
-        None
-    }
+    fn questions(&self, since: u64) -> Option<QOverview>;
     /// Ask a question: a follow-up in `thread`, or a new thread (in `project`, whose files Claude may
     /// read but never change; None for "just a question"). Queued behind any question being
     /// answered; returns the thread's id at once. Writes the thread file.
-    fn ask(&self, _thread: Option<&str>, _question: &str, _project: Option<&str>) -> Result<String, String> {
-        Err("Questions aren't available here.".into())
-    }
+    fn ask(&self, thread: Option<&str>, question: &str, project: Option<&str>) -> Result<String, String>;
     /// Ask a thread's last question again after it failed or was stopped.
     fn retry_question(&self, _thread: &str) -> Result<(), String> {
         Err("Questions aren't available here.".into())
     }
     /// Stop the answer being written for `thread` (or drop its queued question). True if there was one.
     /// Signals only the `claude` process Wake started for it.
-    fn cancel_question(&self, _thread: &str) -> bool {
-        false
-    }
+    fn cancel_question(&self, thread: &str) -> bool;
     /// Delete a thread (stopping its answer first). Claude's own transcript stays where it is.
-    fn delete_thread(&self, _thread: &str) -> Result<(), String> {
-        Err("Questions aren't available here.".into())
-    }
+    fn delete_thread(&self, thread: &str) -> Result<(), String>;
     /// The person has seen the thread's latest answer.
-    fn mark_read(&self, _thread: &str) {}
+    fn mark_read(&self, thread: &str);
 
-    // ---- Behind the remote (added 2026-11-20; default bodies so other implementors still compile) ----
+    // ---- Behind the remote ----
 
     /// Ask the remotes again now (`git ls-remote`, never a fetch): one project's repos, or every
     /// tracked project's. Returns at once; the answer shows in a later overview's `behind`.
     fn check_remotes(&self, _project: Option<&str>) {}
     /// The person has seen the "building while behind" alarm for this project: quiet until it
     /// catches up and falls behind again.
-    fn ack_behind(&self, _project: &str) {}
+    fn ack_behind(&self, project: &str);
     /// `git pull --ff-only` in the project's behind repo: the one git write in Wake, only after the
     /// person confirms it, and refused unless the tree is clean and the branch can fast-forward.
     /// Blocks on the network (up to 2 min).
-    fn pull(&self, _project: &str, _dry_run: bool) -> ActionResult {
-        ActionResult { ok: false, message: "Pulling isn't available here.".into(), steps: vec![] }
-    }
+    fn pull(&self, project: &str, dry_run: bool) -> ActionResult;
 
-    // ---- Settings (added 2026-11-20; default bodies so other implementors still compile) ----
+    // ---- Settings ----
 
     /// What the person chose in Settings that the core acts on: which AI answers new questions, how
     /// often to ask remotes (never, with None), whether to send the "behind" notification. Cheap.
     fn set_options(&self, _o: &settings::CoreOptions) {}
     /// Each AI Questions could use, whether Wake can keep it read-only here, and a hint. Cheap
     /// (looks for the programs, never runs them).
-    fn question_ais(&self) -> Vec<questions::AiChoice> {
-        vec![questions::choice(questions::Ai::Claude, None, false)]
-    }
+    fn question_ais(&self) -> Vec<questions::AiChoice>;
     /// Set (or clear, with None) a project's dot colour, one of `store::COLOUR_NAMES`. Writes
     /// projects.json.
-    fn set_project_color(&self, _id: &str, _color: Option<&str>) -> Result<ProjectSummary, String> {
-        Err("Colours can't be changed here.".into())
-    }
+    fn set_project_color(&self, id: &str, color: Option<&str>) -> Result<ProjectSummary, String>;
     /// Set a project's next step without pausing it. Writes projects.json only.
-    fn set_next(&self, _id: &str, _next: &str) -> Result<ProjectSummary, String> {
-        Err("The next step can't be changed here.".into())
-    }
-    /// Put a project in a group (None: no group). Writes projects.json. Added 2026-11-25.
-    fn set_project_group(&self, _id: &str, _group: Option<&str>) -> Result<ProjectSummary, String> {
-        Err("Groups can't be changed here.".into())
-    }
+    fn set_next(&self, id: &str, next: &str) -> Result<ProjectSummary, String>;
+    /// Put a project in a group (None: no group). Writes projects.json.
+    fn set_project_group(&self, id: &str, group: Option<&str>) -> Result<ProjectSummary, String>;
     /// Add a project group with nothing in it yet; a name in use is that group. Returns the name
-    /// as kept. Writes projects.json. Added 2026-11-27.
-    fn add_group(&self, _name: &str) -> Result<String, String> {
-        Err("Groups can't be changed here.".into())
-    }
+    /// as kept. Writes projects.json.
+    fn add_group(&self, name: &str) -> Result<String, String>;
     /// Put the project groups in this order (as the person dragged them). Writes projects.json.
-    /// Added 2026-11-27.
-    fn order_groups(&self, _order: &[String]) -> Result<(), String> {
-        Err("Groups can't be changed here.".into())
-    }
+    fn order_groups(&self, order: &[String]) -> Result<(), String>;
     /// Remove a project group; its projects stay tracked, in no group. Returns how many were in
-    /// it. Writes projects.json. Added 2026-11-27.
-    fn remove_group(&self, _name: &str) -> Result<usize, String> {
-        Err("Groups can't be changed here.".into())
-    }
+    /// it. Writes projects.json.
+    fn remove_group(&self, name: &str) -> Result<usize, String>;
     /// Set a project's importance: "high", "low", or None for normal. Writes projects.json.
-    fn set_project_importance(&self, _id: &str, _importance: Option<&str>) -> Result<ProjectSummary, String> {
-        Err("Importance can't be changed here.".into())
-    }
+    fn set_project_importance(&self, id: &str, importance: Option<&str>) -> Result<ProjectSummary, String>;
 
-    // ---- Disk, resources, attribution (added 2026-11-20; default bodies so other implementors still compile) ----
+    // ---- Disk, resources, attribution ----
     // The numbers themselves come in `Overview::disk`, `Overview::resources` and `Overview::attribution`.
 
     /// Measure the disk again now: one project's folders, or (None) everything. Returns at once;
@@ -204,29 +175,21 @@ pub trait Source: Send + Sync {
     }
     /// The person says which project a session belongs to: Some(Some(id)), Some(None) for "no
     /// project", None to go back to Wake's own guess. Kept in Wake's store. Cheap.
-    fn set_session_project(&self, _session: &str, _project: Option<Option<&str>>) -> Result<(), String> {
-        Err("Projects can't be set here.".into())
-    }
+    fn set_session_project(&self, session: &str, project: Option<Option<&str>>) -> Result<(), String>;
 
-    // ---- Starting an agent on ideas (added 2026-11-20; default bodies so other implementors still compile) ----
+    // ---- Starting an agent on ideas ----
 
     /// The agents a brief can be sent to here: Claude, and Codex when it is installed. Cheap
     /// (looks for the programs, never runs them).
-    fn agent_choices(&self) -> Vec<brief::Agent> {
-        vec![brief::Agent::Claude]
-    }
+    fn agent_choices(&self) -> Vec<brief::Agent>;
     /// The exact line Wake would type for a brief with this id, to show before it is sent. Cheap.
-    fn brief_command(&self, _agent: brief::Agent, _id: &str) -> Option<String> {
-        None
-    }
+    fn brief_command(&self, agent: brief::Agent, id: &str) -> Option<String>;
     /// Start an agent on ideas: write the brief to `<data>/briefs/<id>.md`, open a new window of the
     /// default terminal app in the project's folder running the agent on it, and mark the ideas as
     /// sent. Refuses ideas from another project.
-    fn start_agent(&self, _req: &brief::StartAgent, _dry_run: bool) -> ActionResult {
-        ActionResult { ok: false, message: "Starting agents isn't available here.".into(), steps: vec![] }
-    }
+    fn start_agent(&self, req: &brief::StartAgent, dry_run: bool) -> ActionResult;
 
-    // ---- Wake's log (added 2026-11-20; default body so other implementors still compile) ----
+    // ---- Wake's log ----
 
     /// Record an error the person was shown (an error toast) in Wake's log, `log::note_error`.
     /// `context` says where ("Shown in Projects"). Cheap (one appended line).

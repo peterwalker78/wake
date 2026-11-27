@@ -21,6 +21,14 @@ pub const CACHE_SECONDS: f64 = 60.0;
 #[derive(Debug, Clone, PartialEq)]
 pub struct GitError(pub String);
 
+impl std::fmt::Display for GitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for GitError {}
+
 /// Refuse anything but the read-only subcommands Wake uses.
 pub fn check_args(args: &[&str]) -> Result<(), GitError> {
     let first = args.first().copied().unwrap_or("");
@@ -59,7 +67,7 @@ pub fn git_code(repo: &Path, args: &[&str], env: &[(&str, &str)], timeout: Durat
     check_args(args)?;
     let mut cmd = command(repo);
     cmd.args(args).envs(env.iter().copied());
-    crate::desktop::run_with_timeout(cmd, timeout).map_err(|e| GitError(if e.kind() == std::io::ErrorKind::TimedOut { "timed out".into() } else { e.to_string() }))
+    crate::run::run_with_timeout(cmd, timeout).map_err(|e| GitError(if e.kind() == std::io::ErrorKind::TimedOut { "timed out".into() } else { e.to_string() }))
 }
 
 /// `git --no-optional-locks -c core.fsmonitor=false -C <repo>` with a clean, prompt-free environment.
@@ -332,43 +340,14 @@ pub fn cached_totals(project: &ProjectRec) -> Option<GitTotals> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Scratch, scratch};
     use std::fs;
     use std::path::PathBuf;
 
-    struct Repo1 {
-        dir: PathBuf,
-    }
-
-    impl Drop for Repo1 {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    /// Test setup only: builds a throwaway repo in a temp dir (the one place git writes).
-    fn make_repo() -> Repo1 {
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!("wake-rs-git-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let g = |args: &[&str]| {
-            let ok = Command::new("git")
-                .arg("-C")
-                .arg(&dir)
-                .args(args)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@example.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@example.com")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .unwrap()
-                .success();
-            assert!(ok, "git {args:?}");
-        };
+    /// Test setup only: builds a throwaway repo in a scratch folder (the one place git writes).
+    fn make_repo() -> Scratch {
+        let s = scratch("git");
+        let (dir, g) = (&s.0, |args: &[&str]| crate::remote::tests::g(&s.0, args));
         g(&["init", "-q", "-b", "main"]);
         fs::write(dir.join("a.txt"), "a\n").unwrap();
         g(&["add", "a.txt"]);
@@ -376,7 +355,7 @@ mod tests {
         g(&["branch", "side"]);
         fs::write(dir.join("a.txt"), "a\nb\n").unwrap();
         fs::write(dir.join("new.txt"), "n\n").unwrap();
-        Repo1 { dir }
+        s
     }
 
     fn snapshot(git_dir: &Path) -> HashMap<PathBuf, (i64, u64)> {
@@ -403,7 +382,7 @@ mod tests {
     #[test]
     fn repo_state_reads_a_repo() {
         let r = make_repo();
-        let st = repo_state(&r.dir.to_string_lossy()).unwrap().state;
+        let st = repo_state(&r.0.to_string_lossy()).unwrap().state;
         assert_eq!(st.branch.as_deref(), Some("main"));
         assert_eq!(st.upstream, None);
         assert_eq!(st.dirty_files, 1);
@@ -414,12 +393,12 @@ mod tests {
         assert_eq!(st.last_commit_subject.as_deref(), Some("First commit"));
         assert!(st.last_commit_at.unwrap().ends_with('Z'));
         assert_eq!(st.remote_host, None);
-        let t = git_totals(&[repo_state(&r.dir.to_string_lossy()).unwrap()]);
+        let t = git_totals(&[repo_state(&r.0.to_string_lossy()).unwrap()]);
         assert_eq!((t.no_remote, t.github, t.no_upstream), (1, false, 0));
         // Test setup only: give it a remote (nothing is fetched).
-        let ok = Command::new("git").arg("-C").arg(&r.dir).args(["remote", "add", "origin", "https://github.com/someone/thing.git"]).env("GIT_CONFIG_GLOBAL", "/dev/null").status().unwrap().success();
+        let ok = Command::new("git").arg("-C").arg(&r.0).args(["remote", "add", "origin", "https://github.com/someone/thing.git"]).env("GIT_CONFIG_GLOBAL", "/dev/null").status().unwrap().success();
         assert!(ok);
-        let rs = repo_state(&r.dir.to_string_lossy()).unwrap();
+        let rs = repo_state(&r.0.to_string_lossy()).unwrap();
         assert_eq!(rs.state.remote_host.as_deref(), Some("GitHub"));
         let t = git_totals(&[rs]);
         assert_eq!((t.no_remote, t.github, t.no_upstream), (0, true, 2));
@@ -428,9 +407,9 @@ mod tests {
     #[test]
     fn read_only_on_fixture_repo() {
         let r = make_repo();
-        let before = snapshot(&r.dir.join(".git"));
-        repo_state(&r.dir.to_string_lossy()).unwrap();
-        assert_eq!(before, snapshot(&r.dir.join(".git")));
+        let before = snapshot(&r.0.join(".git"));
+        repo_state(&r.0.to_string_lossy()).unwrap();
+        assert_eq!(before, snapshot(&r.0.join(".git")));
     }
 
     #[test]
@@ -488,7 +467,7 @@ mod tests {
         let proj = ProjectRec {
             id: "t".into(),
             name: "t".into(),
-            roots: vec![r.dir.to_string_lossy().into_owned(), "/nonexistent/wake".into()],
+            roots: vec![r.0.to_string_lossy().into_owned(), "/nonexistent/wake".into()],
             desc: String::new(),
             next: String::new(),
             why: String::new(),

@@ -14,154 +14,18 @@
 //!
 //! Everything takes an injectable runner and a `/proc` root, so tests never touch the live desktop.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
 
+use crate::run::{Runner, TIMEOUT, which};
 use crate::types::{ActionResult, Location};
 use crate::util::{shell_join, shell_quote};
 
-/// Qt 6's qdbus as Wake writes it in steps; the real runner runs [`qdbus_program`] for it.
-pub const QDBUS: &str = "qdbus-qt6";
-pub const GDBUS: &str = "gdbus";
-pub const TIMEOUT: Duration = Duration::from_secs(2);
-const LINEAGE: usize = 64;
+// Moved to `run`; kept here until the app imports them from there.
+pub use crate::run::{GDBUS, default_runner, qdbus_program};
+
 const RESUME_PREFIXES: &[&str] = &["claude --resume ", "codex resume ", "claude attach "];
 const FORBIDDEN: &[&str] = &["\n", "\r", ";", "&&", "|", "`", "$("];
-
-/// Runs a program with no shell and no input: (exit code, stdout). 127 = not installed,
-/// 124 = timed out, 126 = could not start.
-pub type Runner = Arc<dyn Fn(&[String], Duration) -> (i32, String) + Send + Sync>;
-
-/// Spawn in a process group of its own, collect output, and give up after `timeout`: then the whole
-/// group gets SIGTERM (so git can remove its lock files), and SIGKILL half a second later. Output
-/// is read only until the same deadline: a grandchild that keeps the pipe open (an ssh master, a
-/// daemon) is left to it, never waited for. A program that is not installed is
-/// `ErrorKind::NotFound`, a timeout `ErrorKind::TimedOut` (never matched by text, which depends on
-/// the locale).
-pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<(i32, String, String)> {
-    use std::os::unix::process::CommandExt;
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
-    let mut child = cmd.spawn()?;
-    let deadline = Instant::now() + timeout;
-    // Each pipe is read in pieces as they come (an empty piece: the end), so what arrived before
-    // the deadline is kept even when the pipe never closes.
-    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
-    read_pipe(child.stdout.take(), true, 16 * 1024 * 1024, tx.clone());
-    read_pipe(child.stderr.take(), false, 1024 * 1024, tx);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if Instant::now() > deadline => {
-                end_group(&mut child); // our own helper and what it started, never an agent
-                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(e) => return Err(e),
-        }
-    };
-    let (mut o, mut e, mut open) = (Vec::new(), Vec::new(), 2);
-    let stop = deadline.max(Instant::now() + Duration::from_millis(100));
-    while open > 0 {
-        let left = stop.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            break;
-        }
-        match rx.recv_timeout(left) {
-            Ok((_, v)) if v.is_empty() => open -= 1,
-            Ok((true, v)) => o.extend_from_slice(&v),
-            Ok((false, v)) => e.extend_from_slice(&v),
-            Err(_) => break,
-        }
-    }
-    Ok((status.code().unwrap_or(1), String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned()))
-}
-
-/// Reads `pipe` (at most `cap` bytes) on a thread of its own, sending each piece tagged `is_out`,
-/// then an empty piece at the end.
-fn read_pipe(pipe: Option<impl Read + Send + 'static>, is_out: bool, cap: u64, tx: std::sync::mpsc::Sender<(bool, Vec<u8>)>) {
-    std::thread::spawn(move || {
-        if let Some(p) = pipe {
-            let mut p = p.take(cap);
-            let mut buf = vec![0u8; 64 * 1024];
-            while let Ok(n @ 1..) = p.read(&mut buf) {
-                if tx.send((is_out, buf[..n].to_vec())).is_err() {
-                    return;
-                }
-            }
-        }
-        let _ = tx.send((is_out, Vec::new()));
-    });
-}
-
-/// SIGTERM to the process group `child` leads, SIGKILL to it half a second later if the child is
-/// still there, then reap the child.
-pub fn end_group(child: &mut std::process::Child) {
-    let group = child.id() as libc::pid_t;
-    // SAFETY: plain kill(2) on the group the child leads (spawned with process_group(0)); the child
-    // is not reaped yet, so its pid, and so the group id, can't have been reused.
-    unsafe { libc::kill(-group, libc::SIGTERM) };
-    for _ in 0..50 {
-        if !matches!(child.try_wait(), Ok(None)) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // SAFETY: as above; try_wait just said the child is still there.
-    unsafe { libc::kill(-group, libc::SIGKILL) };
-    let _ = child.wait();
-}
-
-/// A detached launch (`setsid -f …`, a new terminal window): only whether it started counts. Its
-/// output belongs to the new window, which may keep it open for hours, so it is never read: a pipe
-/// would keep Wake waiting until the window closed.
-fn run_detached(mut cmd: Command, timeout: Duration) -> (i32, String) {
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    let Ok(mut child) = cmd.spawn() else { return (127, String::new()) };
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(st)) => return (st.code().unwrap_or(1), String::new()),
-            Ok(None) if start.elapsed() > timeout => {
-                // Still starting: it is detached. Reaped whenever it ends, so it never lingers as a zombie.
-                std::thread::spawn(move || child.wait());
-                return (0, String::new());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(_) => return (126, String::new()),
-        }
-    }
-}
-
-/// Qt 6's qdbus here: `qdbus-qt6` (Fedora, Arch), else `qdbus6` (Debian and Ubuntu name it so).
-/// Never Qt 5's `qdbus`. Looked up on PATH once; `QDBUS` when neither is there.
-pub fn qdbus_program() -> &'static str {
-    static FOUND: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    FOUND.get_or_init(|| {
-        let dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-        [QDBUS, "qdbus6"].into_iter().find(|n| dirs.iter().any(|d| d.join(n).is_file())).unwrap_or(QDBUS)
-    })
-}
-
-pub fn default_runner() -> Runner {
-    Arc::new(|argv: &[String], timeout: Duration| {
-        let Some((prog, args)) = argv.split_first() else { return (126, String::new()) };
-        let prog = if prog == QDBUS { qdbus_program() } else { prog.as_str() };
-        let mut cmd = Command::new(prog);
-        cmd.args(args);
-        if prog == "setsid" {
-            return run_detached(cmd, timeout);
-        }
-        match run_with_timeout(cmd, timeout) {
-            Ok((code, out, _)) => (code, out),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (127, String::new()),
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => (124, String::new()),
-            Err(_) => (126, String::new()),
-        }
-    })
-}
 
 /// None when `command` is a resume command safe to type into a terminal, else why not.
 pub fn check_command(command: Option<&str>) -> Option<String> {
@@ -188,31 +52,6 @@ pub fn plain_id(id: &str) -> bool {
     (1..=80).contains(&id.len()) && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
-/// The parent pid from a /proc/<pid>/stat line, counting fields after the last ')'.
-pub fn parent_of(stat: &str) -> Option<u32> {
-    let end = stat.rfind(')')?;
-    stat[end + 1..].split_whitespace().nth(1)?.parse().ok()
-}
-
-/// The nearest folder at or above `path` holding `.git`, with `.claude/worktrees/<name>` folded
-/// back to its repo. Only looks. Falls back to `path` itself.
-pub fn project_root(path: &str) -> String {
-    let mut path = crate::store::lexical(Path::new(path)).to_string_lossy().into_owned();
-    let marker = "/.claude/worktrees/";
-    if let Some(i) = format!("{path}/").find(marker) {
-        path = if i == 0 { "/".into() } else { path[..i].to_string() };
-    }
-    let mut probe = PathBuf::from(&path);
-    loop {
-        if probe.join(".git").exists() {
-            return probe.to_string_lossy().into_owned();
-        }
-        if !probe.pop() {
-            return path;
-        }
-    }
-}
-
 /// An agent process to place in a window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Placee {
@@ -225,10 +64,6 @@ pub struct Placee {
 pub struct Desktop {
     run: Runner,
     proc: PathBuf,
-    /// Path to systemd-run (or empty). Unused since navigation stopped sending notifications; kept
-    /// so the configuration keeps its shape.
-    #[allow(dead_code)]
-    systemd_run: String,
     /// How to open the default terminal app with a command: the launcher and its arguments before
     /// the command. None when the system names none.
     launcher: Option<Vec<String>>,
@@ -236,14 +71,10 @@ pub struct Desktop {
     names: Mutex<std::collections::HashMap<u32, Option<String>>>,
 }
 
-pub(crate) fn which(name: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned())
-}
-
 /// How this system opens its default terminal app with a command: `xdg-terminal-exec`, else
 /// `$TERMINAL -e`, else `x-terminal-emulator -e`. None when it names none.
 pub fn terminal_launcher() -> Option<Vec<String>> {
+    let which = |name: &str| which(name).map(|p| p.to_string_lossy().into_owned());
     if let Some(x) = which("xdg-terminal-exec") {
         return Some(vec![x]);
     }
@@ -252,47 +83,10 @@ pub fn terminal_launcher() -> Option<Vec<String>> {
 }
 
 impl Desktop {
-    pub fn new(run: Runner, proc: &Path, systemd_run: Option<&str>) -> Desktop {
-        Desktop {
-            run,
-            proc: proc.to_path_buf(),
-            systemd_run: match systemd_run {
-                Some(s) => s.into(),
-                None => which("systemd-run").unwrap_or_default(),
-            },
-            launcher: terminal_launcher(),
-            names: Mutex::new(std::collections::HashMap::new()),
-        }
-    }
-
-    pub fn real() -> Desktop {
-        Desktop::new(default_runner(), Path::new("/proc"), None)
-    }
-
-    /// The same, opening new windows with `launcher` (tests; None: the system names no terminal).
-    pub fn with_launcher(mut self, launcher: Option<Vec<String>>) -> Desktop {
-        self.launcher = launcher;
-        self
-    }
-
-    /// How new windows are opened, for `wake doctor`.
-    pub fn launcher(&self) -> Option<&[String]> {
-        self.launcher.as_deref()
-    }
-
-    /// `pid`, its parent and so on up to (not including) init.
-    pub fn lineage(&self, pid: u32) -> Vec<u32> {
-        let mut chain = Vec::new();
-        let mut next = Some(pid);
-        while let Some(n) = next {
-            if n <= 1 || chain.len() >= LINEAGE || chain.contains(&n) {
-                break;
-            }
-            let Ok(stat) = std::fs::read_to_string(self.proc.join(n.to_string()).join("stat")) else { break };
-            chain.push(n);
-            next = parent_of(&stat);
-        }
-        chain
+    /// A desktop reached through `run`, reading `proc`, opening new windows with `launcher`
+    /// ([`terminal_launcher`]; None when the system names no terminal app).
+    pub fn new(run: Runner, proc: &Path, launcher: Option<Vec<String>>) -> Desktop {
+        Desktop { run, proc: proc.to_path_buf(), launcher, names: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The window of terminal app `pid`, named as its desktop entry names the app.
@@ -474,7 +268,10 @@ pub fn window_argv(launcher: &[String], path: &str, cwd: &str, command: &str, sh
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::testing::{Scratch, scratch};
     use std::fs;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     /// A runner that records every call and starts nothing. Answers `gdbus` like a desktop with no
     /// link to fly with, `setsid` (a new window) with success unless told to fail.
@@ -511,28 +308,12 @@ pub(crate) mod tests {
         }
     }
 
-    pub struct TmpDir(pub PathBuf);
-    impl TmpDir {
-        pub fn new(tag: &str) -> TmpDir {
-            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let p = std::env::temp_dir().join(format!("wake-rs-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
-            let _ = fs::remove_dir_all(&p);
-            fs::create_dir_all(&p).unwrap();
-            TmpDir(fs::canonicalize(p).unwrap())
-        }
-    }
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     pub fn launcher() -> Vec<String> {
         vec!["/usr/bin/xdg-terminal-exec".into()]
     }
 
     fn desk(bus: &FakeBus, proc: &Path) -> Desktop {
-        Desktop::new(bus.runner(), proc, Some("")).with_launcher(Some(launcher()))
+        Desktop::new(bus.runner(), proc, Some(launcher()))
     }
 
     /// On this machine: opens one real window of the default terminal app, running a command that
@@ -550,14 +331,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn parent_of_handles_odd_names() {
-        assert_eq!(parent_of("12 (a) b (c)) S 34 1"), Some(34));
-        assert_eq!(parent_of("garbage"), None);
-    }
-
-    #[test]
     fn a_terminal_app_is_named_by_its_desktop_entry_never_a_list() {
-        let tmp = TmpDir::new("appname");
+        let tmp = scratch("appname");
         let proc = tmp.0.join("proc");
         let apps = tmp.0.join("share/applications");
         fs::create_dir_all(&apps).unwrap();
@@ -582,30 +357,6 @@ pub(crate) mod tests {
         assert_eq!(app_name_in(&proc, 13, &dirs), None, "no entry for it: no name");
         assert_eq!(unescape_unit("org.my\\x2dterm"), "org.my-term");
         assert_eq!(entry_name("[Desktop Action x]\nName=No\n"), None);
-    }
-
-    #[test]
-    fn a_grandchild_holding_the_pipe_or_a_hung_child_never_holds_wake() {
-        // The child exits at once; what it left behind keeps its output pipe open for 30 s.
-        let t = Instant::now();
-        let mut c = Command::new("sh");
-        c.args(["-c", "sleep 30 & echo hi"]);
-        let (code, out, _) = run_with_timeout(c, Duration::from_millis(800)).unwrap();
-        assert_eq!((code, out.as_str()), (0, "hi\n"));
-        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
-        // A hung child: the group is ended at the deadline, the grandchild with it.
-        let mark = TmpDir::new("group");
-        let pidfile = mark.0.join("pid");
-        let mut c = Command::new("sh");
-        c.args(["-c", &format!("sleep 30 & echo $! > {}; wait", shell_quote(&pidfile.to_string_lossy()))]);
-        let t = Instant::now();
-        let e = run_with_timeout(c, Duration::from_millis(300)).unwrap_err();
-        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
-        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
-        let pid: u32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-        let gone = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| s.contains(") Z "));
-        assert!(gone, "the grandchild was ended with its group");
     }
 
     #[test]
@@ -637,7 +388,7 @@ pub(crate) mod tests {
     }
 
     struct ReopenFx {
-        tmp: TmpDir,
+        tmp: Scratch,
         repo: PathBuf,
         sub: PathBuf,
         proc: PathBuf,
@@ -645,7 +396,7 @@ pub(crate) mod tests {
     }
 
     fn reopen_fx() -> ReopenFx {
-        let tmp = TmpDir::new("reopen");
+        let tmp = scratch("reopen");
         let repo = tmp.0.join("Projects/invites");
         fs::create_dir_all(repo.join(".git")).unwrap();
         let sub = repo.join("app");
@@ -735,7 +486,7 @@ pub(crate) mod tests {
         assert!(r.message.ends_with(f.cmd));
         // No default terminal app named anywhere: the command to copy, and nothing run.
         let bus = FakeBus::new();
-        let r = desk(&bus, &f.proc).with_launcher(None).reopen(Some(&f.repo.to_string_lossy()), f.cmd, false);
+        let r = Desktop::new(bus.runner(), &f.proc, None).reopen(Some(&f.repo.to_string_lossy()), f.cmd, false);
         assert!(!r.ok && r.message.contains("couldn't find your default terminal app") && r.message.ends_with(f.cmd), "{}", r.message);
         assert!(bus.calls.lock().unwrap().is_empty());
     }

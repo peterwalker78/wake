@@ -143,11 +143,11 @@ fn tail_lines(p: &Path, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::tests::TmpDir;
+    use crate::testing::scratch;
 
     #[test]
     fn writes_one_plain_line_per_entry_and_reads_them_back() {
-        let dir = TmpDir::new("wakelog");
+        let dir = scratch("wakelog");
         let paths = Paths::under(&dir.0);
         assert!(recent(&paths, 5).is_empty());
         record_action(&paths, "stop", "'Fix the parser' (PID 4242), Claude", true, "Asked 'Fix the parser' (PID 4242) to exit.\nmore", &["kill -TERM 4242".into()]);
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn rotates_past_256_kb_and_keeps_one_old_file() {
-        let dir = TmpDir::new("wakelog-rotate");
+        let dir = scratch("wakelog-rotate");
         let paths = Paths::under(&dir.0);
         let long = "x".repeat(500);
         for i in 0..1500 {

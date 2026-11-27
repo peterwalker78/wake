@@ -365,11 +365,6 @@ impl Answer {
     }
 }
 
-/// One plain line for the person from whatever claude said went wrong.
-pub fn plain_error(raw: &str) -> String {
-    plain_error_for(Ai::Claude, raw)
-}
-
 /// One plain line for the person from whatever `ai` said went wrong.
 pub fn plain_error_for(ai: Ai, raw: &str) -> String {
     let low = raw.to_lowercase();
@@ -459,10 +454,7 @@ pub fn find_tool(paths: &Paths, ai: Ai) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(ai.env()).filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(p));
     }
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    dirs.push(paths.home.join(".local/bin"));
-    dirs.push(PathBuf::from("/home/linuxbrew/.linuxbrew/bin"));
-    dirs.into_iter().map(|d| d.join(ai.id())).find(|c| c.is_file())
+    crate::run::which(ai.id()).or_else(|| [paths.home.join(".local/bin"), PathBuf::from("/home/linuxbrew/.linuxbrew/bin")].into_iter().map(|d| d.join(ai.id())).find(|c| c.is_file()))
 }
 
 /// Whether Wake can keep `ai` read-only here, given where its program is (None: not installed)
@@ -1157,13 +1149,8 @@ impl Questions {
             // answer to "continue?"); this way it only prints a link and fails, which Wake reports.
             cmd.env("NO_BROWSER", "true");
         }
-        // SAFETY: prctl is async-signal-safe; the child dies (SIGTERM) when Wake does.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                Ok(())
-            });
-        }
+        // The child dies (SIGTERM) when Wake does.
+        crate::sys::end_with_parent(&mut cmd);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1309,12 +1296,10 @@ fn stop_child(child: Arc<Mutex<Child>>) {
         {
             let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
             if matches!(c.try_wait(), Ok(None)) {
-                // SAFETY: the child is not yet reaped (try_wait said so, under the lock the reaper
-                // also takes), so its pid, which is also its group's id (process_group(0)), is
-                // still this process's.
-                unsafe {
-                    libc::kill(-(c.id() as libc::pid_t), libc::SIGTERM);
-                }
+                // The child is not yet reaped (try_wait said so, under the lock the reaper also
+                // takes), so its pid, which is also its group's id (process_group(0)), is still
+                // this process's.
+                crate::sys::kill_group(c.id(), libc::SIGTERM);
             }
         }
         for _ in 0..30 {
@@ -1325,10 +1310,8 @@ fn stop_child(child: Arc<Mutex<Child>>) {
         }
         let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(c.try_wait(), Ok(None)) {
-            // SAFETY: as above, under the same lock.
-            unsafe {
-                libc::kill(-(c.id() as libc::pid_t), libc::SIGKILL);
-            }
+            // As above, under the same lock.
+            crate::sys::kill_group(c.id(), libc::SIGKILL);
         }
     });
 }
@@ -1411,7 +1394,7 @@ mod tests {
         let mut a = Answer::default();
         a.feed(parse_line(EXEC_ERR));
         assert_eq!(a.done, Some(Err("Something broke".into())));
-        assert_eq!(plain_error(&"x".repeat(500)).chars().count(), 200);
+        assert_eq!(plain_error_for(Ai::Claude, &"x".repeat(500)).chars().count(), 200);
     }
 
     #[test]
@@ -1715,14 +1698,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
         let env = Env::new();
         let actor = Arc::new(crate::procs::tests::FakeActor { calls: Mutex::new(vec![]) });
         let bus = crate::desktop::tests::FakeBus::new();
-        let live = crate::source::Live::new(crate::source::LiveConfig {
-            paths: env.paths.clone(),
-            proc_root: PathBuf::from("/proc"),
-            runner: bus.runner(),
-            systemd_run: Some(String::new()),
-            actor,
-            terminal: None,
-        });
+        let live = crate::source::Live::new(crate::source::LiveConfig { paths: env.paths.clone(), proc_root: PathBuf::from("/proc"), runner: bus.runner(), actor, terminal: None });
         let original = fs::read_to_string(env.paths.claude.join("projects/-home/sess-aaaa.jsonl")).unwrap();
         let home = format!("\"cwd\":\"{}\"", env.paths.home.display());
         assert!(original.contains(&home));

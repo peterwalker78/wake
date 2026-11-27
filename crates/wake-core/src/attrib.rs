@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn the_persons_answer_wins_and_is_kept_in_wakes_store() {
-        let s = crate::remote::tests::scratch("attrib");
+        let s = crate::testing::scratch("attrib");
         let w = Writer::new(&s.0);
         let o = Overrides::new(&s.0);
         let p = projects();

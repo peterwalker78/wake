@@ -289,7 +289,7 @@ pub fn scan_tree(w: &mut Walker, root: &Path) -> TreeScan {
     out
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the recursive walk's own state, passed down each level")]
 fn scan_dir(w: &mut Walker, dir: &Path, root: &Path, dev: u64, depth: usize, within: Option<&Path>, out: &mut TreeScan, mut top: Option<&mut Vec<(PathBuf, Tally)>>) -> Tally {
     let mut t = Tally::default();
     let Ok(rd) = fs::read_dir(dir) else { return t };
@@ -497,7 +497,7 @@ impl Places {
             claude: canonical(&paths.claude),
             codex: canonical(&paths.codex),
             proc_root: PathBuf::from("/proc"),
-            uid: crate::procs::my_uid(),
+            uid: crate::sys::uid(),
             trash: canonical(&data_home.join("Trash")),
         }
     }
@@ -517,12 +517,6 @@ pub fn canonical(p: &Path) -> PathBuf {
     }
 }
 
-/// The parent of a process (`/proc/<pid>/stat` field 4).
-fn ppid_of(proc_root: &Path, pid: u32) -> Option<u32> {
-    let s = fs::read_to_string(proc_root.join(pid.to_string()).join("stat")).ok()?;
-    s[s.rfind(')')? + 1..].split_whitespace().nth(1)?.parse().ok()
-}
-
 /// "sleep (PID 33087), run by the session \"tideline-app-shortcut-jump\"": a process, and the live
 /// agent session above it in the process tree when there is one.
 fn who(pid: u32, comm: &str, live: &[LiveDisk], proc_root: &Path) -> String {
@@ -531,7 +525,7 @@ fn who(pid: u32, comm: &str, live: &[LiveDisk], proc_root: &Path) -> String {
         if let Some(l) = live.iter().find(|l| l.pid == p) {
             return if p == pid { format!("the session \"{}\" (PID {pid})", l.title) } else { format!("{comm} (PID {pid}), run by the session \"{}\"", l.title) };
         }
-        match ppid_of(proc_root, p) {
+        match crate::procs::read_stat(proc_root, p).map(|s| s.ppid) {
             Some(up) if up > 1 => p = up,
             _ => break,
         }
@@ -846,19 +840,6 @@ fn conversation_items(sessions: &[&SessionDisk], jobs: &HashMap<String, PathBuf>
 
 // ---------------------------------------------------------------- the machine
 
-/// Free and total bytes of the filesystem holding `path`.
-pub fn statvfs(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: a valid C string and a zeroed out-struct of the right type.
-    if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
-        return None;
-    }
-    let f = s.f_frsize as u64;
-    Some((s.f_bavail as u64 * f, s.f_blocks as u64 * f))
-}
-
 /// What a folder in ~/.cache is, in a few words, when Wake knows the name.
 fn cache_words(name: &str) -> String {
     match name {
@@ -907,8 +888,8 @@ fn cache_item(path: &Path, t: &Tally, name: String, cost: &str) -> DiskItem {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn system_item(path: &Path, t: &Tally, kind: DiskKind, name: &str, safety: DiskSafety, cost: &str, command: Option<&str>, note: Option<&str>) -> DiskItem {
+/// One item on the machine's list; `command` is the command a person would use and what it does.
+fn system_item(path: &Path, t: &Tally, kind: DiskKind, name: &str, safety: DiskSafety, cost: &str, command: Option<(&str, &str)>) -> DiskItem {
     DiskItem {
         path: path.display().to_string(),
         kind,
@@ -919,8 +900,8 @@ fn system_item(path: &Path, t: &Tally, kind: DiskKind, name: &str, safety: DiskS
         safety,
         cost: cost.into(),
         action: None,
-        command: command.map(String::from),
-        command_note: note.map(String::from),
+        command: command.map(|(c, _)| c.to_string()),
+        command_note: command.map(|(_, note)| note.to_string()),
         worktree: None,
         within: None,
         refused: None,
@@ -934,7 +915,7 @@ pub fn real_runner() -> Box<CommandRunner> {
     Box::new(|argv: &[&str], limit: Duration| {
         let mut cmd = std::process::Command::new(argv[0]);
         cmd.args(&argv[1..]);
-        match crate::desktop::run_with_timeout(cmd, limit) {
+        match crate::run::run_with_timeout(cmd, limit) {
             Ok((0, out, _)) => Some(out),
             _ => None,
         }
@@ -976,9 +957,9 @@ pub fn measure_machine(projects: &[ProjectRec], places: &Places, run: &CommandRu
     let home = &places.home;
     let mut items = Vec::new();
     let mut for_projects = Vec::new();
-    let (home_free, home_total) = statvfs(home).unwrap_or((0, 0));
+    let (home_free, home_total) = crate::sys::statvfs(home).unwrap_or((0, 0));
     let home_mount = if home.starts_with("/var/home") { "/var/home".to_string() } else { home.display().to_string() };
-    let root_note = statvfs(Path::new("/")).and_then(|(free, total)| {
+    let root_note = crate::sys::statvfs(Path::new("/")).and_then(|(free, total)| {
         (total > 0 && free * 100 / total < 2 && Path::new("/run/ostree-booted").exists())
             .then(|| "/ shows as full: on an atomic system such as Bazzite, that is the read-only system image, always full by design. Nothing there needs cleaning.".to_string())
     });
@@ -1022,8 +1003,7 @@ pub fn measure_machine(projects: &[ProjectRec], places: &Places, run: &CommandRu
             "Rust toolchains (rustup)",
             DiskSafety::Keep,
             "Every Rust project builds with these.",
-            Some("rustup toolchain list"),
-            Some("lists them; rustup toolchain uninstall <name> removes one you no longer use"),
+            Some(("rustup toolchain list", "lists them; rustup toolchain uninstall <name> removes one you no longer use")),
         ));
     }
     // Conversations and job folders with no project.
@@ -1032,7 +1012,7 @@ pub fn measure_machine(projects: &[ProjectRec], places: &Places, run: &CommandRu
     if places.codex.is_dir() {
         let t = Walker::new(ITEM_LIMIT).walk(&places.codex);
         if t.bytes >= SMALL {
-            items.push(system_item(&places.codex, &t, DiskKind::Transcripts, "Codex conversations (~/.codex)", DiskSafety::Keep, "Deleting loses those sessions' history.", None, None));
+            items.push(system_item(&places.codex, &t, DiskKind::Transcripts, "Codex conversations (~/.codex)", DiskSafety::Keep, "Deleting loses those sessions' history.", None));
         }
     }
     // The Trash: what Clear filled, until it is emptied.
@@ -1047,8 +1027,7 @@ pub fn measure_machine(projects: &[ProjectRec], places: &Places, run: &CommandRu
                 "The Trash",
                 DiskSafety::Check,
                 "What you (or Wake's Clear) moved there: the space comes back only when it is emptied.",
-                Some("gio trash --empty"),
-                Some("empties the Trash for good"),
+                Some(("gio trash --empty", "empties the Trash for good")),
             ));
         }
     }
@@ -1064,8 +1043,7 @@ pub fn measure_machine(projects: &[ProjectRec], places: &Places, run: &CommandRu
                     name,
                     DiskSafety::Keep,
                     "Installed apps and what they run on.",
-                    Some("flatpak uninstall --unused"),
-                    Some("removes runtimes no installed app uses; asks first"),
+                    Some(("flatpak uninstall --unused", "removes runtimes no installed app uses; asks first")),
                 ));
             }
         }
@@ -1103,7 +1081,7 @@ pub fn measure_machine(projects: &[ProjectRec], places: &Places, run: &CommandRu
                 ),
                 _ => ("Container volumes".to_string(), "podman volume ls", "lists them; volumes hold data such as databases", format!("{} nothing uses.", human(reclaim))),
             };
-            items.push(system_item(&storage, &t, DiskKind::System, &name, DiskSafety::Keep, &cost, Some(cmd), Some(note)));
+            items.push(system_item(&storage, &t, DiskKind::System, &name, DiskSafety::Keep, &cost, Some((cmd, note))));
         }
     }
     items.retain(|i| i.bytes > 0);
@@ -1114,7 +1092,7 @@ pub fn measure_machine(projects: &[ProjectRec], places: &Places, run: &CommandRu
 
 /// Everything: each project, then the machine. `progress` hears each project's result as it lands
 /// (with what is being measured next), so the person sees numbers before the slow parts finish.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "one caller (Live), each argument a different part of what it knows")]
 pub fn measure(
     projects: &[ProjectRec],
     only: Option<&str>,
@@ -1169,18 +1147,6 @@ pub fn measure(
     report
 }
 
-/// Run the calling thread at the lowest CPU priority and the idle I/O class (`nice 19`,
-/// `ionice -c 3`), so measuring never competes with a build or the desktop.
-pub fn lower_priority() {
-    // SAFETY: plain syscalls on the calling thread only.
-    unsafe {
-        let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
-        libc::setpriority(libc::PRIO_PROCESS, tid, 19);
-        // IOPRIO_WHO_PROCESS = 1 (a thread id works), IOPRIO_CLASS_IDLE = 3 << 13.
-        libc::syscall(libc::SYS_ioprio_set, 1, tid as libc::c_long, (3 << 13) as libc::c_long);
-    }
-}
-
 // ---------------------------------------------------------------- the two writes
 
 /// Why `path` must never be cleared, whatever the report says.
@@ -1199,10 +1165,7 @@ fn forbidden(path: &Path, places: &Places) -> Option<&'static str> {
 
 /// Today's local time as the Trash spec writes it: 2026-11-20T13:05:09.
 fn local_stamp() -> String {
-    let t = util::now() as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: valid pointers to a time and an out-struct.
-    unsafe { libc::localtime_r(&t, &mut tm) };
+    let tm = crate::sys::local_time(util::now() as i64);
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
@@ -1343,7 +1306,7 @@ pub fn remove_worktree(report: &DiskReport, path: &str, places: &Places, dry_run
     }
     let mut cmd = crate::gitinfo::command(repo);
     cmd.args(["worktree", "remove"]).arg(wt);
-    match crate::desktop::run_with_timeout(cmd, Duration::from_secs(60)) {
+    match crate::run::run_with_timeout(cmd, Duration::from_secs(60)) {
         Ok((0, ..)) => ActionResult { ok: true, message: format!("Removed the worktree for {}. Its branch is still there, merged.", branch.as_deref().unwrap_or("its branch")), steps: vec![step] },
         Ok((_, out, err)) => {
             let last = format!("{out}\n{err}").lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("").to_string();
@@ -1356,7 +1319,8 @@ pub fn remove_worktree(report: &DiskReport, path: &str, places: &Places, dry_run
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::tests::{g, scratch};
+    use crate::remote::tests::g;
+    use crate::testing::scratch;
 
     fn put(p: &Path, bytes: usize) {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -1369,7 +1333,7 @@ mod tests {
             claude: root.join(".claude"),
             codex: root.join(".codex"),
             proc_root: root.join("proc"), // empty: nobody is inside anything
-            uid: crate::procs::my_uid(),
+            uid: crate::sys::uid(),
             trash: root.join(".local/share/Trash"),
         }
     }
@@ -1637,7 +1601,7 @@ mod tests {
         fs::create_dir_all(&p).unwrap();
         fs::write(p.join("comm"), "cargo\n").unwrap();
         std::os::unix::fs::symlink(r.join("home/u/proj"), p.join("cwd")).unwrap();
-        let (uid, procs) = (crate::procs::my_uid(), r.join("proc"));
+        let (uid, procs) = (crate::sys::uid(), r.join("proc"));
         assert_eq!(process_inside(&r.join("var/home/u/proj"), &procs, uid), Some((4242, "cargo".into())));
         assert_eq!(process_inside(&r.join("home/u/proj"), &procs, uid), Some((4242, "cargo".into())));
         assert_eq!(process_inside(&r.join("var/home/u/proj/target"), &procs, uid), None, "a folder below the process is not in use");

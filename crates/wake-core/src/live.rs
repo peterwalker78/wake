@@ -63,9 +63,7 @@ pub fn read_codex_live(proc_root: &Path, uid: u32) -> HashMap<String, LiveInfo> 
 
 /// Process start time in clock ticks (field 22 of /proc/<pid>/stat), as text.
 pub fn proc_start(proc_root: &Path, pid: u32) -> Option<String> {
-    let data = fs::read_to_string(proc_root.join(pid.to_string()).join("stat")).ok()?;
-    let end = data.rfind(')')?;
-    data.get(end + 2..)?.split_whitespace().nth(19).map(String::from)
+    crate::procs::read_stat(proc_root, pid).map(|s| s.start_ticks.to_string())
 }
 
 pub fn pid_alive(proc_root: &Path, pid: u32, expected_start: Option<&str>) -> bool {
@@ -563,7 +561,7 @@ mod tests {
     fn without_a_start_time_only_an_agent_process_counts_as_alive() {
         use crate::procs::tests::FakeProc;
         let fp = FakeProc::new();
-        let uid = crate::procs::my_uid();
+        let uid = crate::sys::uid();
         fp.add(4100, 1, &["/usr/bin/python3", "x.py"], "/usr/bin/python3", 1000, 1, 5, uid); // a reused pid
         fp.add(4101, 1, &["/usr/bin/claude"], "/usr/bin/claude", 1000, 1, 5, uid);
         fp.add(4102, 1, &["claude", "--resume", "x"], "", 1000, 1, 5, uid); // in a distrobox

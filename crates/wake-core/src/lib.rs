@@ -1,7 +1,7 @@
 //! Wake's core: everything Wake knows, with no user interface. The GTK app and the `wake` command both
 //! use it through [`Source`].
 
-#[allow(clippy::type_complexity)] // Checkpoint::git, part of the frozen contract
+#[expect(clippy::type_complexity, reason = "Checkpoint::git, part of the frozen contract")]
 pub mod types;
 
 pub mod attrib;
@@ -16,9 +16,13 @@ pub mod look;
 pub mod procs;
 pub mod questions;
 pub mod remote;
+pub mod run;
 pub mod settings;
 pub mod source;
 pub mod store;
+mod sys;
+#[cfg(test)]
+mod testing;
 pub mod util;
 pub mod vt;
 

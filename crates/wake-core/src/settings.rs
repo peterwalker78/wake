@@ -244,17 +244,19 @@ pub fn save(dir: &Path, s: &Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Scratch, scratch};
     use std::os::unix::fs::PermissionsExt;
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("wake-settings-{name}-{}-{}", std::process::id(), util::now().to_bits()));
-        let _ = fs::remove_dir_all(&d);
-        d
+    /// A settings folder not made yet, inside a scratch folder that goes when that is dropped.
+    fn tmp(name: &str) -> (Scratch, PathBuf) {
+        let s = scratch(&format!("settings-{name}"));
+        let d = s.0.join("wake");
+        (s, d)
     }
 
     #[test]
     fn missing_file_is_the_defaults_and_a_save_round_trips() {
-        let dir = tmp("round");
+        let (_s, dir) = tmp("round");
         let (s, note) = load(&dir);
         assert_eq!(s, Settings::default());
         assert!(note.is_none());
@@ -280,12 +282,11 @@ mod tests {
         assert_eq!(back.sorts.get("monitor").map(String::as_str), Some("last reversed"));
         assert_eq!(back.core().remote_every, None);
         assert_eq!(back.core().question_ai, Ai::Codex);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn unknown_keys_are_kept_and_odd_values_fall_back() {
-        let dir = tmp("keep");
+        let (_s, dir) = tmp("keep");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(FILE), "future = 3\n[look]\ntheme = \"purple\"\naccent = \"MINT\"\nshiny = true\n[git]\ncheck_every_minutes = 7\nnotify_when_behind = \"yes\"\n[other]\nx = [1, 2]\n")
             .unwrap();
@@ -303,12 +304,11 @@ mod tests {
         assert_eq!(t["other"]["x"].as_array().map(Vec::len), Some(2));
         assert_eq!(t["look"]["theme"].as_str(), Some("dark"));
         assert!(text.starts_with("# Wake's settings."));
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_broken_file_is_set_aside_with_a_plain_note() {
-        let dir = tmp("broken");
+        let (_s, dir) = tmp("broken");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(FILE), "[look\ntheme = dark").unwrap();
         assert!(matches!(check(&dir), crate::store::FileCheck::Damaged(_)));
@@ -329,6 +329,5 @@ mod tests {
         fs::write(dir.join(FILE), "not = [toml").unwrap();
         assert!(save(&dir, &s).is_err());
         assert_eq!(fs::read_to_string(dir.join(FILE)).unwrap(), "not = [toml");
-        let _ = fs::remove_dir_all(&dir);
     }
 }

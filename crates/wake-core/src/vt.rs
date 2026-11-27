@@ -6,6 +6,18 @@
 //! Played onto a grid, the redraws land where they were meant to and the screen comes out as drawn.
 //! Only what text needs is handled: printing, cursor moves, erases, scrolling and the alternate
 //! screen. Colours and styles are dropped.
+//!
+//! Also here: reading that output ([`read_logs`]) and the terminal's size ([`term_size`]), for the
+//! preview hold-to-peek shows of a session with no window to look at.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use crate::run::Runner;
+use crate::types::Screen;
+use crate::util;
 
 /// A terminal screen built from its output.
 pub struct Grid {
@@ -285,20 +297,71 @@ impl vte::Perform for Grid {
 }
 
 /// The size of the terminal process `pid` runs in (rows, columns), read from its standard input
-/// without touching it. None if it has no terminal or it can't be read.
-pub fn term_size(pid: u32) -> Option<(usize, usize)> {
-    use std::os::fd::AsRawFd;
+/// (under `proc`, the /proc root) without touching it. None if it has no terminal or it can't be read.
+pub fn term_size(proc: &Path, pid: u32) -> Option<(usize, usize)> {
     use std::os::unix::fs::OpenOptionsExt;
-    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK).open(format!("/proc/{pid}/fd/0")).ok()?;
-    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
-    // SAFETY: TIOCGWINSZ only writes a winsize into `ws`, which lives for the call.
-    let r = unsafe { libc::ioctl(f.as_raw_fd(), libc::TIOCGWINSZ, &mut ws) };
-    (r == 0 && ws.ws_row > 0 && ws.ws_col > 0).then_some((ws.ws_row as usize, ws.ws_col as usize))
+    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK).open(proc.join(pid.to_string()).join("fd/0")).ok()?;
+    let (rows, cols) = crate::sys::window_size(&f)?;
+    (rows > 0 && cols > 0).then_some((rows as usize, cols as usize))
+}
+
+// ---------- reading a background agent's screen ----------
+
+/// Reading `claude logs` gives up after this long.
+pub const LOGS_TIMEOUT: Duration = Duration::from_millis(2500);
+pub const MAX_LINES: usize = 400;
+/// Two polls this close together share one read.
+pub const SCREEN_CACHE: Duration = Duration::from_millis(250);
+pub const NO_SCREEN: &str = "Couldn't read the screen right now.";
+
+/// What a background session's terminal shows: `claude logs <jobId>` (read-only), played onto a
+/// grid of the terminal's size (`size`, rows and columns; a common size when it can't be read).
+pub fn read_logs(run: &Runner, job: &str, size: Option<(usize, usize)>) -> Screen {
+    let source = "claude logs".to_string();
+    if job.is_empty() || job.len() > 64 || !job.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Screen { source, at: util::now_iso(), note: Some(NO_SCREEN.into()), ..Default::default() };
+    }
+    let argv = vec!["claude".to_string(), "logs".into(), job.into()];
+    let (code, out) = run(&argv, LOGS_TIMEOUT);
+    if code != 0 {
+        return Screen { lines: vec![], source, at: util::now_iso(), note: Some(NO_SCREEN.into()) };
+    }
+    let (rows, cols) = size.unwrap_or((40, 120));
+    let mut g = Grid::new(rows, cols);
+    g.feed(out.as_bytes());
+    let mut lines = g.lines();
+    let skip = lines.len().saturating_sub(MAX_LINES);
+    Screen { lines: lines.split_off(skip), source, at: util::now_iso(), note: None }
+}
+
+/// Screens read in the last 250 ms, by session, so overlapping polls don't run a command twice.
+#[derive(Default)]
+pub struct ScreenCache {
+    map: Mutex<HashMap<String, (Instant, Screen)>>,
+}
+
+impl ScreenCache {
+    pub fn get_or(&self, session: &str, read: impl FnOnce() -> Screen) -> Screen {
+        {
+            let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((at, s)) = m.get(session)
+                && at.elapsed() < SCREEN_CACHE
+            {
+                return s.clone();
+            }
+        }
+        let s = read();
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        m.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(10));
+        m.insert(session.into(), (Instant::now(), s.clone()));
+        s
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn play(rows: usize, cols: usize, s: &str) -> Vec<String> {
         let mut g = Grid::new(rows, cols);
@@ -378,6 +441,55 @@ mod tests {
 
     #[test]
     fn a_terminal_size_is_only_read_from_a_terminal() {
-        assert_eq!(term_size(u32::MAX), None);
+        assert_eq!(term_size(Path::new("/proc"), u32::MAX), None);
+    }
+
+    type Calls = Arc<Mutex<Vec<Vec<String>>>>;
+
+    /// A runner answering from `answer`, recording every call; never runs anything.
+    fn fake(answer: impl Fn(&[String]) -> (i32, String) + Send + Sync + 'static) -> (Runner, Calls) {
+        let calls: Calls = Arc::new(Mutex::new(vec![]));
+        let c = calls.clone();
+        (
+            Arc::new(move |argv: &[String], _t: Duration| {
+                c.lock().unwrap().push(argv.to_vec());
+                answer(argv)
+            }),
+            calls,
+        )
+    }
+
+    #[test]
+    fn logs_screen_plays_the_redraws_caps_lines_and_reports_a_timeout() {
+        let mut long: String = (0..600).map(|i| format!("\u{1b}[36mline {i}\u{1b}[0m\r\n")).collect();
+        // A spinner redrawn in place, as Claude draws it: only its last frame is on screen.
+        long.push_str("Swirling…\r\u{1b}[KKneading…\r\u{1b}[KThinking…");
+        let (r, calls) = fake(move |_| (0, long.clone()));
+        let s = read_logs(&r, "job-1", Some((30, 80)));
+        assert_eq!(s.lines.len(), MAX_LINES);
+        assert_eq!(s.lines[MAX_LINES - 2..], ["line 599", "Thinking…"]);
+        assert_eq!(s.source, "claude logs");
+        assert_eq!(calls.lock().unwrap()[0], vec!["claude", "logs", "job-1"]);
+        let (r, _) = fake(|_| (124, String::new()));
+        let s = read_logs(&r, "job-1", None);
+        assert_eq!(s.note.as_deref(), Some(NO_SCREEN));
+        let (r, calls) = fake(|_| (0, String::new()));
+        assert_eq!(read_logs(&r, "bad;id", None).note.as_deref(), Some(NO_SCREEN));
+        assert!(calls.lock().unwrap().is_empty(), "an odd job id is never passed to claude");
+    }
+
+    #[test]
+    fn overlapping_reads_share_one_command() {
+        let cache = ScreenCache::default();
+        let n = std::cell::Cell::new(0);
+        let read = || {
+            n.set(n.get() + 1);
+            Screen { source: "x".into(), ..Default::default() }
+        };
+        cache.get_or("s", read);
+        cache.get_or("s", read);
+        assert_eq!(n.get(), 1);
+        cache.get_or("t", read);
+        assert_eq!(n.get(), 2);
     }
 }

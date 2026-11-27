@@ -20,13 +20,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::desktop::Runner;
 use crate::gitinfo::{self, GitError};
+use crate::run::Runner;
 use crate::types::{ActionResult, Behind};
 use crate::util;
 
-/// How often each tracked repo's remote is asked.
-pub const CHECK_EVERY: Duration = Duration::from_secs(600);
 /// The longest one `ls-remote` may take (ssh gives up connecting after 8 s).
 pub const NET_TIMEOUT: Duration = Duration::from_secs(20);
 /// The longest a pull may take.
@@ -386,7 +384,7 @@ pub fn pull_ff_only(path: &str, dry_run: bool) -> ActionResult {
     }
     let mut cmd = gitinfo::command(p);
     cmd.args(["pull", "--ff-only"]).envs(NET_ENV.iter().copied());
-    let (ok, out) = match crate::desktop::run_with_timeout(cmd, PULL_TIMEOUT) {
+    let (ok, out) = match crate::run::run_with_timeout(cmd, PULL_TIMEOUT) {
         Ok((code, out, err)) => (code == 0, format!("{out}\n{err}")),
         Err(e) if e.kind() == std::io::ErrorKind::TimedOut => (false, "timed out".into()),
         Err(e) => (false, e.to_string()),
@@ -425,7 +423,7 @@ pub fn notice(b: &Behind) -> Notice {
 /// The `gdbus` call for a critical notification from "Wake".
 pub fn notify_argv(n: &Notice) -> Vec<String> {
     [
-        crate::desktop::GDBUS,
+        crate::run::GDBUS,
         "call",
         "--session",
         "--dest",
@@ -530,28 +528,11 @@ impl Watch {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::testing::{Scratch, scratch};
     use std::fs;
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::sync::Mutex;
-
-    /// A scratch folder under the workspace's target/ (never /tmp, which may be RAM).
-    pub struct Scratch(pub PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    pub fn scratch(name: &str) -> Scratch {
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/test-scratch");
-        let dir = base.join(format!("{name}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        Scratch(dir)
-    }
 
     /// Test setup only: git that writes, in throwaway repos.
     pub fn g(dir: &Path, args: &[&str]) -> String {

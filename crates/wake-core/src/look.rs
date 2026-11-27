@@ -1,4 +1,5 @@
-//! Looking at an agent's window from Wake (hold-to-peek), and reading a background agent's screen.
+//! Looking at an agent's window from Wake (hold-to-peek). A background agent's screen, shown where
+//! there is no window to look at, is read in [`crate::vt`].
 //!
 //! Three ways to look, picked at run time by [`detect`]:
 //! - **Slipstream** (a Wayland desktop, github.com/peterwalker78/slipstream-desktop) serves its Look
@@ -9,34 +10,28 @@
 //!   active so the key release still reaches it. UNTESTED ON A REAL PLASMA SESSION: written from the
 //!   KWin 6 scripting API and the effect's source (see [`kwin_start_script`]), checked only with fakes.
 //! - **Preview** everywhere else and for agents with no window (background sessions): the app shows
-//!   the agent's terminal text itself, from [`Screen`]s read here (`claude logs`).
+//!   the agent's terminal text itself, from [`Screen`]s read by `vt::read_logs` (`claude logs`).
 //!
 //! Every D-Bus call goes through the injectable [`Runner`], so tests never touch the desktop, and
 //! every call that changes the desktop takes `dry_run` (the steps are returned, nothing is run).
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-use crate::desktop::{GDBUS, QDBUS, Runner, TIMEOUT};
-use crate::types::{ActionResult, Location, LookKind, Screen};
-use crate::util::{self, shell_join};
+use crate::run::{GDBUS, QDBUS, Runner, TIMEOUT};
+use crate::types::{ActionResult, Location, LookKind};
+use crate::util::shell_join;
 
 pub const SLIPSTREAM_NAME: &str = "io.github.peterwalker78.Slipstream";
 pub const SLIPSTREAM_PATH: &str = "/io/github/peterwalker78/Slipstream";
 pub const SLIPSTREAM_LOOK: &str = "io.github.peterwalker78.Slipstream.Look";
 pub const KWIN_NAME: &str = "org.kde.KWin";
 
-/// Reading `claude logs` gives up after this long.
-pub const LOGS_TIMEOUT: Duration = Duration::from_millis(2500);
-pub const MAX_LINES: usize = 400;
-/// Two polls this close together share one read.
-pub const SCREEN_CACHE: Duration = Duration::from_millis(250);
-pub const NO_SCREEN: &str = "Couldn't read the screen right now.";
+// Moved to `vt`; kept here until the app imports it from there.
+pub use crate::vt::NO_SCREEN;
 
 // ---------- which link ----------
 
@@ -461,126 +456,10 @@ pub fn kwin_bring_script(target_pid: u32) -> String {
     )
 }
 
-// ---------- reading the screen ----------
-
-/// Text without terminal escape sequences: CSI (`ESC [ … final`), OSC (`ESC ] … BEL` or `ESC \`),
-/// two-byte escapes, carriage-return overwrites (the text after the last `\r` of a line wins) and
-/// other control characters (tabs kept).
-pub fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut it = s.chars().peekable();
-    while let Some(c) = it.next() {
-        match c {
-            '\u{1b}' => match it.next() {
-                Some('[') => {
-                    for d in it.by_ref() {
-                        if ('@'..='~').contains(&d) {
-                            break;
-                        }
-                    }
-                }
-                Some(']') | Some('P') | Some('_') | Some('^') => {
-                    while let Some(d) = it.next() {
-                        if d == '\u{7}' {
-                            break;
-                        }
-                        if d == '\u{1b}' && it.peek() == Some(&'\\') {
-                            it.next();
-                            break;
-                        }
-                    }
-                }
-                Some('(') | Some(')') => {
-                    it.next();
-                }
-                _ => {}
-            },
-            '\u{9b}' => {
-                for d in it.by_ref() {
-                    if ('@'..='~').contains(&d) {
-                        break;
-                    }
-                }
-            }
-            '\r' if it.peek() == Some(&'\n') => {}
-            '\r' => {
-                // Overwrite: drop what this line had so far.
-                let start = out.rfind('\n').map_or(0, |i| i + 1);
-                out.truncate(start);
-            }
-            '\n' | '\t' => out.push(c),
-            c if c.is_control() => {}
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-/// The last `max` lines, right-trimmed, with blank lines at the end dropped.
-pub fn last_lines(text: &str, max: usize) -> Vec<String> {
-    let mut lines: Vec<String> = text.lines().map(|l| l.trim_end().to_string()).collect();
-    while lines.last().is_some_and(|l| l.is_empty()) {
-        lines.pop();
-    }
-    let skip = lines.len().saturating_sub(max);
-    lines.split_off(skip)
-}
-
-/// What a background session's terminal shows: `claude logs <jobId>` (read-only), played onto a
-/// grid of the terminal's size (`size`, rows and columns; a common size when it can't be read).
-pub fn read_logs(run: &Runner, job: &str, size: Option<(usize, usize)>) -> Screen {
-    if job.is_empty() || job.len() > 64 || !job.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Screen { source: "claude logs".into(), at: util::now_iso(), note: Some(NO_SCREEN.into()), ..Default::default() };
-    }
-    let argv = vec!["claude".to_string(), "logs".into(), job.into()];
-    let (code, out) = run(&argv, LOGS_TIMEOUT);
-    let source = "claude logs".to_string();
-    if code != 0 {
-        return screen_from(code, &out, source);
-    }
-    let (rows, cols) = size.unwrap_or((40, 120));
-    let mut g = crate::vt::Grid::new(rows, cols);
-    g.feed(out.as_bytes());
-    let mut lines = g.lines();
-    let skip = lines.len().saturating_sub(MAX_LINES);
-    Screen { lines: lines.split_off(skip), source, at: util::now_iso(), note: None }
-}
-
-fn screen_from(code: i32, out: &str, source: String) -> Screen {
-    let at = util::now_iso();
-    if code != 0 {
-        return Screen { lines: vec![], source, at, note: Some(NO_SCREEN.into()) };
-    }
-    Screen { lines: last_lines(&strip_ansi(out), MAX_LINES), source, at, note: None }
-}
-
-/// Screens read in the last 250 ms, by session, so overlapping polls don't run a command twice.
-#[derive(Default)]
-pub struct ScreenCache {
-    map: Mutex<HashMap<String, (Instant, Screen)>>,
-}
-
-impl ScreenCache {
-    pub fn get_or(&self, session: &str, read: impl FnOnce() -> Screen) -> Screen {
-        {
-            let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((at, s)) = m.get(session)
-                && at.elapsed() < SCREEN_CACHE
-            {
-                return s.clone();
-            }
-        }
-        let s = read();
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        m.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(10));
-        m.insert(session.into(), (Instant::now(), s.clone()));
-        s
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     type Calls = Arc<Mutex<Vec<Vec<String>>>>;
 
@@ -683,7 +562,8 @@ mod tests {
 
     #[test]
     fn kwin_look_writes_and_runs_its_scripts() {
-        let dir = std::env::temp_dir().join(format!("wake-look-{}", std::process::id()));
+        let scratch = crate::testing::scratch("look");
+        let dir = scratch.0.join("kwin");
         let (r, calls) = fake(|a| {
             if a.iter().any(|x| x == "org.freedesktop.DBus.NameHasOwner") {
                 return (0, if a.last().unwrap() == KWIN_NAME { "(true,)\n" } else { "(false,)\n" }.into());
@@ -707,7 +587,6 @@ mod tests {
         let calls = calls.lock().unwrap();
         assert!(calls.iter().any(|c| c[2] == "/Scripting/Script5" && c[3] == "org.kde.kwin.Script.run"));
         assert!(!calls.iter().any(|c| c.iter().any(|x| x == "sendText" || x == "newSession")));
-        let _ = std::fs::remove_dir_all(&dir);
         // Odd desktop ids never reach a script.
         assert!(kwin_end_script(Some("x\"; evil()"), None, 1, false).contains(r#"d.id === """#));
     }
@@ -739,46 +618,5 @@ mod tests {
         assert_eq!(parse_ended(line), Some(true));
         assert_eq!(parse_ended(&line.replace("true", "false")), Some(false));
         assert_eq!(parse_ended("something else"), None);
-    }
-
-    #[test]
-    fn ansi_is_stripped_and_text_kept() {
-        let raw = "\u{1b}[1;32m✓ tests\u{1b}[0m passed\r\n\u{1b}]0;title\u{7}next \u{1b}[2Kline\rover\n\tend\u{1b}(B";
-        assert_eq!(strip_ansi(raw), "✓ tests passed\nover\n\tend");
-        assert_eq!(last_lines("a\nb  \nc\n\n\n", 2), vec!["b", "c"]);
-    }
-
-    #[test]
-    fn logs_screen_plays_the_redraws_caps_lines_and_reports_a_timeout() {
-        let mut long: String = (0..600).map(|i| format!("\u{1b}[36mline {i}\u{1b}[0m\r\n")).collect();
-        // A spinner redrawn in place, as Claude draws it: only its last frame is on screen.
-        long.push_str("Swirling…\r\u{1b}[KKneading…\r\u{1b}[KThinking…");
-        let (r, calls) = fake(move |_| (0, long.clone()));
-        let s = read_logs(&r, "job-1", Some((30, 80)));
-        assert_eq!(s.lines.len(), MAX_LINES);
-        assert_eq!(s.lines[MAX_LINES - 2..], ["line 599", "Thinking…"]);
-        assert_eq!(s.source, "claude logs");
-        assert_eq!(calls.lock().unwrap()[0], vec!["claude", "logs", "job-1"]);
-        let (r, _) = fake(|_| (124, String::new()));
-        let s = read_logs(&r, "job-1", None);
-        assert_eq!(s.note.as_deref(), Some(NO_SCREEN));
-        let (r, calls) = fake(|_| (0, String::new()));
-        assert_eq!(read_logs(&r, "bad;id", None).note.as_deref(), Some(NO_SCREEN));
-        assert!(calls.lock().unwrap().is_empty(), "an odd job id is never passed to claude");
-    }
-
-    #[test]
-    fn overlapping_reads_share_one_command() {
-        let cache = ScreenCache::default();
-        let n = std::cell::Cell::new(0);
-        let read = || {
-            n.set(n.get() + 1);
-            Screen { source: "x".into(), ..Default::default() }
-        };
-        cache.get_or("s", read);
-        cache.get_or("s", read);
-        assert_eq!(n.get(), 1);
-        cache.get_or("t", read);
-        assert_eq!(n.get(), 2);
     }
 }

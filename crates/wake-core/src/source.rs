@@ -17,15 +17,17 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 
-use crate::desktop::{self, Desktop, Placee, Runner};
+use crate::desktop::{self, Desktop, Placee};
 use crate::index::{self, Acc, Indexer};
 use crate::live::{self, LiveInfo};
-use crate::look::{self, Look, ScreenCache};
+use crate::look::Look;
 use crate::procs::{self, Actor, Explorer, Inputs, RealActor, SessionView};
 use crate::remote::{self, Notifier, RepoCheck, Watch};
+use crate::run::{self, Runner};
 use crate::store::{self, IdeaRec, Paths, PauseRec, ProjectRec, Store};
 use crate::types::*;
 use crate::util;
+use crate::vt::ScreenCache;
 use crate::{Source, brief, gitinfo};
 use crate::{attrib, disk, log};
 
@@ -40,8 +42,6 @@ pub struct LiveConfig {
     pub proc_root: PathBuf,
     /// Runs gdbus (and qdbus for KWin) for the desktop part, and `claude logs`.
     pub runner: Runner,
-    /// Path to systemd-run, Some("") for none, None to look it up.
-    pub systemd_run: Option<String>,
     pub actor: Arc<dyn Actor>,
     /// How new windows open in the default terminal app (`desktop::terminal_launcher`); None
     /// when the system names none.
@@ -53,8 +53,7 @@ impl LiveConfig {
         LiveConfig {
             paths: Paths::from_env(),
             proc_root: PathBuf::from("/proc"),
-            runner: desktop::default_runner(),
-            systemd_run: None,
+            runner: run::default_runner(),
             actor: Arc::new(RealActor { root: PathBuf::from("/proc") }),
             terminal: desktop::terminal_launcher(),
         }
@@ -159,7 +158,7 @@ impl Live {
         Live {
             inner: Arc::new(Inner {
                 indexer: Indexer::new(cfg.paths.clone()),
-                desktop: Desktop::new(cfg.runner.clone(), &cfg.proc_root, cfg.systemd_run.as_deref()).with_launcher(cfg.terminal.clone()),
+                desktop: Desktop::new(cfg.runner.clone(), &cfg.proc_root, cfg.terminal.clone()),
                 look: Look::new(cfg.runner.clone(), &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(), cfg.paths.data.join("kwin"), std::process::id(), true),
                 runner: cfg.runner.clone(),
                 screens: ScreenCache::default(),
@@ -262,7 +261,7 @@ impl Live {
         // Disk: measured hourly and when asked, at the lowest CPU and I/O priority.
         let d = self.inner.clone();
         let _ = std::thread::Builder::new().name("wake-disk".into()).spawn(move || {
-            disk::lower_priority();
+            crate::sys::lower_priority();
             let measured = lock(&d.disk).report.as_ref().and_then(|r| r.measured_at.as_deref().and_then(util::parse_iso));
             // A measurement under an hour old (from disk.json) waits for its hour; else start soon,
             // after Wake's own start-up work. Wall-clock seconds, so a suspend counts as time gone.
@@ -337,7 +336,7 @@ impl Live {
     /// Measure the disk now, on this thread, at the lowest priority (the command line's `wake
     /// disk`); keeps the result in disk.json like the background thread does.
     pub fn measure_disk_now(&self) -> Option<DiskReport> {
-        disk::lower_priority();
+        crate::sys::lower_priority();
         self.inner.measure_disk(None);
         let projects = self.inner.store.load_projects();
         let sessions = self.inner.all_summaries(&projects, true);
@@ -455,7 +454,7 @@ impl Inner {
         }
         let prev = c.as_ref().map(|(_, d)| d.clone()).unwrap_or_default();
         let mut data = live::read_live_after(&self.paths, &self.proc_root, &prev);
-        for (sid, info) in live::read_codex_live(&self.proc_root, procs::my_uid()) {
+        for (sid, info) in live::read_codex_live(&self.proc_root, crate::sys::uid()) {
             data.entry(sid).or_insert(info);
         }
         let data = Arc::new(data);
@@ -492,9 +491,12 @@ impl Inner {
     /// one session at a time inside one process, and nothing outside it says which; but a session's
     /// terminal takes the size of the window showing it. Newest dashboard first when two fit.
     fn dashboard_of(&self, info: &LiveInfo, all: &[procs::ProcInfo], agents: &[u32], masters: &HashMap<u32, Vec<u32>>) -> Option<Location> {
-        let size = crate::vt::term_size(info.pid)?;
-        let mut fits: Vec<u32> =
-            all.iter().filter(|p| agents.contains(&p.pid) && p.argv.get(1).map(String::as_str) == Some("agents") && crate::vt::term_size(p.pid) == Some(size)).map(|p| p.pid).collect();
+        let size = crate::vt::term_size(&self.proc_root, info.pid)?;
+        let mut fits: Vec<u32> = all
+            .iter()
+            .filter(|p| agents.contains(&p.pid) && p.argv.get(1).map(String::as_str) == Some("agents") && crate::vt::term_size(&self.proc_root, p.pid) == Some(size))
+            .map(|p| p.pid)
+            .collect();
         fits.sort_unstable_by(|a, b| b.cmp(a));
         fits.into_iter().find_map(|pid| self.window_of(pid, agents, masters))
     }
@@ -1225,12 +1227,12 @@ impl Source for Live {
         let info = infos.get(session).filter(|x| x.alive)?.clone();
         // A background session's recent output; a terminal app's own screen can't be read.
         let job = info.job_id.clone()?;
-        Some(i.screens.get_or(session, || look::read_logs(&i.runner, &job, crate::vt::term_size(info.pid))))
+        Some(i.screens.get_or(session, || crate::vt::read_logs(&i.runner, &job, crate::vt::term_size(&i.proc_root, info.pid))))
     }
 
     fn agent_choices(&self) -> Vec<brief::Agent> {
         let mut v = vec![brief::Agent::Claude];
-        if desktop::which("codex").is_some() {
+        if run::which("codex").is_some() {
             v.push(brief::Agent::Codex);
         }
         v
@@ -1733,12 +1735,12 @@ mod tests {
     /// desktop: not even the terminal the tests run in.
     fn fake_proc() -> FakeProc {
         let fp = FakeProc::new();
-        fp.add(std::process::id(), 1, &["/usr/bin/claude"], "/usr/bin/claude", 1000, 1, START, procs::my_uid());
+        fp.add(std::process::id(), 1, &["/usr/bin/claude"], "/usr/bin/claude", 1000, 1, START, crate::sys::uid());
         fp
     }
 
     fn live_with(env: &Env, fp: &FakeProc, runner: Runner, actor: Arc<FakeActor>) -> Live {
-        Live::new(LiveConfig { paths: env.paths.clone(), proc_root: fp.root().to_path_buf(), runner, systemd_run: Some(String::new()), actor, terminal: Some(launcher()) })
+        Live::new(LiveConfig { paths: env.paths.clone(), proc_root: fp.root().to_path_buf(), runner, actor, terminal: Some(launcher()) })
     }
 
     fn make(env: &Env, bus: &FakeBus) -> (Live, Arc<FakeActor>, FakeProc) {
@@ -1757,7 +1759,7 @@ mod tests {
         let _ = fs::remove_file(root.join(format!("{pid}/fd/0")));
         std::os::unix::fs::symlink(format!("/dev/pts/{n}"), root.join(format!("{pid}/fd/0"))).unwrap();
         if !root.join(term.to_string()).exists() {
-            fp.add(term, 1, &["/usr/bin/some-terminal"], "/usr/bin/some-terminal", 1000, 1, 5, procs::my_uid());
+            fp.add(term, 1, &["/usr/bin/some-terminal"], "/usr/bin/some-terminal", 1000, 1, 5, crate::sys::uid());
         }
         fs::create_dir_all(root.join(format!("{term}/fd"))).unwrap();
         fs::create_dir_all(root.join(format!("{term}/fdinfo"))).unwrap();
@@ -1954,7 +1956,7 @@ mod tests {
         assert_eq!(l.session(sid).unwrap().summary.pid, None);
         // Running: a codex process holds its rollout file open.
         let pid = 5300;
-        fp.add(pid, 1, &["/usr/bin/codex"], "/usr/bin/codex", 1000, 1, 5, procs::my_uid());
+        fp.add(pid, 1, &["/usr/bin/codex"], "/usr/bin/codex", 1000, 1, 5, crate::sys::uid());
         let rollout = env.paths.codex.join(format!("sessions/2026/11/19/rollout-2026-11-19T11-00-00-{sid}.jsonl"));
         fs::create_dir_all(fp.root().join(format!("{pid}/fd"))).unwrap();
         std::os::unix::fs::symlink(&rollout, fp.root().join(format!("{pid}/fd/3"))).unwrap();
@@ -1981,13 +1983,13 @@ mod tests {
         *lock(&l.inner.live_cache) = None;
         // A background session: its own terminal is its host's (an agent), so no window yet.
         let host = 5100;
-        fp.add(host, 1, &["/usr/bin/claude", "--bg-pty-host"], "/usr/bin/claude", 1000, 1, 5, procs::my_uid());
+        fp.add(host, 1, &["/usr/bin/claude", "--bg-pty-host"], "/usr/bin/claude", 1000, 1, 5, crate::sys::uid());
         in_window(&fp, std::process::id(), 3, host);
         l.inner.refresh_locations();
         assert_eq!(l.inner.location(std::process::id()), None, "a background host is no window");
         // Attached in some terminal app: the session is in that app's window.
         let client = 5200;
-        fp.add(client, 1, &["/usr/bin/claude", "attach", "jobtest01"], "/usr/bin/claude", 1000, 1, 5, procs::my_uid());
+        fp.add(client, 1, &["/usr/bin/claude", "attach", "jobtest01"], "/usr/bin/claude", 1000, 1, 5, crate::sys::uid());
         in_window(&fp, client, 9, 6000);
         l.inner.refresh_locations();
         assert_eq!(l.inner.location(std::process::id()).map(|x| x.pid), Some(6000));
@@ -2000,7 +2002,7 @@ mod tests {
         use crate::procs::tests::FakeProc;
         let env = Env::new();
         let fp = FakeProc::new();
-        fp.add(4321, 1, &["/usr/bin/claude", "--api-key", "sk-SECRET-123", "do the thing"], "/usr/bin/claude", 1000, 1, 100, procs::my_uid());
+        fp.add(4321, 1, &["/usr/bin/claude", "--api-key", "sk-SECRET-123", "do the thing"], "/usr/bin/claude", 1000, 1, 100, crate::sys::uid());
         let bus = FakeBus::new();
         let actor = Arc::new(FakeActor { calls: Mutex::new(vec![]) });
         let l = live_with(&env, &fp, bus.runner(), actor.clone());

@@ -28,21 +28,12 @@ use std::time::Instant;
 
 use crate::live::LiveInfo;
 use crate::types::{ActionResult, Agent, AgentProc, Location, ProcKind, ProcOverview, ProjectResources, Resources, SessionResources, State, StopHow, WorkingNote};
-use crate::util;
+use crate::{sys, util};
 
 /// Idle this long with no terminal window and no attach client counts as stale.
 pub const STALE_IDLE: f64 = 6.0 * 3600.0;
 /// A spare nobody has claimed for this long counts as stale.
 pub const STALE_SPARE: f64 = 3600.0;
-
-pub fn clock_ticks() -> f64 {
-    let t = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if t > 0 { t as f64 } else { 100.0 }
-}
-
-pub fn my_uid() -> u32 {
-    unsafe { libc::getuid() }
-}
 
 /// One process as /proc shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,7 +59,20 @@ pub fn read_cmdline(root: &Path, pid: u32) -> Vec<String> {
     raw.split(|&c| c == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
 }
 
-fn parse_stat(stat: &str) -> Option<(String, u32, u64, u64)> {
+/// What the core reads from `/proc/<pid>/stat`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Stat {
+    pub comm: String,
+    pub ppid: u32,
+    /// utime + stime, clock ticks.
+    pub cpu_ticks: u64,
+    /// Start time after boot, clock ticks (field 22).
+    pub start_ticks: u64,
+}
+
+/// A `/proc/<pid>/stat` line, with fields counted after the last ')' so a name holding spaces or
+/// brackets can't shift them.
+pub(crate) fn parse_stat(stat: &str) -> Option<Stat> {
     let open = stat.find('(')?;
     let close = stat.rfind(')')?;
     let comm = stat.get(open + 1..close)?.to_string();
@@ -76,8 +80,13 @@ fn parse_stat(stat: &str) -> Option<(String, u32, u64, u64)> {
     let ppid = f.get(1)?.parse().ok()?;
     let ut: u64 = f.get(11)?.parse().ok()?;
     let st: u64 = f.get(12)?.parse().ok()?;
-    let start = f.get(19)?.parse().ok()?;
-    Some((comm, ppid, ut + st, start))
+    let start_ticks = f.get(19)?.parse().ok()?;
+    Some(Stat { comm, ppid, cpu_ticks: ut + st, start_ticks })
+}
+
+/// `<root>/<pid>/stat`, parsed; None if the process is gone.
+pub(crate) fn read_stat(root: &Path, pid: u32) -> Option<Stat> {
+    parse_stat(&fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?)
 }
 
 fn rss_from_status(status: &str) -> u64 {
@@ -91,8 +100,7 @@ fn uid_from_status(status: &str) -> Option<u32> {
 /// Read one process; None if it is gone.
 pub fn read_proc(root: &Path, pid: u32) -> Option<ProcInfo> {
     let dir = root.join(pid.to_string());
-    let stat = fs::read_to_string(dir.join("stat")).ok()?;
-    let (comm, ppid, cpu_ticks, start_ticks) = parse_stat(&stat)?;
+    let Stat { comm, ppid, cpu_ticks, start_ticks } = read_stat(root, pid)?;
     let status = fs::read_to_string(dir.join("status")).unwrap_or_default();
     let uid = uid_from_status(&status).or_else(|| fs::metadata(&dir).ok().map(|m| m.uid())).unwrap_or(u32::MAX);
     Some(ProcInfo {
@@ -338,7 +346,7 @@ fn gb(b: u64) -> String {
 impl Explorer {
     pub fn new(root: &Path) -> Explorer {
         let jobs_dir = Some(crate::store::Paths::from_env().claude.join("jobs"));
-        Explorer { root: root.to_path_buf(), uid: my_uid(), own_pid: std::process::id(), hz: clock_ticks(), samples: Mutex::new(HashMap::new()), jobs_dir }
+        Explorer { root: root.to_path_buf(), uid: crate::sys::uid(), own_pid: std::process::id(), hz: crate::sys::clock_ticks(), samples: Mutex::new(HashMap::new()), jobs_dir }
     }
 
     /// This user's processes, all of them (cheap: stat, status and cmdline per pid).
@@ -927,25 +935,18 @@ pub struct RealActor {
 
 impl Actor for RealActor {
     fn signal(&self, pid: u32, start_ticks: u64, sig: i32) -> Result<(), String> {
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0 as libc::c_uint) };
-        if raw < 0 {
-            let e = std::io::Error::last_os_error();
-            return Err(if e.raw_os_error() == Some(libc::ESRCH) { "the process has already gone".into() } else { format!("Wake couldn't safely reach the process ({e}), so it did nothing") });
-        }
-        // SAFETY: pidfd_open returned a new descriptor that nothing else owns.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+        let fd = sys::pidfd_open(pid)
+            .map_err(|e| if e.raw_os_error() == Some(libc::ESRCH) { "the process has already gone".to_string() } else { format!("Wake couldn't safely reach the process ({e}), so it did nothing") })?;
         // The pidfd is open, so from here the pid cannot be reused; check it is still the same process.
         let now = read_proc(&self.root, pid).ok_or("the process has already gone")?;
         if now.start_ticks != start_ticks {
             return Err("that process ID now belongs to a different process".to_string());
         }
-        let r = unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), sig, std::ptr::null::<libc::siginfo_t>(), 0 as libc::c_uint) };
-        if r < 0 { Err(std::io::Error::last_os_error().to_string()) } else { Ok(()) }
+        sys::pidfd_send_signal(&fd, sig).map_err(|e| e.to_string())
     }
 
     fn run(&self, argv: &[String]) -> (i32, String) {
-        (crate::desktop::default_runner())(argv, std::time::Duration::from_secs(20))
+        (crate::run::default_runner())(argv, std::time::Duration::from_secs(20))
     }
 }
 
@@ -960,7 +961,7 @@ pub const ALREADY_ENDED: &str = "That process has already ended; nothing was sto
 /// Stop one agent process. Everything about the target is found fresh from /proc and the session
 /// files. `expected_start` (the `start_ticks` of the row the person confirmed) binds the action to
 /// that very process: if the pid now names a different one, nothing is done.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "one caller (Live); the target, how, and what it is checked against")]
 pub fn stop(
     explorer: &Explorer,
     actor: &dyn Actor,
@@ -1033,12 +1034,12 @@ pub fn stop(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::desktop::tests::TmpDir;
+    use crate::testing::{Scratch, scratch};
 
     #[test]
     fn the_terminal_showing_a_process_is_whoever_holds_its_pty() {
         use std::os::unix::fs::symlink;
-        let dir = TmpDir::new("ptys");
+        let dir = scratch("ptys");
         let root = dir.0.as_path();
         let fd = |pid: u32, n: u32, to: &str, info: Option<&str>| {
             fs::create_dir_all(root.join(format!("{pid}/fd"))).unwrap();
@@ -1067,19 +1068,19 @@ pub(crate) mod tests {
 
     /// A fake /proc with this user's uid.
     pub struct FakeProc {
-        pub dir: TmpDir,
+        pub dir: Scratch,
     }
 
     impl FakeProc {
         pub fn new() -> FakeProc {
-            let dir = TmpDir::new("fakeproc");
+            let dir = scratch("fakeproc");
             fs::write(dir.0.join("stat"), "cpu 1 2 3\nbtime 1795000000\n").unwrap();
             FakeProc { dir }
         }
         pub fn root(&self) -> &Path {
             &self.dir.0
         }
-        #[allow(clippy::too_many_arguments)]
+        #[expect(clippy::too_many_arguments, reason = "a test helper writing one fake /proc entry, field by field")]
         pub fn add(&self, pid: u32, ppid: u32, argv: &[&str], exe: &str, rss_kb: u64, ticks: u64, start: u64, uid: u32) {
             let d = self.dir.0.join(pid.to_string());
             fs::create_dir_all(&d).unwrap();
@@ -1116,7 +1117,7 @@ pub(crate) mod tests {
     /// one never used for a day), an old and a fresh spare, an interactive session, a stray, an
     /// orphan attach client, codex, and things that merely mention claude.
     pub fn machine(fp: &FakeProc, now: f64) -> HashMap<String, LiveInfo> {
-        let uid = my_uid();
+        let uid = crate::sys::uid();
         let boot = 1795000000.0;
         let st = |ago: f64| ((now - ago - boot) * HZ as f64) as u64;
         // unclaimed spares still have their claim socket; claimed ones don't
@@ -1248,7 +1249,7 @@ pub(crate) mod tests {
         // every row carries its start time, for stop
         for p in &o.procs {
             let stat = fs::read_to_string(fp.root().join(p.pid.to_string()).join("stat")).unwrap();
-            assert_eq!(p.start_ticks, parse_stat(&stat).map(|s| s.3), "{}", p.pid);
+            assert_eq!(p.start_ticks, parse_stat(&stat).map(|s| s.start_ticks), "{}", p.pid);
         }
         // totals count each process once
         let all_agent_kb: u64 = [100, 200, 201, 300, 210, 211, 220, 221, 230, 231, 400, 500, 510, 600]
@@ -1268,7 +1269,7 @@ pub(crate) mod tests {
     #[test]
     fn cpu_from_two_samples() {
         let fp = FakeProc::new();
-        let uid = my_uid();
+        let uid = crate::sys::uid();
         fp.add(42, 1, &["codex"], "/usr/bin/codex", 1000, 100, 5, uid);
         let ex = Explorer::new(fp.root());
         let live = HashMap::new();
@@ -1284,7 +1285,7 @@ pub(crate) mod tests {
         }
         fs::write(fp.root().join("42/stat"), "42 (codex) S 1 42 42 0 -1 4194304 1 1 1 1 200 100 0 0 20 0 1 0 5 1000 100\n").unwrap();
         let cpu = ex.processes(&inp).procs[0].cpu_percent.unwrap();
-        assert!((cpu - 100.0 * (300.0 - 100.0) / clock_ticks() as f32 / 2.0).abs() < 5.0, "{cpu}");
+        assert!((cpu - 100.0 * (300.0 - 100.0) / crate::sys::clock_ticks() as f32 / 2.0).abs() < 5.0, "{cpu}");
     }
 
     #[test]
@@ -1367,7 +1368,7 @@ pub(crate) mod tests {
 
     #[test]
     fn npm_bin_symlinks_are_followed() {
-        let tmp = TmpDir::new("npmbin");
+        let tmp = scratch("npmbin");
         let pkg = tmp.0.join("lib/node_modules/@google/gemini-cli/dist");
         fs::create_dir_all(&pkg).unwrap();
         fs::write(pkg.join("index.js"), "").unwrap();
@@ -1386,7 +1387,7 @@ pub(crate) mod tests {
     fn only_daemon_hosted_or_orphaned_sessions_go_stale() {
         let fp = FakeProc::new();
         let now = util::now();
-        let uid = my_uid();
+        let uid = crate::sys::uid();
         let boot = 1795000000.0;
         let st = |ago: f64| ((now - ago - boot) * HZ as f64) as u64;
         let seven_h = 7.0 * 3600.0;
@@ -1423,7 +1424,7 @@ pub(crate) mod tests {
     #[test]
     fn unreadable_exe_counts_only_when_a_live_session_file_vouches_for_it() {
         let fp = FakeProc::new();
-        let uid = my_uid();
+        let uid = crate::sys::uid();
         fp.add(610, 1, &["claude", "--resume", "x"], "", 90_000, 1, 5_000, uid);
         fp.add(620, 1, &["claude"], "", 90_000, 1, 6_000, uid);
         fp.add(630, 1, &["claude"], "", 90_000, 1, 7_000, uid);
@@ -1493,7 +1494,7 @@ pub(crate) mod tests {
         let fp = FakeProc::new();
         let me = std::process::id();
         let real_start = read_proc(Path::new("/proc"), me).unwrap().start_ticks;
-        fp.add(me, 1, &["wake-test"], "/usr/bin/true", 1, 1, real_start + 12345, my_uid());
+        fp.add(me, 1, &["wake-test"], "/usr/bin/true", 1, 1, real_start + 12345, crate::sys::uid());
         let actor = RealActor { root: fp.root().to_path_buf() };
         let e = actor.signal(me, real_start, 0).unwrap_err();
         assert!(e.contains("different process"), "{e}");
@@ -1503,20 +1504,20 @@ pub(crate) mod tests {
     /// the views are made up per test; /proc is a fake.
     struct Rig {
         fp: FakeProc,
-        jobs: TmpDir,
+        jobs: Scratch,
         live: HashMap<String, LiveInfo>,
         now: f64,
     }
 
     impl Rig {
         fn new() -> Rig {
-            Rig { fp: FakeProc::new(), jobs: TmpDir::new("jobs"), live: HashMap::new(), now: util::now() }
+            Rig { fp: FakeProc::new(), jobs: scratch("jobs"), live: HashMap::new(), now: util::now() }
         }
         fn st(&self, ago: f64) -> u64 {
             ((self.now - ago - 1795000000.0) * HZ as f64) as u64
         }
         fn add(&self, pid: u32, ppid: u32, argv: &[&str], exe: &str, rss_kb: u64, ago: f64) {
-            self.fp.add(pid, ppid, argv, exe, rss_kb, 1, self.st(ago), my_uid());
+            self.fp.add(pid, ppid, argv, exe, rss_kb, 1, self.st(ago), crate::sys::uid());
         }
         fn entry(&mut self, pid: u32, sid: &str, job: Option<&str>, spare: bool, idle_for: f64) {
             self.live.insert(

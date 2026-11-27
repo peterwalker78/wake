@@ -158,9 +158,8 @@ mod tests {
     #[test]
     fn a_shell_hands_the_agent_the_brief_byte_for_byte() {
         // What bash does with the typed line: the brief arrives as one argument, nothing expanded.
-        let dir = std::env::temp_dir().join(format!("wake-brief-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let s = crate::testing::scratch("brief");
+        let dir = s.0.clone();
         let w = Writer::new(&dir);
         let nasty = ["it's \"quoted\"", "costs $HOME and $(id)", "`touch /tmp/pwned-wake`", "back\\slash; && | > *"];
         let text = brief_text("O'Neil's \"app\"", &nasty);
@@ -178,6 +177,5 @@ mod tests {
         assert_eq!(std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
         assert!(write(&w, &dir, "../x", "hi").is_err());
         assert!(write(&w, &dir, &new_id(), "   ").is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

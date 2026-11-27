@@ -49,7 +49,7 @@ impl Paths {
     pub fn from_env() -> Paths {
         let home = home_dir();
         let runtime = env_path("WAKE_RUNTIME_DIR").unwrap_or_else(|| {
-            let base = env_path("XDG_RUNTIME_DIR").unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })));
+            let base = env_path("XDG_RUNTIME_DIR").unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", crate::sys::uid())));
             base.join("slipstream")
         });
         Paths {
@@ -150,6 +150,8 @@ impl std::fmt::Display for StoreError {
         f.write_str(&self.0)
     }
 }
+
+impl std::error::Error for StoreError {}
 
 impl From<std::io::Error> for StoreError {
     fn from(e: std::io::Error) -> Self {
@@ -481,13 +483,6 @@ pub struct IdeaRec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GitMark {
-    pub branch: Option<String>,
-    pub head: Option<String>,
-    pub ahead: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PauseRec {
     pub project: String,
     pub at: String,
@@ -518,7 +513,6 @@ pub fn random_hex(bytes: usize) -> String {
 
 #[derive(Deserialize)]
 struct ProjectsFile {
-    #[allow(dead_code)] // read only to check the file is one Wake understands
     projects: Vec<ProjectRec>,
     /// The person's groups, including those with no project in them yet. Added 2026-11-27; older
     /// files have none, and their groups are the ones their projects name.
@@ -1271,6 +1265,8 @@ pub(crate) mod testenv {
     pub struct Env {
         pub root: PathBuf,
         pub paths: Paths,
+        /// Removes the home when the Env is dropped.
+        _dir: crate::testing::Scratch,
     }
 
     fn fixtures() -> PathBuf {
@@ -1294,12 +1290,8 @@ pub(crate) mod testenv {
 
     impl Env {
         pub fn new() -> Env {
-            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let base = std::env::temp_dir().join(format!("wake-rs-test-{}-{}", std::process::id(), n));
-            let _ = fs::remove_dir_all(&base);
-            fs::create_dir_all(&base).unwrap();
-            let root = fs::canonicalize(&base).unwrap();
+            let dir = crate::testing::scratch("env");
+            let root = dir.0.clone();
             let paths = Paths::under(&root);
             for name in ["alpha", "beta", "beta-private", "beta-deploy", "archive", ".hidden"] {
                 fs::create_dir_all(paths.projects.join(name).join(".git")).unwrap();
@@ -1313,7 +1305,7 @@ pub(crate) mod testenv {
             fs::create_dir_all(paths.claude.join("sessions")).unwrap();
             fs::create_dir_all(paths.runtime.join("working")).unwrap();
             fs::create_dir_all(paths.runtime.join("resume")).unwrap();
-            Env { root, paths }
+            Env { root, paths, _dir: dir }
         }
 
         pub fn store(&self) -> Store {
@@ -1322,12 +1314,6 @@ pub(crate) mod testenv {
 
         pub fn transcript(&self, sid: &str) -> PathBuf {
             self.paths.claude.join("projects/-home").join(format!("{sid}.jsonl"))
-        }
-    }
-
-    impl Drop for Env {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
         }
     }
 }

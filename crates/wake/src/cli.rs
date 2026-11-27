@@ -170,8 +170,8 @@ fn cmd_doctor() -> u8 {
     doctor_files(&mut d, &paths);
     doctor_log(&mut d, &paths);
     out!();
-    out!("Wake writes only to {} and its settings to {}.", tilde_path(&paths.data), tilde_path(&paths.config.join("settings.toml")));
-    out!("If Wake shows the wrong thing, include this output and {} in your report.", tilde_path(&paths.data.join("wake.log")));
+    out!("Wake writes only to {} and its settings to {}.", tilde(&paths.data), tilde(&paths.config.join("settings.toml")));
+    out!("If Wake shows the wrong thing, include this output and {} in your report.", tilde(&paths.data.join("wake.log")));
     u8::from(d.needed)
 }
 
@@ -227,16 +227,12 @@ fn plural(n: usize, word: &str) -> String {
     crate::fmt::pl(n as u64, word, &format!("{word}s"))
 }
 
-fn tilde_path(p: &std::path::Path) -> String {
-    tilde(&p.to_string_lossy())
-}
-
 fn doctor_sessions(d: &mut Doctor, paths: &store::Paths) {
     d.heading("Sessions");
     let found = wake_core::index::Indexer::new(paths.clone()).discover();
     let claude = found.iter().filter(|f| f.1 == wake_core::Agent::Claude).count();
     let codex = found.len() - claude;
-    let (claude_dir, codex_dir) = (tilde_path(&paths.claude.join("projects")), tilde_path(&paths.codex.join("sessions")));
+    let (claude_dir, codex_dir) = (tilde(&paths.claude.join("projects")), tilde(&paths.codex.join("sessions")));
     if found.is_empty() {
         d.line(
             Mark::Needed,
@@ -261,7 +257,7 @@ fn doctor_open_now(d: &mut Doctor, paths: &store::Paths) {
     if !dir.is_dir() {
         d.line(
             Mark::Optional,
-            &format!("Wake can't tell which Claude Code sessions are open: {} isn't there yet.", tilde_path(&dir)),
+            &format!("Wake can't tell which Claude Code sessions are open: {} isn't there yet.", tilde(&dir)),
             "start `claude` in a project; the folder appears while it runs. If it still doesn't, update Claude Code.",
         );
         return;
@@ -310,7 +306,7 @@ fn doctor_programs(d: &mut Doctor, paths: &store::Paths) {
     let other_agent = tools.iter().any(|(ai, p)| *ai != Agent::Claude && p.is_some());
     for (ai, found) in &tools {
         match (ai, found) {
-            (_, Some(p)) => d.ok(&format!("{}: {}", ai.id(), tilde_path(p))),
+            (_, Some(p)) => d.ok(&format!("{}: {}", ai.id(), tilde(p))),
             (Agent::Claude, None) => d.line(
                 if other_agent { Mark::Optional } else { Mark::Needed },
                 "claude: Wake can't find it (it looked on your PATH and in ~/.local/bin). Questions and Start an agent need it.",
@@ -331,7 +327,7 @@ fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
     d.heading("Desktop");
     // New windows (Go there for a session in none, Start an agent) open in the default terminal app.
     match desktop::terminal_launcher() {
-        Some(l) => d.ok(&format!("default terminal app: opened through {}", tilde_path(std::path::Path::new(&l[0])))),
+        Some(l) => d.ok(&format!("default terminal app: opened through {}", tilde(std::path::Path::new(&l[0])))),
         None => d.line(
             Mark::Optional,
             "Wake can't find your default terminal app, so Go there and Start an agent can only give you a command to copy.",
@@ -363,7 +359,7 @@ fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
     }
     let notes = paths.runtime.join("working");
     if notes.is_dir() {
-        d.ok(&format!("agent-notify: its notes are in {}", tilde_path(&notes)));
+        d.ok(&format!("agent-notify: its notes are in {}", tilde(&notes)));
     } else {
         d.line(Mark::Optional, "agent-notify isn't running. With it, Agents draws each agent's activity trace.", "only if you want it, see https://github.com/peterwalker78/agent-notify");
     }
@@ -382,10 +378,10 @@ fn doctor_files(d: &mut Doctor, paths: &store::Paths) {
 /// it moves a broken file aside and writes a fresh one; `store::check_projects` only reads.
 fn doctor_projects(d: &mut Doctor, paths: &store::Paths) {
     let path = paths.data.join("projects.json");
-    let file = tilde_path(&path);
+    let file = tilde(&path);
     match store::check_projects(paths) {
         FileCheck::Missing => {
-            d.ok(&format!("Project list: not made yet. Wake makes it from {} the first time it opens.", tilde_path(&paths.projects)));
+            d.ok(&format!("Project list: not made yet. Wake makes it from {} the first time it opens.", tilde(&paths.projects)));
             return;
         }
         FileCheck::Unreadable(why) => {
@@ -406,7 +402,7 @@ fn doctor_projects(d: &mut Doctor, paths: &store::Paths) {
         std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).and_then(|v| serde_json::from_value(v.get("projects")?.clone()).ok()).unwrap_or_default();
     let names: Vec<&str> = projects.iter().filter(|p| !p.removed).map(|p| p.name.as_str()).collect();
     if names.is_empty() {
-        d.line(Mark::Optional, &format!("No projects yet: Wake looks in {} and the folders your sessions ran in.", tilde_path(&paths.projects)), "open Projects → Track a folder for others.");
+        d.line(Mark::Optional, &format!("No projects yet: Wake looks in {} and the folders your sessions ran in.", tilde(&paths.projects)), "open Projects → Track a folder for others.");
         return;
     }
     let mut text = format!("{} tracked: {}", plural(names.len(), "project"), names.iter().take(8).copied().collect::<Vec<_>>().join(", "));
@@ -419,7 +415,7 @@ fn doctor_projects(d: &mut Doctor, paths: &store::Paths) {
 /// settings.toml, if Wake can't read or understand it (`settings::check` only reads;
 /// `settings::load` would move a broken file aside).
 fn doctor_settings(d: &mut Doctor, paths: &store::Paths) {
-    let file = tilde_path(&paths.config.join("settings.toml"));
+    let file = tilde(&paths.config.join("settings.toml"));
     let why = match wake_core::settings::check(&paths.config) {
         FileCheck::Unreadable(why) => format!("can't read {file} ({why})"),
         FileCheck::Damaged(why) => format!("can't understand {file} ({why})"),
@@ -436,7 +432,7 @@ fn doctor_ideas(d: &mut Doctor, paths: &store::Paths) {
         d.line(
             Mark::Optional,
             &format!("{what} can't be read, so Ideas doesn't show {verb}."),
-            &format!("{} still in {}.", if n == 1 { "it is" } else { "they are" }, tilde_path(&paths.data.join("ideas.jsonl"))),
+            &format!("{} still in {}.", if n == 1 { "it is" } else { "they are" }, tilde(&paths.data.join("ideas.jsonl"))),
         );
     }
 }
@@ -444,7 +440,7 @@ fn doctor_ideas(d: &mut Doctor, paths: &store::Paths) {
 /// Files Wake kept aside because it couldn't understand them (`*.broken-*`).
 fn doctor_broken(d: &mut Doctor, paths: &store::Paths) {
     for f in store::broken_files(paths) {
-        d.line(Mark::Optional, &format!("Wake kept a file it couldn't understand: {}", tilde_path(&f)), "copy what you need from it, then delete it.");
+        d.line(Mark::Optional, &format!("Wake kept a file it couldn't understand: {}", tilde(&f)), "copy what you need from it, then delete it.");
     }
 }
 
@@ -452,12 +448,12 @@ fn doctor_broken(d: &mut Doctor, paths: &store::Paths) {
 fn doctor_self(d: &mut Doctor, paths: &store::Paths) {
     let index = match dir_size(&paths.index_dir()) {
         0 => "no index yet".to_string(),
-        n => format!("index {} on disk", crate::fmt::bytes(n)),
+        n => format!("index {} on disk", util::bytes(n)),
     };
     let me = std::process::id();
     let window = procs::Explorer::new(std::path::Path::new("/proc")).scan().into_iter().filter(|p| p.comm == "wake" && p.pid != me).map(|p| p.rss_bytes).max();
     match window {
-        Some(rss) => d.ok(&format!("Wake itself: {} of memory, {index}", crate::fmt::bytes(rss))),
+        Some(rss) => d.ok(&format!("Wake itself: {} of memory, {index}", util::bytes(rss))),
         None => d.ok(&format!("Wake itself: not open now; {index}")),
     }
 }
@@ -486,10 +482,6 @@ fn doctor_log(d: &mut Doctor, paths: &store::Paths) {
     }
 }
 
-fn mem(b: u64) -> String {
-    crate::fmt::bytes(b)
-}
-
 /// One line saying what each kind and state in the table means, for only those that appear.
 fn ps_legend(seen: &[&str]) -> Option<String> {
     const WORDS: [(&str, &str); 7] = [
@@ -509,13 +501,13 @@ fn idle(s: Option<u64>) -> String {
     match s {
         None => "-".into(),
         Some(s) if s < 60 => "now".into(),
-        Some(s) => util::ago(Some(s as f64)),
+        Some(s) => util::span(s),
     }
 }
 
 /// `wake disk`: measure once and print each project's items and the machine's (added 2026-11-20).
 fn cmd_disk() -> u8 {
-    use crate::fmt::bytes;
+    use wake_core::util::bytes;
     let live = Live::new(LiveConfig::real());
     live.index_now();
     let started = Instant::now();
@@ -629,7 +621,7 @@ fn cmd_ps() -> u8 {
             "{:<9} {:<8} {:>6} {:>5}  {:<10} {:<8} {:<16} {:<34} {}",
             pid,
             kind,
-            mem(p.rss_bytes),
+            util::bytes(p.rss_bytes),
             cpu,
             if folded { "" } else { state },
             if folded { String::new() } else { idle(p.idle_seconds) },
@@ -664,7 +656,7 @@ fn cmd_ps() -> u8 {
             .iter()
             .map(|p| {
                 let n = p.project.as_ref().map_or_else(|| "no project".to_string(), |id| names.get(id).cloned().unwrap_or_else(|| id.clone()));
-                format!("{} {} ({} session{})", plain(&n), mem(p.rss_bytes), p.sessions, if p.sessions == 1 { "" } else { "s" })
+                format!("{} {} ({} session{})", plain(&n), util::bytes(p.rss_bytes), p.sessions, if p.sessions == 1 { "" } else { "s" })
             })
             .collect();
         if !parts.is_empty() {
@@ -712,15 +704,9 @@ fn cmd_behind() -> u8 {
     if behind > 0 { 1 } else { 0 }
 }
 
-fn tilde(p: &str) -> String {
-    let home = store::home_dir();
-    // On Fedora Atomic $HOME is /home/x but paths are often /var/home/x: try both.
-    let real = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
-    let path = std::path::Path::new(p);
-    plain(&match path.strip_prefix(&home).or_else(|_| path.strip_prefix(&real)) {
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => p.to_string(),
-    })
+/// A path with home as `~`, safe to print.
+fn tilde(p: impl AsRef<std::path::Path>) -> String {
+    plain(&crate::fmt::tilde(p))
 }
 
 /// Names, titles, paths and commands come from files and processes Wake doesn't control: printed

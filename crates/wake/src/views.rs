@@ -579,7 +579,7 @@ pub fn render_status(ui: &Ui) {
     } else if let Some(err) = &err {
         (w::icons::WARNING, err.clone(), "bad", err.clone())
     } else if secs > 15 {
-        (w::icons::WARNING, format!("Wake last checked {} ago.", fmt::span(secs as u64)), "late", "Wake reads your sessions every few seconds; it hasn't managed to lately.".to_string())
+        (w::icons::WARNING, format!("Wake last checked {} ago.", util::span(secs as u64)), "late", "Wake reads your sessions every few seconds; it hasn't managed to lately.".to_string())
     } else {
         (w::icons::INFO, String::new(), "", String::new())
     };
@@ -1608,9 +1608,10 @@ fn ideas(ui: &Ui) {
 
 /// Open `<data>/briefs/<id>.md` with the desktop's default app for it.
 fn open_brief(ui: &Ui, id: &str) {
-    let path = wake_core::store::Paths::from_env().data.join("briefs").join(format!("{id}.md"));
+    let data = if ui.demo { std::path::Path::new(crate::demo::HOME_DIR).join(".local/share/wake") } else { wake_core::store::Paths::from_env().data };
+    let path = brief::path(&data, id);
     if ui.demo {
-        app::toast(ui, &format!("Demo: this would open the brief, {}.", fmt::tildify(&path.to_string_lossy())), false);
+        app::toast(ui, &format!("Demo: this would open the brief, {}.", fmt::tilde(&path)), false);
         return;
     }
     if !path.exists() {

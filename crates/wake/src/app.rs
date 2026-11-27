@@ -506,8 +506,13 @@ fn view_widgets(view: View) -> ViewW {
 }
 
 fn build(app: &gtk::Application, opts: Opts) {
-    let demo = opts.demo || crate::source::is_stand_in();
-    let src = if opts.demo { crate::source::demo_source() } else { crate::source::live_source(opts.screenshot.is_some()) };
+    let demo = opts.demo;
+    let src = if demo {
+        crate::fmt::set_home(std::path::Path::new(crate::demo::HOME_DIR));
+        crate::source::demo_source()
+    } else {
+        crate::source::live_source(opts.screenshot.is_some())
+    };
     // Motion as Settings and the desktop want it, before anything is drawn.
     crate::motion::init();
     // A screenshot's window is the width it asks for from the start (Broadway sizes a window by its

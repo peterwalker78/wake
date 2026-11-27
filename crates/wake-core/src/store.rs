@@ -707,10 +707,6 @@ impl Store {
         self.problem.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    fn tilde(&self, p: &Path) -> String {
-        util::tilde(p, &self.paths.home)
-    }
-
     fn set_problem(&self, p: String) {
         *self.problem.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
     }
@@ -729,8 +725,8 @@ impl Store {
                     Err(e) => {
                         self.set_problem(format!(
                             "Wake couldn't read its project list {}, so it left the file alone and is showing the folders in {} for now. ({e})",
-                            self.tilde(&path),
-                            self.tilde(&self.paths.projects)
+                            util::tilde(&path, &self.paths.home),
+                            util::tilde(&self.paths.projects, &self.paths.home)
                         ));
                         return self.discover_projects();
                     }
@@ -747,8 +743,8 @@ impl Store {
             Err(e) => {
                 self.set_problem(format!(
                     "Wake couldn't open its project list {}, so it left the file alone and is showing the folders in {} for now. ({e})",
-                    self.tilde(&path),
-                    self.tilde(&self.paths.projects)
+                    util::tilde(&path, &self.paths.home),
+                    util::tilde(&self.paths.projects, &self.paths.home)
                 ));
                 return self.discover_projects();
             }
@@ -767,12 +763,15 @@ impl Store {
                 if moved {
                     self.set_problem(format!(
                         "Wake's project list was damaged, so it started a new one from the folders in {}. Your old list, with your descriptions and next steps, is kept as {}. ({e})",
-                        self.tilde(&self.paths.projects),
-                        self.tilde(&aside)
+                        util::tilde(&self.paths.projects, &self.paths.home),
+                        util::tilde(&aside, &self.paths.home)
                     ));
                     let _ = self.save_projects_locked(&projects);
                 } else {
-                    self.set_problem(format!("Wake's project list was damaged and couldn't be moved aside, so Wake left {} as it is and isn't saving project changes. ({e})", self.tilde(&path)));
+                    self.set_problem(format!(
+                        "Wake's project list was damaged and couldn't be moved aside, so Wake left {} as it is and isn't saving project changes. ({e})",
+                        util::tilde(&path, &self.paths.home)
+                    ));
                 }
                 projects
             }

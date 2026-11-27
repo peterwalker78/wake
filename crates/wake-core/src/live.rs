@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::index::{self, Acc};
 use crate::store::{self, Paths, ProjectRec};
 use crate::types::{SessionSummary, State, WorkingNote};
-use crate::util::{self, ago};
+use crate::util::{self, span};
 
 /// Busy, but nothing updated or written for this long -> unknown.
 pub const STALE_BUSY: f64 = 30.0 * 60.0;
@@ -285,12 +285,12 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
         match mtime {
             Some(m) if now - m < 120.0 => {
                 summary.state = State::Unknown;
-                summary.evidence = format!("Codex wrote to it {} ago; Wake cannot see Codex live state", ago(Some(now - m)));
+                summary.evidence = format!("Codex wrote to it {} ago; Wake cannot see Codex live state", span((now - m) as u64));
             }
             _ => {
                 summary.state = State::Ended;
                 summary.evidence = match last {
-                    Some(l) => format!("last active {} ago", ago(Some(now - l))),
+                    Some(l) => format!("last active {} ago", span((now - l) as u64)),
                     None => "ended".into(),
                 };
             }
@@ -310,7 +310,7 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
             "ended; Claude deleted the transcript, Wake kept this summary".into()
         } else {
             match last {
-                Some(l) => format!("ended {} ago{how}", ago(Some(now - l))),
+                Some(l) => format!("ended {} ago{how}", span((now - l) as u64)),
                 None => format!("ended{how}"),
             }
         };
@@ -328,14 +328,14 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
         Some("busy") => {
             if let Some(n) = newest.filter(|n| now - n > STALE_BUSY) {
                 summary.state = State::Unknown;
-                summary.evidence = format!("Claude says it's busy, but nothing has moved for {}", ago(Some(now - n)));
+                summary.evidence = format!("Claude says it's busy, but nothing has moved for {}", span((now - n) as u64));
             } else if notify_newer("idle") {
                 summary.state = State::Unknown;
                 summary.evidence = "Claude's notes disagree: one says working, one says idle".into();
             } else {
                 summary.state = State::Working;
                 summary.evidence = match newest {
-                    Some(n) => format!("working, last moved {} ago", ago(Some(now - n))),
+                    Some(n) => format!("working, last moved {} ago", span((now - n) as u64)),
                     None => "working".into(),
                 };
             }
@@ -363,7 +363,7 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
                 summary.state = State::Waiting;
                 summary.question = Some(q);
                 summary.evidence = match util::parse_iso(at) {
-                    Some(a) => format!("{how} {} ago", ago(Some(now - a))),
+                    Some(a) => format!("{how} {} ago", span((now - a) as u64)),
                     None => how.into(),
                 };
             } else {
@@ -373,11 +373,11 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
                 let since = last.or(upd);
                 let how = if acc.and_then(|a| a.last_kind.as_deref()) == Some("tool") { MID_TASK } else { FINISHED };
                 let marked = match (last, upd) {
-                    (Some(l), Some(u)) if u - l > 600.0 => format!("; Claude marked it idle {} ago", ago(Some(now - u))),
+                    (Some(l), Some(u)) if u - l > 600.0 => format!("; Claude marked it idle {} ago", span((now - u) as u64)),
                     _ => String::new(),
                 };
                 summary.evidence = match since {
-                    Some(s) => format!("{how}, idle for {}{marked}", ago(Some(now - s))),
+                    Some(s) => format!("{how}, idle for {}{marked}", span((now - s) as u64)),
                     None => how.into(),
                 };
             }

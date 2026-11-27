@@ -257,17 +257,17 @@ pub fn render(ui: &Ui) {
     w::clear(&vw.top);
     // The page title, as every screen's: what agents hold, then how much looks stale and what is free.
     let line = w::vbox(4, &["pagetitle", "agentstitle"]);
-    let total = w::wrap(&format!("Agents are using {}", fmt::bytes(p.total_rss_bytes)), &["title-1"]);
+    let total = w::wrap(&format!("Agents are using {}", util::bytes(p.total_rss_bytes)), &["title-1"]);
     total.set_xalign(0.0);
-    live_text(ui, View::Agents, &total, |st| st.procs.as_ref().map(|p| format!("Agents are using {}", fmt::bytes(p.total_rss_bytes))));
+    live_text(ui, View::Agents, &total, |st| st.procs.as_ref().map(|p| format!("Agents are using {}", util::bytes(p.total_rss_bytes))));
     line.append(&total);
     let sub_words = |st: &app::AppState| {
         let p = st.procs.as_ref()?;
         let (n, b) = stale_summary(p);
         let stale =
-            if n == 0 { "Nothing looks stale".to_string() } else { format!("{n} {} stale and {} {}", if n == 1 { "looks" } else { "look" }, if n == 1 { "holds" } else { "hold" }, fmt::bytes(b)) };
+            if n == 0 { "Nothing looks stale".to_string() } else { format!("{n} {} stale and {} {}", if n == 1 { "looks" } else { "look" }, if n == 1 { "holds" } else { "hold" }, util::bytes(b)) };
         Some(match st.mem_available {
-            Some(m) => format!("{stale} · {} of memory free on this machine", fmt::bytes(m)),
+            Some(m) => format!("{stale} · {} of memory free on this machine", util::bytes(m)),
             None => stale,
         })
     };
@@ -512,9 +512,9 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
         state.append(&l);
     }
     let mem = w::vbox(3, &[]);
-    let rss = w::clip(&fmt::bytes(a.rss_bytes), &["num", "ink"]);
+    let rss = w::clip(&util::bytes(a.rss_bytes), &["num", "ink"]);
     let id = a.pid;
-    live_text(ui, View::Agents, &rss, move |st| st.procs.as_ref()?.procs.iter().find(|x| x.pid == id).map(|a| fmt::bytes(a.rss_bytes)));
+    live_text(ui, View::Agents, &rss, move |st| st.procs.as_ref()?.procs.iter().find(|x| x.pid == id).map(|a| util::bytes(a.rss_bytes)));
     if !a.children.is_empty() {
         let kids: Vec<String> = a
             .children
@@ -1559,7 +1559,7 @@ pub fn stop_line_at(a: &AgentProc, last_at: Option<&str>) -> (String, String) {
     if let Some(p) = &a.project_name {
         parts.push(p.clone());
     }
-    parts.push(fmt::bytes(a.rss_bytes));
+    parts.push(util::bytes(a.rss_bytes));
     if a.state != State::Working
         && let Some(s) = crate::why::idle_secs(last_at, a.idle_seconds)
     {
@@ -1662,7 +1662,7 @@ pub fn stop_all_stale(ui: &Ui) {
     };
     let title = if stale.len() == 1 { "Stop the stale agent?".to_string() } else { format!("Stop all {} stale agents?", stale.len()) };
     let body = vec![
-        format!("This gives back about {}.", fmt::bytes(total)),
+        format!("This gives back about {}.", util::bytes(total)),
         "Background sessions get Claude's own clean stop; the others are asked to exit. Their conversations stay on disk, and you can resume them later.".into(),
         "Anything still running after 5 seconds can then be forced.".into(),
     ];

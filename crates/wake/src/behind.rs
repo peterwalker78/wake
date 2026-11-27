@@ -234,7 +234,7 @@ fn plain(b: &Behind) -> String {
 
 /// The git underneath, for a tooltip: the command Pull runs and where.
 fn command_tip(b: &Behind) -> String {
-    format!("{}\nPull runs {} in {}.", remote::how_far(b), b.fix, fmt::tildify(&b.repo))
+    format!("{}\nPull runs {} in {}.", remote::how_far(b), b.fix, fmt::tilde(&b.repo))
 }
 
 /// "Pull <project>?" Then `git pull --ff-only`, and its last line of output.
@@ -249,11 +249,11 @@ pub fn confirm_pull(ui: &Ui, project: &str) {
         None => format!("the new commits on {}", b.upstream),
     };
     let body = [
-        format!("Brings in the new commits, in {}. If they clash with yours, nothing changes and Wake tells you.", fmt::tildify(&b.repo)),
+        format!("Brings in the new commits, in {}. If they clash with yours, nothing changes and Wake tells you.", fmt::tilde(&b.repo)),
         "Wake changes a repo only when you press Pull or Remove worktree.".to_string(),
     ];
     let id = project.to_string();
-    let (name, folder) = (b.project_name.clone(), fmt::tildify(&b.repo));
+    let (name, folder) = (b.project_name.clone(), fmt::tilde(&b.repo));
     let commits = match b.count {
         Some(n) => fmt::pl(n, "new commit", "new commits"),
         None => "the new commits".to_string(),
@@ -334,7 +334,7 @@ pub fn panel_block(ui: &Ui, project: &str) -> Option<gtk::Box> {
         meta.push_str(&format!(" · {} more {} behind", b.others, if b.others == 1 { "repo" } else { "repos" }));
     }
     if b.others > 0 {
-        meta.push_str(&format!(" · {}", fmt::tildify(&b.repo)));
+        meta.push_str(&format!(" · {}", fmt::tilde(&b.repo)));
     }
     bx.append(&w::wrap(&meta, &["meta"]));
     if b.can_pull {

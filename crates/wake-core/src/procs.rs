@@ -572,7 +572,7 @@ impl Explorer {
                         r.state = State::Idle;
                         r.idle_seconds = Some(age(c).max(0.0) as u64);
                         if age(c) > STALE_SPARE {
-                            r.stale_reason = Some(format!("a spare started {} ago and never used", util::ago(Some(age(c)))));
+                            r.stale_reason = Some(format!("a spare started {} ago and never used", util::span(age(c) as u64)));
                         }
                         let mut group = Vec::new();
                         fold(&mut r, &hosts_of(c.p.pid), &mut group);
@@ -616,7 +616,7 @@ impl Explorer {
                         fold(&mut r, &extra, &mut group);
                         let idle = r.idle_seconds.unwrap_or(0) as f64;
                         if idle > STALE_IDLE && inp.windows_known && location.is_none() && !attached && can_be_stale(c) {
-                            r.stale_reason = Some(format!("idle for {}, with no terminal window and nothing attached", util::ago(Some(idle))));
+                            r.stale_reason = Some(format!("idle for {}, with no terminal window and nothing attached", util::span(idle as u64)));
                         }
                         group.insert(0, r);
                         sessions.push(group);

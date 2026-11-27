@@ -10,12 +10,14 @@ use wake_core::*;
 
 /// ISO time `secs` seconds ago.
 fn ago(secs: i64) -> String {
-    glib::DateTime::now_utc().and_then(|t| t.add_seconds(-secs as f64)).and_then(|t| t.format("%Y-%m-%dT%H:%M:%SZ")).map(|s| s.to_string()).unwrap_or_default()
+    util::iso_from_epoch(util::now() - secs as f64)
 }
 
 const MIN: i64 = 60;
 const HOUR: i64 = 3600;
 const DAY: i64 = 86_400;
+/// The made-up person's home, and their projects folder.
+pub const HOME_DIR: &str = "/home/sam";
 const HOME: &str = "/home/sam/Projects";
 
 struct Pretend {
@@ -1098,10 +1100,6 @@ const H: f64 = 3600.0;
 const GB: u64 = 1 << 30;
 const MB: u64 = 1 << 20;
 
-fn ago_iso(secs: f64) -> Option<String> {
-    Some(wake_core::util::iso_from_epoch(wake_core::util::now() - secs))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn item(path: &str, kind: DiskKind, name: &str, bytes: u64, used: f64, safety: DiskSafety, cost: &str, action: Option<DiskAction>) -> DiskItem {
     DiskItem {
@@ -1110,7 +1108,7 @@ fn item(path: &str, kind: DiskKind, name: &str, bytes: u64, used: f64, safety: D
         name: name.into(),
         bytes,
         partial: false,
-        last_used: ago_iso(used),
+        last_used: Some(ago(used as i64)),
         safety,
         cost: cost.into(),
         action,
@@ -1335,7 +1333,7 @@ fn disk_report() -> DiskReport {
     let pd = |id: &str, extra: u64, items: Vec<DiskItem>| {
         let top: u64 = items.iter().filter(|i| i.within.is_none()).map(|i| i.bytes).sum();
         let rebuildable = items.iter().filter(|i| matches!(i.kind, BuildOutput | Cache) && i.safety == Safe).map(|i| i.bytes).sum();
-        ProjectDisk { project: id.into(), bytes: top + extra, rebuildable, items, measured_at: ago_iso(12.0 * 60.0), partial: false }
+        ProjectDisk { project: id.into(), bytes: top + extra, rebuildable, items, measured_at: Some(ago(12 * MIN)), partial: false }
     };
     let projects = vec![pd("tideline-desktop", 210 * MB, slip), pd("Skyhook", 380 * MB, phase), pd("Gradebook", 260 * MB, school), pd("waypoint", 40 * MB, west), pd("fernlight", 18 * MB, glim)];
     let home = "/home/sam";
@@ -1434,7 +1432,7 @@ fn disk_report() -> DiskReport {
     let mrebuild: u64 = machine_items.iter().filter(|i| matches!(i.kind, BuildOutput | Cache)).map(|i| i.bytes).sum();
     let rebuildable = projects.iter().map(|p| p.rebuildable).sum::<u64>() + mrebuild;
     DiskReport {
-        measured_at: ago_iso(12.0 * 60.0),
+        measured_at: Some(ago(12 * MIN)),
         measuring: None,
         projects,
         machine: Some(MachineDisk {
@@ -1487,7 +1485,7 @@ mod tests {
             assert!(p.bytes >= p.rebuildable, "{}", p.project);
         }
         let slip = r.project("tideline-desktop").unwrap();
-        assert_eq!(crate::disk::size(slip.bytes), "21 GB");
+        assert_eq!(util::bytes(slip.bytes), "21 GB");
         assert!(r.machine.as_ref().unwrap().items.iter().all(|i| i.kind != DiskKind::System || i.command.is_some()));
     }
 }

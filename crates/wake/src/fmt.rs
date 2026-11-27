@@ -1,6 +1,10 @@
 //! Plain-words formatting shared by the views: times, durations, sizes, counts.
 
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
 use gtk4::glib;
+use wake_core::util::span;
 
 /// "1 session", "3 sessions".
 pub fn pl(n: impl Into<u64>, one: &str, many: &str) -> String {
@@ -18,16 +22,6 @@ pub fn secs_since(iso: &str) -> Option<i64> {
     let then = parse(iso)?;
     let now = glib::DateTime::now_utc().ok()?;
     Some((now.difference(&then).as_microseconds() / 1_000_000).max(0))
-}
-
-/// One way of saying how long, everywhere: "40 s", "4 min", "2 h", "3 days" (hours up to two days).
-pub fn span(s: u64) -> String {
-    match s {
-        s if s < 60 => format!("{s} s"),
-        s if s < 3600 => format!("{} min", s / 60),
-        s if s < 2 * 86_400 => format!("{} h", s / 3600),
-        s => format!("{} days", s / 86_400),
-    }
 }
 
 /// `span` as an age: "just now" under a minute (so nothing ticks by the second), else "4 min ago".
@@ -116,35 +110,30 @@ pub fn day(iso: Option<&str>) -> String {
 
 /// A project's folder as worth showing under its name: `~/…`, or nothing when it just repeats the name.
 pub fn folder_hint(root: &str, name: &str) -> String {
-    if base(root).eq_ignore_ascii_case(name) { String::new() } else { tildify(root) }
+    if base(root).eq_ignore_ascii_case(name) { String::new() } else { tilde(root) }
 }
 
-/// Bytes as "640 MB", "4.1 GB", "86 GB" or "under 1 MB": memory and disk alike (the core's words).
-pub fn bytes(b: u64) -> String {
-    wake_core::disk::human(b)
+/// The home `tilde` writes as `~`: the person's, or the made-up one in `wake --demo`.
+static HOME: OnceLock<PathBuf> = OnceLock::new();
+
+/// Sets the home `tilde` shortens, once, before anything is drawn (`wake --demo` only).
+pub fn set_home(home: &Path) {
+    let _ = HOME.set(home.to_path_buf());
 }
 
-/// `/home/sam/x` or `/home/sam/x` as `~/x`.
-pub fn tildify(p: &str) -> String {
-    for prefix in ["/var/home/", "/home/"] {
-        if let Some(rest) = p.strip_prefix(prefix) {
-            return match rest.split_once('/') {
-                Some((_, tail)) => format!("~/{tail}"),
-                None => "~".into(),
-            };
-        }
-    }
-    p.to_string()
+/// A path under home as `~/x`, any other as it is.
+pub fn tilde(p: impl AsRef<Path>) -> String {
+    wake_core::util::tilde(p, HOME.get_or_init(wake_core::store::home_dir))
 }
 
-/// A path relative to `cwd` if inside it, else tildified.
+/// A path relative to `cwd` if inside it, else with home as `~`.
 pub fn rel(p: &str, cwd: Option<&str>) -> String {
     if let Some(cwd) = cwd
         && let Some(rest) = p.strip_prefix(&format!("{cwd}/"))
     {
         return rest.to_string();
     }
-    tildify(p)
+    tilde(p)
 }
 
 /// The last part of a path.
@@ -164,11 +153,6 @@ mod tests {
 
     #[test]
     fn sizes_and_paths_read_plainly() {
-        assert_eq!(bytes(640 * 1_048_576), "640 MB");
-        assert_eq!(bytes(4_402_341_888), "4.1 GB");
-        assert_eq!(bytes(86 << 30), "86 GB");
-        assert_eq!(bytes(200 << 10), "under 1 MB");
-        assert_eq!(tildify("/home/sam/Projects/wake"), "~/Projects/wake");
         assert_eq!(rel("/a/b/c.rs", Some("/a")), "b/c.rs");
         assert_eq!(minutes(76), "1 h");
         assert_eq!(clip("one\ntwo three", 7), "one tw…");
@@ -195,6 +179,8 @@ mod tests {
         assert_eq!(recap("Next, the pack. (turn off recaps in /config)"), "Next, the pack.");
         assert_eq!(day(None), "Earlier");
         assert_eq!(folder_hint("/home/sam/Projects/wake", "wake"), "");
-        assert_eq!(folder_hint("/home/sam/Projects/tideline-desktop", "Slipstream"), "~/Projects/tideline-desktop");
+        let home = wake_core::store::home_dir();
+        assert_eq!(folder_hint(&format!("{}/Projects/tideline-desktop", home.display()), "Slipstream"), "~/Projects/tideline-desktop");
+        assert_eq!(folder_hint("/home/not-this-one/Projects/x", "Slipstream"), "/home/not-this-one/Projects/x", "only this person's home is ~");
     }
 }

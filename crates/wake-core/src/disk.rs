@@ -537,10 +537,6 @@ fn iso(t: f64) -> Option<String> {
     (t > 0.0).then(|| util::iso_from_epoch(t))
 }
 
-fn tilde(p: &Path, home: &Path) -> String {
-    util::tilde(p, home)
-}
-
 // ---------------------------------------------------------------- one project
 
 /// Measures one project's folders and builds its items (conversations and caches elsewhere are
@@ -677,7 +673,7 @@ fn worktree_item(wt: &Path, t: &Tally, found: &[Found], sessions: &[SessionDisk]
         None => "Wake couldn't tell whether its work is merged.".into(),
     };
     if build > 0 {
-        cost.push_str(&format!(" {} of it is build output, listed below.", human(build)));
+        cost.push_str(&format!(" {} of it is build output, listed below.", util::bytes(build)));
     }
     let refused = if merged != Some(true) {
         Some("Its branch isn't merged.".to_string())
@@ -698,7 +694,7 @@ fn worktree_item(wt: &Path, t: &Tally, found: &[Found], sessions: &[SessionDisk]
         safety: if merged == Some(true) { DiskSafety::Safe } else { DiskSafety::Check },
         cost,
         action: Some(if merged == Some(true) { DiskAction::RemoveWorktree } else { DiskAction::OpenFolder }),
-        command: Some(format!("git -C {} worktree remove {}", util::shell_quote(&tilde(&repo, &places.home)), util::shell_quote(&format!(".claude/worktrees/{wname}")))),
+        command: Some(format!("git -C {} worktree remove {}", util::shell_quote(&util::tilde(&repo, &places.home)), util::shell_quote(&format!(".claude/worktrees/{wname}")))),
         command_note: Some("deletes the copy; refuses if anything in it isn't committed".into()),
         worktree: Some(WorktreeInfo {
             repo: repo.display().to_string(),
@@ -724,22 +720,6 @@ fn clear_refusal(path: &Path, working: bool, project_name: &str, places: &Places
         return Some(format!("{comm} (PID {pid}) is working inside it."));
     }
     None
-}
-
-/// Bytes as "640 MB", "4.1 GB" or "15 GB" (whole numbers from 10 GB up), and "under 1 MB" for
-/// anything smaller than that but not nothing: memory and disk alike, here and in the app.
-pub fn human(b: u64) -> String {
-    let mb = b as f64 / MB as f64;
-    let gb = mb / 1024.0;
-    if b > 0 && b < MB {
-        "under 1 MB".into()
-    } else if mb < 1000.0 {
-        format!("{} MB", mb.round() as u64)
-    } else if gb < 10.0 {
-        format!("{gb:.1} GB")
-    } else {
-        format!("{gb:.0} GB")
-    }
 }
 
 // ---------------------------------------------------------------- conversations and job folders
@@ -1070,16 +1050,19 @@ pub fn measure_machine(projects: &[ProjectRec], places: &Places, run: &CommandRu
         for (kind, size, reclaim) in parse_podman_df(&out) {
             let t = Tally { bytes: size, ..Default::default() };
             let (name, cmd, note, cost) = match kind.as_str() {
-                "Images" => {
-                    ("Container images".to_string(), "podman image prune", "removes images nothing uses and nothing names (dangling); asks first", format!("{} of it nothing uses.", human(reclaim)))
-                }
+                "Images" => (
+                    "Container images".to_string(),
+                    "podman image prune",
+                    "removes images nothing uses and nothing names (dangling); asks first",
+                    format!("{} of it nothing uses.", util::bytes(reclaim)),
+                ),
                 "Containers" => (
                     if names.is_empty() { "Containers".to_string() } else { format!("Containers: {}", names.join(", ")) },
                     "podman ps -a",
                     "lists them; a stopped distrobox still holds what you installed in it, so remove one only if you're sure (distrobox rm <name>)",
-                    format!("{} is in stopped containers. Wake never removes a container.", human(reclaim)),
+                    format!("{} is in stopped containers. Wake never removes a container.", util::bytes(reclaim)),
                 ),
-                _ => ("Container volumes".to_string(), "podman volume ls", "lists them; volumes hold data such as databases", format!("{} nothing uses.", human(reclaim))),
+                _ => ("Container volumes".to_string(), "podman volume ls", "lists them; volumes hold data such as databases", format!("{} nothing uses.", util::bytes(reclaim))),
             };
             items.push(system_item(&storage, &t, DiskKind::System, &name, DiskSafety::Keep, &cost, Some((cmd, note))));
         }
@@ -1255,12 +1238,12 @@ pub fn clear(report: &DiskReport, path: &str, working: Option<&str>, places: &Pl
     if p.ends_with(".cargo/registry") && cargo_running(&places.proc_root, places.uid) {
         return fail("A cargo build is running and may be reading these. Nothing was moved.".into());
     }
-    let step = format!("move {} to the Trash ({})", tilde(p, &places.home), tilde(&places.trash, &places.home));
+    let step = format!("move {} to the Trash ({})", util::tilde(p, &places.home), util::tilde(&places.trash, &places.home));
     if dry_run {
         return ActionResult { ok: true, message: "Dry run.".into(), steps: vec![step] };
     }
     match move_to_trash(p, &places.trash) {
-        Ok(_) => ActionResult { ok: true, message: format!("Moved {} ({}) to the Trash. The space comes back when the Trash is emptied.", item.name, human(item.bytes)), steps: vec![step] },
+        Ok(_) => ActionResult { ok: true, message: format!("Moved {} ({}) to the Trash. The space comes back when the Trash is emptied.", item.name, util::bytes(item.bytes)), steps: vec![step] },
         Err(e) => ActionResult { ok: false, message: e, steps: vec![step] },
     }
 }
@@ -1612,14 +1595,5 @@ mod tests {
         std::os::unix::fs::symlink("/work", r.join("proc/4343/cwd")).unwrap();
         std::os::unix::fs::symlink(r.join("ctr/rootfs"), r.join("proc/4343/root")).unwrap();
         assert_eq!(process_inside(&r.join("ctr/rootfs/work"), &procs, uid), Some((4343, "make".into())));
-    }
-
-    #[test]
-    fn human_sizes() {
-        assert_eq!(human(15 << 30), "15 GB");
-        assert_eq!(human(3 * (1 << 30) + (1 << 29)), "3.5 GB");
-        assert_eq!(human(181 << 20), "181 MB");
-        assert_eq!(human(300 << 10), "under 1 MB");
-        assert_eq!(human(0), "0 MB");
     }
 }

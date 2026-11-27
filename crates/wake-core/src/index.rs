@@ -255,23 +255,6 @@ fn bash(acc: &mut Acc, cmd: Option<&str>) {
 
 // ------------------------------------------------------------------ small helpers
 
-/// The user's home, written short: /home/sam/x -> ~/x.
-pub fn short_path(p: &str, home: &Path) -> String {
-    let h = home.to_string_lossy().into_owned();
-    let rh = store::realpath(home).to_string_lossy().into_owned();
-    for pre in [rh, h] {
-        if p == pre {
-            return "~".into();
-        }
-        if let Some(rest) = p.strip_prefix(&pre)
-            && rest.starts_with('/')
-        {
-            return format!("~{rest}");
-        }
-    }
-    p.to_string()
-}
-
 /// User message content -> the person's own prompt text, or None if it is not one.
 pub fn clean_prompt(content: &Value) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
@@ -863,7 +846,7 @@ fn step_of(name: &str, inp: Option<&Value>, home: &Path) -> (String, String) {
     let verb = verb_of(name);
     let inp = inp.filter(|i| i.is_object()).unwrap_or(&Value::Null);
     let what = ["file_path", "notebook_path", "description", "command", "pattern", "url", "query", "path"].iter().find_map(|k| s(inp, k).filter(|v| !v.is_empty())).unwrap_or("");
-    let what = if what.starts_with('/') { short_path(what, home) } else { what.to_string() };
+    let what = if what.starts_with('/') { util::tilde(what, home) } else { what.to_string() };
     let mut what = util::take_chars(&util::squash(&what), 160);
     if verb == "other" {
         what = util::take_chars(&if what.is_empty() { name.to_string() } else { format!("{name}: {what}") }, 160);
@@ -1227,7 +1210,7 @@ pub fn resume_command(acc: &Acc, home: &Path) -> String {
     }
     let cmd = format!("claude --resume {}", acc.id);
     let Some(cwd) = acc.launch_cwd.as_deref() else { return cmd };
-    let sp = short_path(cwd, home);
+    let sp = util::tilde(cwd, home);
     let q = if sp == "~" {
         "~".to_string()
     } else if let Some(rest) = sp.strip_prefix("~/") {

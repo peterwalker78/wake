@@ -348,6 +348,18 @@ impl Live {
         self.inner.refresh_locations();
     }
 
+    /// Runs [`Live::plugin_tick`] once a second on its own thread, until this `Live` is dropped.
+    pub fn start_plugin(self: &Arc<Self>) {
+        let tick = Arc::downgrade(self);
+        let _ = std::thread::Builder::new().name("wake-plugin".into()).spawn(move || {
+            while let Some(l) = tick.upgrade() {
+                let _ = l.plugin_tick(false);
+                drop(l);
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+
     /// The Slipstream plugin bridge; call it about once a second. Writes card/card.json every 15 s
     /// and acts on a new jump request from the plugin (at most 30 s old), going to that session.
     pub fn plugin_tick(&self, dry_run: bool) -> Option<ActionResult> {
@@ -858,11 +870,6 @@ fn panic_text(e: &Box<dyn std::any::Any + Send>) -> String {
     format!("Wake hit a bug here: {}", said.unwrap_or_else(|| "it failed".into()))
 }
 
-/// `~/…` for a path under home.
-fn tilde(p: &str, home: &Path) -> String {
-    util::tilde(Path::new(p), home)
-}
-
 /// A session id's first eight characters, as Wake's log names sessions.
 fn short_id(sid: &str) -> String {
     sid.chars().take(8).collect()
@@ -975,7 +982,7 @@ impl Source for Live {
             pr_links: acc.pr_links.clone(),
             cost_usd: acc.cost,
             subagents: subs,
-            transcript: acc.source.as_deref().map(|p| tilde(p, &i.paths.home)),
+            transcript: acc.source.as_deref().map(|p| util::tilde(p, &i.paths.home)),
         })
     }
 
@@ -1050,7 +1057,7 @@ impl Source for Live {
             {
                 m = full.prompts_list.iter().rev().find_map(|p| snippet(Some(&p.text), &q)).map(|m| format!("prompt: {m}"));
                 if m.is_none() {
-                    m = full.files.iter().find(|(p, _)| p.to_lowercase().contains(&q)).map(|(p, _)| format!("file: {}", index::short_path(p, &i.paths.home)));
+                    m = full.files.iter().find(|(p, _)| p.to_lowercase().contains(&q)).map(|(p, _)| format!("file: {}", util::tilde(p, &i.paths.home)));
                 }
             }
             if let Some(m) = m {
@@ -1164,7 +1171,7 @@ impl Source for Live {
             i.forget_disk_item(path, owner.as_deref());
         }
         if !dry_run {
-            log::record_action(&i.paths, "move to Trash", &tilde(path, &i.paths.home), r.ok, &r.message, &r.steps);
+            log::record_action(&i.paths, "move to Trash", &util::tilde(path, &i.paths.home), r.ok, &r.message, &r.steps);
         }
         r
     }
@@ -1180,7 +1187,7 @@ impl Source for Live {
             i.forget_disk_item(path, owner.as_deref());
         }
         if !dry_run {
-            log::record_action(&i.paths, "remove worktree", &tilde(path, &i.paths.home), r.ok, &r.message, &r.steps);
+            log::record_action(&i.paths, "remove worktree", &util::tilde(path, &i.paths.home), r.ok, &r.message, &r.steps);
         }
         r
     }
@@ -1377,7 +1384,7 @@ impl Live {
         let projects = self.inner.store.load_projects();
         match store::project_by_id(id, &projects) {
             Some(p) => match p.roots.first() {
-                Some(r) => format!("{} ({})", p.name, tilde(r, &self.inner.paths.home)),
+                Some(r) => format!("{} ({})", p.name, util::tilde(r, &self.inner.paths.home)),
                 None => p.name.clone(),
             },
             None => format!("project {id}"),
@@ -1545,7 +1552,7 @@ impl Live {
         let cwd = acc.launch_cwd.clone().or_else(|| info.and_then(|x| x.cwd.clone()));
         let r = i.desktop.reopen(cwd.as_deref(), &cmd, dry_run);
         let target = match &cwd {
-            Some(c) => format!("session {} in {}", short_id(session), tilde(c, &i.paths.home)),
+            Some(c) => format!("session {} in {}", short_id(session), util::tilde(c, &i.paths.home)),
             None => format!("session {}", short_id(session)),
         };
         (r, "reopen", target)

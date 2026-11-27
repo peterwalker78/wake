@@ -42,13 +42,22 @@ pub fn iso_from_epoch(t: f64) -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, mo, d, rem / 3600, (rem / 60) % 60, rem % 60, ms)
 }
 
-/// `~/…` for a path under `home`, else the path as it is.
-pub fn tilde(p: &std::path::Path, home: &std::path::Path) -> String {
-    match p.strip_prefix(home) {
-        Ok(r) if r.as_os_str().is_empty() => "~".into(),
-        Ok(r) => format!("~/{}", r.display()),
-        Err(_) => p.display().to_string(),
+/// A path under `home` written short, `~/x`, also when it is under home's real path (on Fedora
+/// Atomic $HOME is /home/sam but paths are often /var/home/sam); any other path as it is.
+pub fn tilde(p: impl AsRef<std::path::Path>, home: &std::path::Path) -> String {
+    let p = p.as_ref().to_string_lossy();
+    let real = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    for pre in [real.to_string_lossy(), home.to_string_lossy()] {
+        if p == pre {
+            return "~".into();
+        }
+        if let Some(rest) = p.strip_prefix(pre.as_ref())
+            && rest.starts_with('/')
+        {
+            return format!("~{rest}");
+        }
     }
+    p.into_owned()
 }
 
 pub fn now_iso() -> String {
@@ -128,18 +137,30 @@ pub fn parse_iso(s: &str) -> Option<f64> {
     }
 }
 
-/// A duration in plain words: "5 s", "12 min", "3 h", "4 days".
-pub fn ago(seconds: Option<f64>) -> String {
-    let Some(s) = seconds else { return "some time".into() };
-    let s = s.max(0.0) as i64;
-    if s < 60 {
-        format!("{s} s")
-    } else if s < 3600 {
-        format!("{} min", s / 60)
-    } else if s < 48 * 3600 {
-        format!("{} h", s / 3600)
+/// One way of saying how long, everywhere: "40 s", "4 min", "2 h", "3 days" (hours up to two days).
+pub fn span(s: u64) -> String {
+    match s {
+        s if s < 60 => format!("{s} s"),
+        s if s < 3600 => format!("{} min", s / 60),
+        s if s < 2 * 86_400 => format!("{} h", s / 3600),
+        s => format!("{} days", s / 86_400),
+    }
+}
+
+/// Bytes as "640 MB", "4.1 GB" or "15 GB" (whole numbers from 10 GB up), and "under 1 MB" for
+/// anything smaller than that but not nothing: memory and disk alike, here and in the app.
+pub fn bytes(b: u64) -> String {
+    const MB: u64 = 1 << 20;
+    let mb = b as f64 / MB as f64;
+    let gb = mb / 1024.0;
+    if b > 0 && b < MB {
+        "under 1 MB".into()
+    } else if mb < 1000.0 {
+        format!("{} MB", mb.round() as u64)
+    } else if gb < 10.0 {
+        format!("{gb:.1} GB")
     } else {
-        format!("{} days", s / 86400)
+        format!("{gb:.0} GB")
     }
 }
 
@@ -323,12 +344,35 @@ mod tests {
     }
 
     #[test]
-    fn ago_words() {
-        assert_eq!(ago(Some(5.0)), "5 s");
-        assert_eq!(ago(Some(720.0)), "12 min");
-        assert_eq!(ago(Some(3.0 * 3600.0)), "3 h");
-        assert_eq!(ago(Some(5.0 * 86400.0)), "5 days");
-        assert_eq!(ago(None), "some time");
+    fn one_time_format_everywhere() {
+        assert_eq!(span(5), "5 s");
+        assert_eq!(span(4 * 60 + 59), "4 min");
+        assert_eq!(span(720), "12 min");
+        assert_eq!(span(35 * 3600), "35 h");
+        assert_eq!(span(5 * 86400), "5 days");
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(bytes(15 << 30), "15 GB");
+        assert_eq!(bytes(3 * (1 << 30) + (1 << 29)), "3.5 GB");
+        assert_eq!(bytes(4_402_341_888), "4.1 GB");
+        assert_eq!(bytes(181 << 20), "181 MB");
+        assert_eq!(bytes(300 << 10), "under 1 MB");
+        assert_eq!(bytes(0), "0 MB");
+    }
+
+    #[test]
+    fn home_written_short() {
+        let home = std::path::Path::new("/home/sam");
+        assert_eq!(tilde("/home/sam/Projects/wake", home), "~/Projects/wake");
+        assert_eq!(tilde("/home/sam", home), "~");
+        assert_eq!(tilde("/home/samuel/x", home), "/home/samuel/x");
+        assert_eq!(tilde("/home/other/x", home), "/home/other/x", "only this person's home");
+        let real = crate::testing::scratch("tilde");
+        let link = real.0.join("link");
+        std::os::unix::fs::symlink(&real.0, &link).unwrap();
+        assert_eq!(tilde(real.0.join("a/b"), &link), "~/a/b", "under home's real path");
     }
 
     #[test]

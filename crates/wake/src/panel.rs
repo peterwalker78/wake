@@ -1020,7 +1020,7 @@ fn session(ui: &Ui, id: &str) {
         lines.push(facts.join(" · "));
         lines.extend(d.pr_links.iter().map(|u| u.trim_start_matches("https://github.com/").to_string()));
         if let Some(cwd) = &s.cwd {
-            lines.push(format!("in {}", fmt::tildify(cwd)));
+            lines.push(format!("in {}", fmt::tilde(cwd)));
         }
         if let Some(r) = &s.resume_command {
             lines.push(format!("resume: {r}"));
@@ -1032,7 +1032,7 @@ fn session(ui: &Ui, id: &str) {
             lines.push(format!("transcript: {t}"));
         }
         if let Some(r) = res_of(&ui.st.borrow(), &s.id) {
-            lines.push(format!("{} in memory, with its terminal · PID {}", fmt::bytes(r.rss_bytes), r.pid));
+            lines.push(format!("{} in memory, with its terminal · PID {}", util::bytes(r.rss_bytes), r.pid));
         }
         lines.push(format!("started {} · id {}", fmt::when(s.started_at.as_deref()), s.id));
         let f = w::wrap(&lines.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"), &["facts"]);
@@ -1049,7 +1049,7 @@ fn res_of(st: &app::AppState, id: &str) -> Option<SessionResources> {
 
 /// "735 MB in memory": with its terminal; the PID and the breakdown are in the tooltip.
 fn proc_words(r: SessionResources) -> String {
-    format!("{} in memory", fmt::bytes(r.rss_bytes))
+    format!("{} in memory", util::bytes(r.rss_bytes))
 }
 
 /// The memory on the open panel's process line, kept current in place.
@@ -1616,7 +1616,7 @@ fn project(ui: &Ui, id: &str) {
     let pid = p.id.clone();
     let pname = p.name.clone();
     folds.append(&fold(ui, "pdetails", "Details", "", "", |x| {
-        let f = w::wrap(&p.roots.iter().map(|r| fmt::tildify(r)).collect::<Vec<_>>().join("\n"), &["facts"]);
+        let f = w::wrap(&p.roots.iter().map(|r| fmt::tilde(r)).collect::<Vec<_>>().join("\n"), &["facts"]);
         f.set_selectable(true);
         x.append(&f);
         for c in &d.could_not_check {

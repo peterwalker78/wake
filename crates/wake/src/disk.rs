@@ -52,11 +52,6 @@ fn ensure_css() {
     gtk::style_context_add_provider_for_display(&display, &p, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
 }
 
-/// "19 GB", "601 MB": the same units as memory everywhere else.
-pub fn size(b: u64) -> String {
-    fmt::bytes(b)
-}
-
 fn report(st: &AppState) -> Option<&DiskReport> {
     st.ov.as_ref()?.disk.as_ref()
 }
@@ -67,7 +62,7 @@ fn mem_tip(st: &AppState, id: &str) -> Option<String> {
     let r = st.ov.as_ref()?.resources.as_ref()?.project(id)?;
     Some(format!(
         "{} in {} with their terminals and helpers ({} processes).{}",
-        fmt::bytes(r.rss_bytes),
+        util::bytes(r.rss_bytes),
         fmt::pl(r.sessions, "live session", "live sessions"),
         r.processes,
         r.cpu_percent.map(|c| format!("\nCPU: {:.0}% of one core.", c)).unwrap_or_default()
@@ -97,9 +92,9 @@ fn machine_words(st: &AppState) -> String {
     let Some(m) = &r.machine else {
         return r.measuring.as_deref().map_or_else(|| "Disk: not measured yet.".into(), |x| format!("Disk: {x}…"));
     };
-    let mut s = format!("Disk: {} free of {} on {}", size(m.home_free), size(m.home_total), m.home_mount);
+    let mut s = format!("Disk: {} free of {} on {}", util::bytes(m.home_free), util::bytes(m.home_total), m.home_mount);
     if r.rebuildable > 0 {
-        s.push_str(&format!(" · {} could be rebuilt", size(r.rebuildable)));
+        s.push_str(&format!(" · {} could be rebuilt", util::bytes(r.rebuildable)));
     }
     match &r.measuring {
         Some(x) => s.push_str(&format!(" · {x}…")),
@@ -139,7 +134,7 @@ fn copy(ui: &Ui, text: &str) {
 
 fn open_folder(ui: &Ui, path: &str) {
     if ui.demo {
-        app::toast(ui, &format!("Demo: this would open {} in the file manager.", fmt::tildify(path)), false);
+        app::toast(ui, &format!("Demo: this would open {} in the file manager.", fmt::tilde(path)), false);
         return;
     }
     let uri = gtk::gio::File::for_path(path).uri();
@@ -171,7 +166,7 @@ fn item_widget(ui: &Ui, it: &DiskItem, project: Option<&str>, project_name: &str
     }
     let top = w::hbox(10, &[]);
     top.append(&w::wrap(&it.name, &["disk-name"]));
-    let sz = w::label(&format!("{}{}", if it.partial { "≥ " } else { "" }, size(it.bytes)), &["disk-size"]);
+    let sz = w::label(&format!("{}{}", if it.partial { "≥ " } else { "" }, util::bytes(it.bytes)), &["disk-size"]);
     sz.set_valign(gtk::Align::Start);
     top.append(&sz);
     b.append(&top);
@@ -268,8 +263,8 @@ pub fn panel_fold(ui: &Ui, p: &ProjectSummary, folds: &gtk::Box) {
     let pd = report(&ui.st.borrow()).and_then(|r| r.project(&p.id)).cloned();
     let measuring = report(&ui.st.borrow()).and_then(|r| r.measuring.clone());
     let note = match &pd {
-        Some(d) if d.rebuildable >= 1 << 27 => format!("{} · {} rebuildable", size(d.bytes), size(d.rebuildable)),
-        Some(d) => size(d.bytes),
+        Some(d) if d.rebuildable >= 1 << 27 => format!("{} · {} rebuildable", util::bytes(d.bytes), util::bytes(d.rebuildable)),
+        Some(d) => util::bytes(d.bytes),
         None if measuring.is_some() => "measuring…".into(),
         None => "not measured".into(),
     };
@@ -310,7 +305,7 @@ fn confirm_clear(ui: &Ui, it: &DiskItem, project: Option<&str>, project_name: &s
     }
     let whose = if project.is_some() { format!(", in {project_name}") } else { String::new() };
     let body = [
-        format!("{}{whose}: {}.", it.name, size(it.bytes)),
+        format!("{}{whose}: {}.", it.name, util::bytes(it.bytes)),
         format!("What it costs: {}", it.cost),
         "Wake moves only this folder to the Trash; nothing else is touched. The space comes back when you empty the Trash (gio trash --empty).".to_string(),
     ];
@@ -318,10 +313,10 @@ fn confirm_clear(ui: &Ui, it: &DiskItem, project: Option<&str>, project_name: &s
     let project = project.map(String::from);
     // Said with whose folder it was: the Trash may hold several called `target`.
     let done = match &project {
-        Some(_) => format!("Moved {project_name}'s {} folder ({}) to the Trash. The space comes back when the Trash is emptied.", fmt::base(&it.path), size(it.bytes)),
-        None => format!("Moved {} ({}) to the Trash. The space comes back when the Trash is emptied.", fmt::tildify(&it.path), size(it.bytes)),
+        Some(_) => format!("Moved {project_name}'s {} folder ({}) to the Trash. The space comes back when the Trash is emptied.", fmt::base(&it.path), util::bytes(it.bytes)),
+        None => format!("Moved {} ({}) to the Trash. The space comes back when the Trash is emptied.", fmt::tilde(&it.path), util::bytes(it.bytes)),
     };
-    dialogs::confirm(ui, &format!("Move {} to the Trash?", it.name), &body, &[(fmt::tildify(&it.path), size(it.bytes))], "Move to Trash", move |ui| {
+    dialogs::confirm(ui, &format!("Move {} to the Trash?", it.name), &body, &[(fmt::tilde(&it.path), util::bytes(it.bytes))], "Move to Trash", move |ui| {
         let p = path.clone();
         let project = project.clone();
         let done = done.clone();
@@ -352,15 +347,15 @@ fn confirm_remove(ui: &Ui, it: &DiskItem) {
         format!(
             "Its branch {branch} is merged into {}. git worktree remove deletes this copy and everything in it ({}, its build output included) for good: it doesn't go to the Trash. The branch itself stays, and git refuses if anything in the copy isn't committed.",
             wt.default_branch.as_deref().unwrap_or("the default branch"),
-            size(it.bytes)
+            util::bytes(it.bytes)
         ),
     ];
     let cmd = it.command.clone().unwrap_or_default();
     let path = it.path.clone();
     let project = report(&ui.st.borrow()).and_then(|r| r.projects.iter().find(|p| p.items.iter().any(|i| i.path == it.path)).map(|p| p.project.clone()));
     let whose = project.as_deref().and_then(|id| app::find_project(ui, id)).map(|p| format!("{}'s", p.name)).unwrap_or_else(|| "the".into());
-    let done = format!("Removed {whose} worktree for {branch}, at {}. The branch is still there.", fmt::tildify(&it.path));
-    dialogs::confirm(ui, &format!("Remove the worktree for {branch}?"), &body, &[(cmd, size(it.bytes))], "Remove worktree", move |ui| {
+    let done = format!("Removed {whose} worktree for {branch}, at {}. The branch is still there.", fmt::tilde(&it.path));
+    dialogs::confirm(ui, &format!("Remove the worktree for {branch}?"), &body, &[(cmd, util::bytes(it.bytes))], "Remove worktree", move |ui| {
         let p = path.clone();
         let project = project.clone();
         let done = done.clone();
@@ -406,7 +401,13 @@ pub fn machine(ui: &Ui) {
     };
     if let Some(m) = &r.machine {
         card.append(&w::wrap(
-            &format!("{} free of {} on {}. {} could be rebuilt: build output and caches, which come back by themselves.", size(m.home_free), size(m.home_total), m.home_mount, size(r.rebuildable)),
+            &format!(
+                "{} free of {} on {}. {} could be rebuilt: build output and caches, which come back by themselves.",
+                util::bytes(m.home_free),
+                util::bytes(m.home_total),
+                m.home_mount,
+                util::bytes(r.rebuildable)
+            ),
             &["plain"],
         ));
         if let Some(n) = &m.root_note {
@@ -425,7 +426,7 @@ pub fn machine(ui: &Ui) {
             btn.add_css_class("srow");
             let row = w::hbox(10, &["disk-proj"]);
             row.append(&w::clip(&name, &[]));
-            let words = if pd.rebuildable >= 1 << 27 { format!("{} · {} rebuildable", size(pd.bytes), size(pd.rebuildable)) } else { size(pd.bytes) };
+            let words = if pd.rebuildable >= 1 << 27 { format!("{} · {} rebuildable", util::bytes(pd.bytes), util::bytes(pd.rebuildable)) } else { util::bytes(pd.bytes) };
             row.append(&w::label(&words, &["disk-size"]));
             btn.set_child(Some(&row));
             btn.set_tooltip_text(Some("Open its Disk section"));
@@ -598,7 +599,7 @@ pub fn rail_tip(ui: &Ui, wd: &impl IsA<gtk::Widget>, id: &str) {
             lines.push(m);
         }
         if let Some(d) = report(&st).and_then(|r| r.project(&id)) {
-            lines.push(format!("{} on disk{}", size(d.bytes), if d.rebuildable >= 1 << 27 { format!(", {} rebuildable", size(d.rebuildable)) } else { String::new() }));
+            lines.push(format!("{} on disk{}", util::bytes(d.bytes), if d.rebuildable >= 1 << 27 { format!(", {} rebuildable", util::bytes(d.rebuildable)) } else { String::new() }));
         }
         if lines.is_empty() {
             return false;

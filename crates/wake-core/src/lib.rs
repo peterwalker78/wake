@@ -30,18 +30,18 @@ pub use types::*;
 ///
 /// Which calls may block (in `Live`; call those off the UI thread, as the app's `bg()` does):
 /// - Cheap, answering from memory and small files: `overview`, `ideas`, `processes` (a /proc scan;
-///   the Konsole tabs come from the background thread's map).
+///   the windows come from the background thread's map).
 /// - Disk: `session` (one summary file, plus re-reading any subagent transcript that changed, so
 ///   every refresh while a subagent runs), `subagent`, `search` (may read every session's summary
 ///   file once per query), `add_idea`, `set_idea`, `add_project`, `remove_project`.
 /// - Git, up to 8 s per command: `project` (about five commands per repo, plus the log since the last
 ///   pause), `pause`.
-/// - D-Bus and subprocesses: `go_to` (reads Konsole afresh when the session has no known tab, up to
-///   8 s, then the switch or new tab, 2 s per call, and the notification); `stop` (`claude stop`
+/// - D-Bus and subprocesses: `go_to` (a /proc scan for the session's window, then the desktop's
+///   request to bring it forward, or a new terminal window, 2 s per call); `stop` (`claude stop`
 ///   can take up to 20 s; signals are immediate).
 ///
 /// Without the background threads (`Live::new` without `start_background`, as the command line
-/// uses it), `overview` and `processes` also read Konsole themselves, which can take seconds.
+/// uses it), `overview` and `processes` also work out the windows themselves (a /proc scan).
 pub trait Source: Send + Sync {
     fn overview(&self) -> Overview;
     fn session(&self, id: &str) -> Option<SessionDetail>;
@@ -54,8 +54,8 @@ pub trait Source: Send + Sync {
     fn pause(&self, project: &str, note: &str, next: &str) -> Result<Checkpoint, String>;
     fn add_project(&self, path: &str) -> Result<ProjectSummary, String>;
     fn remove_project(&self, id: &str, removed: bool) -> Result<ProjectSummary, String>;
-    /// Go to a session: switch Konsole to its tab, or open a tab with `claude attach` / resume typed.
-    /// Blocks on D-Bus.
+    /// Go to a session: bring the terminal window showing it forward, or open a new terminal window
+    /// running `claude attach` / the resume command. Blocks on D-Bus.
     fn go_to(&self, session: &str, dry_run: bool) -> ActionResult;
     /// Agent processes, sampled now (CPU needs two samples a second or more apart).
     fn processes(&self) -> ProcOverview;
@@ -67,9 +67,9 @@ pub trait Source: Send + Sync {
 
     // ---- Hold-to-peek (added 2026-11-20; default bodies so other implementors still compile) ----
 
-    /// What a live session's terminal shows now (read-only): its Konsole tab's text, else for a
-    /// background session `claude logs <jobId>`. None for an ended session. Blocks up to 0.7 s
-    /// (Konsole) or 2.5 s (claude logs); repeated calls within 250 ms share one read.
+    /// What a background session's terminal shows now (read-only): `claude logs <jobId>`. None for
+    /// any other session (a terminal app's own screen can't be read). Blocks up to 2.5 s; repeated
+    /// calls within 250 ms share one read.
     fn screen(&self, _session: &str) -> Option<Screen> {
         None
     }
@@ -215,10 +215,9 @@ pub trait Source: Send + Sync {
     fn brief_command(&self, _agent: brief::Agent, _id: &str) -> Option<String> {
         None
     }
-    /// Start an agent on ideas: write the brief to `<data>/briefs/<id>.md`, open a new Konsole tab
-    /// in the project's folder (in the window already on it, if any), type `claude "$(cat
-    /// '<brief>')"` there without pressing Enter, bring that window forward through the desktop
-    /// link, and mark the ideas as sent. Refuses ideas from another project. Blocks on D-Bus.
+    /// Start an agent on ideas: write the brief to `<data>/briefs/<id>.md`, open a new window of the
+    /// default terminal app in the project's folder running the agent on it, and mark the ideas as
+    /// sent. Refuses ideas from another project.
     fn start_agent(&self, _req: &brief::StartAgent, _dry_run: bool) -> ActionResult {
         ActionResult { ok: false, message: "Starting agents isn't available here.".into(), steps: vec![] }
     }

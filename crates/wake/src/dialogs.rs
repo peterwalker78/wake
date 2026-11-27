@@ -241,7 +241,7 @@ pub fn keys(ui: &Ui) {
     top.append(&w::spacer());
     top.append(&w::label("Esc closes", &["hint"]));
     c.append(&top);
-    let peek = crate::peek::hint_word(ui);
+    let peek = if crate::peek::can_fly(ui) { "zoom to the session's window (a preview if no window shows it)" } else { "preview the session" };
     let groups: [(&str, Vec<(&str, String)>); 2] = [
         (
             "Moving around",
@@ -251,7 +251,7 @@ pub fn keys(ui: &Ui) {
                 ("Home  End", "the first or last".into()),
                 ("Enter", "open the details, or press the button".into()),
                 ("Esc", "go back, or close".into()),
-                ("hold Space", format!("{peek} the session; let go to come back")),
+                ("hold Space", format!("{peek}; let go to come back")),
             ],
         ),
         (

@@ -327,21 +327,19 @@ fn doctor_programs(d: &mut Doctor, paths: &store::Paths) {
 fn doctor_desktop(d: &mut Doctor, paths: &store::Paths) {
     use wake_core::desktop;
     d.heading("Desktop");
-    let konsole = on_path("konsole");
-    if konsole {
-        d.ok("konsole");
-    } else {
-        d.line(Mark::Optional, "Konsole isn't installed. Go there and Start an agent open sessions in a new Konsole window, so they can't here.", &install("konsole", "konsole"));
+    // New windows (Go there for a session in none, Start an agent) open in the default terminal app.
+    match desktop::terminal_launcher() {
+        Some(l) => d.ok(&format!("default terminal app: opened through {}", tilde_path(std::path::Path::new(&l[0])))),
+        None => d.line(
+            Mark::Optional,
+            "Wake can't find your default terminal app, so Go there and Start an agent can only give you a command to copy.",
+            "install xdg-terminal-exec, or set TERMINAL to your terminal app.",
+        ),
     }
-    // Wake runs qdbus-qt6, or qdbus6 where the system names it that.
-    if !on_path(desktop::qdbus_program()) {
-        d.line(Mark::Optional, "Konsole tabs: Wake can't see them (qdbus-qt6 isn't installed). Go there opens a new window instead of switching tab.", &install("qt6-qttools", "qdbus-qt6"));
-    } else if konsole {
-        match desktop::Desktop::real().tabs(true) {
-            Ok(t) if !t.is_empty() => d.ok(&format!("Konsole tabs: Wake can see {}", plural(t.len(), "tab"))),
-            Ok(_) => d.ok("Konsole tabs: Konsole isn't open right now, so there are none to see"),
-            Err(e) => d.line(Mark::Optional, &e, "run Wake from a terminal in your desktop session, with Konsole open."),
-        }
+    // KDE Plasma's Peek talks to KWin through Qt 6's qdbus (qdbus-qt6, or qdbus6).
+    let kde = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().split(':').any(|x| x.eq_ignore_ascii_case("KDE"));
+    if kde && !on_path(desktop::qdbus_program()) {
+        d.line(Mark::Optional, "qdbus-qt6 isn't installed, so Peek on KDE Plasma shows a preview instead of going to the window.", &install("qt6-qttools", "qdbus-qt6"));
     }
     if on_path(desktop::GDBUS) {
         d.ok("gdbus");
@@ -604,7 +602,7 @@ fn cmd_ps() -> u8 {
             State::Unknown => "lost track",
         };
         let where_ = match &p.location {
-            Some(l) => l.label.clone().unwrap_or_else(|| format!("tab {}", l.tab_index + 1)).replace("Konsole", "K"),
+            Some(l) => l.app.clone().unwrap_or_else(|| "window".into()),
             None if p.job_id.is_some() => "background".into(),
             None => "-".into(),
         };

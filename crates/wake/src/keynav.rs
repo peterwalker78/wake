@@ -430,6 +430,12 @@ pub fn settle(ui: &Ui) {
         return;
     }
     let shown = regions_shown(ui);
+    // Its area isn't on screen (the details now cover the list), but the keyboard already rests
+    // in one that is: it stays there, rather than going to the first area (the title bar).
+    if !shown.contains(&want) && f.as_ref().is_some_and(|f| f.is_mapped() && is_resting_place(f) && region_of(ui, f).is_some_and(|r| shown.contains(&r))) {
+        remember(ui);
+        return;
+    }
     let to = if shown.contains(&want) {
         want
     } else if shown.contains(&Region::List) {

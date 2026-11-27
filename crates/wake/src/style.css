@@ -787,3 +787,10 @@ list.table > row.droprow, list.table > row.droprow:hover { border-bottom: none; 
 list.table > row.itemrow.dropping .item, list.table > row.droprow.dropping .drophint, list.table > row.gridrow.dropping { background-color: alpha(@accent, .08); }
 list.table > row.droprow.dropping .drophint { border-color: @accent; }
 list.table > row.sectrow.dropping .heading { color: @accent; }
+/* Hold Space: the selected row says what holding it does, in its age's place (views.rs: age_cell);
+   zooming to the agent's window is in the accent colour, a preview stays quiet. */
+list.table > row .peek-cue { opacity: 0; }
+list.table > row:selected .peek-cue { opacity: 1; }
+list.table > row:selected .peek-age { opacity: 0; }
+.peek-cue.zoom .kbd { color: @accent; border-color: alpha(@accent, .55); }
+.peek-cue.zoom .hint { color: @accent; }

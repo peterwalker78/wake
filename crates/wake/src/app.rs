@@ -195,12 +195,6 @@ pub struct AppState {
     pub agent_done_open: HashSet<u32>,
     /// The session panel: its finished subagents unfolded.
     pub subs_done_open: bool,
-    /// Where each live session was last seen for sure, by session id: shown (quietly) while Wake
-    /// re-checks Konsole, instead of "checking…".
-    pub known_loc: HashMap<String, String>,
-    /// When the overview first said it can't be sure where sessions are (monotonic µs), until it
-    /// is sure again: unsure for `GIVE_UP_SECS` is a failure, not a slow first look.
-    pub unsure_since: Option<i64>,
     /// What the side panel, top bar, rail and chips last drew, so a refresh that changes nothing
     /// redraws nothing (and focus, hover and scroll stay put).
     pub panel_drawn: Option<String>,
@@ -258,8 +252,6 @@ impl Default for AppState {
             agent_sub_open: HashSet::new(),
             agent_done_open: HashSet::new(),
             subs_done_open: false,
-            known_loc: HashMap::new(),
-            unsure_since: None,
             panel_drawn: None,
             top_drawn: String::new(),
             rail_drawn: String::new(),
@@ -1156,14 +1148,6 @@ fn apply_show(ui: &Ui, show: &str) {
                 .unwrap_or("Couldn't stop 3 of 5: claude (PID 48211) belongs to another user, so Wake can't stop it; codex (PID 50122) had already ended; claude (PID 50310) didn't stop when asked."),
             true,
         ),
-        // As if Konsole had not answered for a while: "tab unknown" and the status bar's warning.
-        "tabs-unknown" => {
-            let since = ui.st.borrow().unsure_since;
-            if since.is_some() {
-                ui.st.borrow_mut().unsure_since = Some(glib::monotonic_time() - (GIVE_UP_SECS + 1) * 1_000_000);
-            }
-            render_all(ui);
-        }
         "switcher" => switcher::open(ui),
         "switcher-subs" => {
             switcher::open(ui);
@@ -1606,12 +1590,6 @@ pub fn refresh(ui: &Ui) {
         |ui, ov| {
             {
                 let mut st = ui.st.borrow_mut();
-                if ov.locations_unsure.is_none() {
-                    st.known_loc = ov.sessions.iter().filter_map(|s| s.location.as_ref().map(|l| (s.id.clone(), tab_label(l)))).collect();
-                    st.unsure_since = None;
-                } else if st.unsure_since.is_none() {
-                    st.unsure_since = Some(glib::monotonic_time());
-                }
                 st.busy_ov = false;
                 st.ov = Some(ov);
                 st.ov_error = None;
@@ -2144,81 +2122,42 @@ pub fn is_live(s: State) -> bool {
     matches!(s, State::Working | State::Waiting | State::Idle | State::Unknown)
 }
 
-/// A tab as a person names it; core's label is unique across every Konsole on the desktop.
+/// A session's window as a person names it: its terminal app's own name, or "its window" when
+/// Wake can't tell the app's name.
 pub fn tab_label(l: &Location) -> String {
-    l.label.clone().unwrap_or_else(|| format!("Konsole {} · tab {}", l.window, l.tab_index + 1))
+    l.app.clone().unwrap_or_else(|| "its window".into())
 }
 
-/// How long Wake waits for Konsole to answer before it treats the tabs as unknown.
-const GIVE_UP_SECS: i64 = 15;
-
-/// Why Wake can't be sure where live sessions are, while it is so (Konsole hasn't answered).
-pub fn unsure_why(ui: &Ui) -> Option<String> {
-    ui.st.borrow().ov.as_ref().and_then(|o| o.locations_unsure.clone())
-}
-
-/// True while Wake is still finding where live sessions are: not yet `tabs_unknown`.
+/// True while Wake is still finding where live sessions are (only until its first look).
 pub fn unsure(ui: &Ui) -> bool {
-    unsure_why(ui).is_some() && tabs_unknown(ui).is_none()
+    ui.st.borrow().ov.as_ref().is_some_and(|o| o.locations_unsure.is_some())
 }
 
-/// Why Wake can't see Konsole's tabs, once it has failed to for `GIVE_UP_SECS`. Then a session
-/// shows "tab unknown" and Go to attaches or resumes, as it does with no Konsole at all.
-pub fn tabs_unknown(ui: &Ui) -> Option<String> {
-    let since = ui.st.borrow().unsure_since?;
-    if (glib::monotonic_time() - since) / 1_000_000 < GIVE_UP_SECS {
-        return None;
-    }
-    unsure_why(ui)
-}
-
-/// Where a session can be seen, as the web's `locOf`: text, class, can go, tooltip. While Wake is
-/// `unsure` where sessions are, a live one without a tab says "checking" rather than a confident
-/// (and maybe wrong) "background", and can't be gone to: that might attach a second time.
+/// Where a session can be seen: text, class, can go, tooltip. While Wake is `unsure` where
+/// sessions are, a live one without a window says "checking" rather than a confident (and maybe
+/// wrong) "background", and can't be gone to: that might attach a second time.
 pub fn loc_of(s: &SessionSummary, unsure: bool) -> (String, &'static str, bool, String) {
     if let Some(l) = &s.location {
-        return (tab_label(l), "", true, format!("Go to tab \"{}\"", l.tab_title));
+        return (tab_label(l), "", true, format!("Bring {} forward", l.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"))));
     }
     if unsure && is_live(s.state) && s.state != State::Unknown {
-        return ("checking…".into(), "none", false, "Wake is still finding which Konsole tab this is in.".into());
+        return ("checking…".into(), "none", false, "Wake is still finding which window this is in.".into());
     }
     if can_reopen(s) {
-        return ("not open".into(), "re", true, "Resume it in a new Konsole window".into());
+        return ("not open".into(), "re", true, "Resume it in a new terminal window".into());
     }
     if s.deleted_by_claude {
         return ("kept by Wake".into(), "none", false, "Claude deleted its copy; it cannot be reopened".into());
     }
     if is_live(s.state) {
-        return ("background".into(), "re", true, "Runs in the background, not in a tab. Go to opens a Konsole tab with claude attach typed, waiting for your Enter".into());
+        return ("background".into(), "re", true, "Runs in the background, in no window. Go to opens it in a new terminal window".into());
     }
     ("not open".into(), "none", false, String::new())
 }
 
-/// `loc_of`, except that while Wake re-checks Konsole a live session shows where it was last seen
-/// for sure (quietly, and it can't be gone to until Wake is sure again) instead of "checking…".
-/// Once the tabs are `tabs_unknown`, a live session without a tab says "tab unknown" (it may be
-/// in one Wake can't see) and Go to attaches to it.
+/// `loc_of` for the app as it is now.
 pub fn loc_for(ui: &Ui, s: &SessionSummary) -> (String, &'static str, bool, String) {
-    let unsure = unsure(ui);
-    let out = loc_of(s, unsure);
-    if let Some(why) = tabs_unknown(ui)
-        && out.0 == "background"
-    {
-        return ("tab unknown".into(), out.1, out.2, format!("{why} Go to opens a Konsole tab with claude attach typed, waiting for your Enter."));
-    }
-    if unsure
-        && s.location.is_none()
-        && is_live(s.state)
-        && let Some(why) = unsure_why(ui)
-    {
-        if let Some(seen) = ui.st.borrow().known_loc.get(&s.id) {
-            return (seen.clone(), "none", false, format!("Last seen here. {why}"));
-        }
-        if out.0 == "checking…" {
-            return ("…".into(), "none", false, why);
-        }
-    }
-    out
+    loc_of(s, unsure(ui))
 }
 
 /// How long the selection bar takes to travel and settle.
@@ -2296,10 +2235,10 @@ pub fn go_to(ui: &Ui, id: &str) {
     if !can {
         let msg = if s.deleted_by_claude {
             "Claude deleted this conversation, so it can't be reopened. Wake kept what it did.".to_string()
-        } else if let Some(why) = unsure_why(ui).filter(|_| unsure(ui)) {
-            format!("{why} Try again in a moment.")
+        } else if unsure(ui) {
+            "Wake is still finding which window each session is in. Try again in a moment.".to_string()
         } else {
-            "Wake can't find a terminal tab for this session.".to_string()
+            "Wake can't find a window for this session.".to_string()
         };
         toast(ui, &msg, true);
         return;

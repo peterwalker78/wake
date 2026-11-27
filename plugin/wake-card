@@ -5,7 +5,7 @@
     wake-card search TEXT     print explorer answers for "@TEXT"
     wake-card press ID        ask Wake to jump: ID is "top" or "go:<sessionId>"
 
-Reads $SLIPSTREAM_PLUGIN_READ_0/card.json, which Wake writes. A press can't reach Konsole from
+Reads $SLIPSTREAM_PLUGIN_READ_0/card.json, which Wake writes. A press can't reach the desktop from
 the sandbox, so it leaves a request in $SLIPSTREAM_PLUGIN_STATE/request.json for Wake to act on.
 """
 

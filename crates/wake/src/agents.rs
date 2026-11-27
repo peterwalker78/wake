@@ -1562,7 +1562,13 @@ pub fn stop_words(a: &AgentProc) -> Vec<String> {
         (ProcKind::Spare, ..) => vec!["It is a spare Claude nobody has used yet; stopping it loses nothing.".into()],
         (ProcKind::Subagent, ..) => vec!["It is a helper its session started. Stopping it ends that piece of work; the session carries on.".into(), later],
         (_, Some(_), _) => vec!["Claude stops this background session cleanly. Its conversation is kept, and you can resume it later.".into()],
-        (_, None, Some(tab)) => vec![format!("The Claude in {tab} will exit; you can resume it later."), later],
+        (_, None, Some(_)) => vec![
+            format!(
+                "The Claude in {} will exit; you can resume it later.",
+                a.location.as_ref().and_then(|l| l.app.as_deref()).map_or("its terminal window".to_string(), |app| format!("its {app} window"))
+            ),
+            later,
+        ],
         _ => vec!["It will exit. Its conversation stays on disk, and you can resume it later.".into(), later],
     }
 }
@@ -1932,8 +1938,11 @@ mod tests {
         x.title = Some("rail-times-import".into());
         x.project_name = Some("waypoint".into());
         assert_eq!(stop_line(&x), ("rail-times-import · waypoint · 743 MB · idle 31 h".to_string(), "PID 5".to_string()));
-        x.location = Some(Location { konsole_pid: 1, service: String::new(), window: 1, session: 3, tab_index: 2, tab_title: String::new(), label: None });
-        assert_eq!(stop_words(&x)[0], "The Claude in Konsole 1 · tab 3 will exit; you can resume it later.");
+        x.location = Some(Location { pid: 1, app: Some("Term".into()) });
+        assert_eq!(stop_words(&x)[0], "The Claude in its Term window will exit; you can resume it later.");
+        x.location = Some(Location { pid: 1, app: None });
+        assert_eq!(stop_words(&x)[0], "The Claude in its terminal window will exit; you can resume it later.");
+        x.location = Some(Location { pid: 1, app: Some("Term".into()) });
         let words = stop_words(&x).join(" ");
         assert!(!words.contains("SIG") && !words.contains("claude stop"));
         x.job_id = Some("bg-1".into());

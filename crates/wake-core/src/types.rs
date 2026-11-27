@@ -22,20 +22,14 @@ pub enum Agent {
     Gemini,
 }
 
-/// Where a live session can be seen: a Konsole tab.
+/// Where a live session can be seen: the terminal window showing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
-    pub konsole_pid: u32,
-    pub service: String,
-    pub window: u32,
-    pub session: u32,
-    pub tab_index: u32,
-    pub tab_title: String,
-    /// How to name this tab to a person, unique across every Konsole on the desktop: "Konsole · tab 2"
-    /// with one window, "Konsole 2 · tab 1" with several. (`window` is only unique within one Konsole
-    /// process: two Konsoles each have a window 1, so "Konsole {window} · tab {n}" can name two tabs.)
+    /// The terminal app's process, whose window shows the session.
+    pub pid: u32,
+    /// The terminal app's name, from its own desktop entry, when Wake can tell.
     #[serde(default)]
-    pub label: Option<String>,
+    pub app: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -278,9 +272,8 @@ pub struct Overview {
     /// All live sessions plus the last 14 days, newest first.
     pub sessions: Vec<SessionSummary>,
     pub index_error: Option<String>,
-    /// Set while Wake cannot be sure where live sessions are: it has not finished looking at Konsole
-    /// yet, or Konsole did not answer (then the tabs shown are the last ones seen, under 15 s old).
-    /// A live session with no `location` should then read "checking" or "unsure", not "background".
+    /// Set while Wake cannot be sure where live sessions are: it has not finished its first look.
+    /// A live session with no `location` should then read "checking", not "background".
     #[serde(default)]
     pub locations_unsure: Option<String>,
     /// Tracked projects that are behind their remote (added 2026-11-20), at most one entry each.
@@ -405,12 +398,12 @@ pub enum StopHow {
 }
 
 /// What an agent's terminal shows right now, for looking in without going there (hold-to-peek).
-/// Read-only: Konsole's displayed text, or `claude logs` for a background session.
+/// Read-only: `claude logs` for a background session.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Screen {
     /// The last lines shown (at most 400), oldest first, without colour codes.
     pub lines: Vec<String>,
-    /// Where they came from: a tab's label such as "Konsole 2 · tab 1", or "claude logs".
+    /// Where they came from: "claude logs".
     pub source: String,
     /// When they were read (ISO-8601 UTC).
     pub at: String,

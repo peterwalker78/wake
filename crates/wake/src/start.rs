@@ -1,7 +1,7 @@
 //! "Start an agent" on ideas (added 2026-11-20): a dialog showing the brief exactly as it will be
 //! sent (editable), which agent, and where it opens; then `Source::start_agent` writes the brief,
-//! opens a new Konsole window in the project's folder that runs the command, and brings that
-//! window forward. The ideas move to "Sent to an agent".
+//! opens a new window of the default terminal app in the project's folder that runs the command.
+//! The ideas move to "Sent to an agent".
 
 use std::rc::Rc;
 
@@ -72,7 +72,7 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
     let card = dialogs::card(620);
     card.update_property(&[gtk::accessible::Property::Label(&format!("Start an agent on {name}"))]);
     card.append(&w::wrap(&format!("Start an agent on {name}"), &["h2"]));
-    card.append(&w::wrap(&format!("A new Konsole window opens in {root} and starts the agent with this brief."), &["plain"]));
+    card.append(&w::wrap(&format!("A new terminal window opens in {root} and starts the agent with this brief."), &["plain"]));
     let a = w::vbox(6, &[]);
     a.append(&w::label("THE BRIEF, AS IT WILL BE SENT", &["flabel"]));
     let area = dialogs::text_area(&text, 120);
@@ -138,7 +138,7 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
             let agent = choices.get(agent_dd.selected() as usize).copied().unwrap_or(brief::Agent::Claude);
             let req = brief::StartAgent { project: project.clone(), ideas: ids.clone(), brief: text, agent: agent.id().into(), id: id.clone() };
             let (err, busy, ids, name) = (err.clone(), busy.clone(), ids.clone(), name.clone());
-            err.set_text("Opening the tab…");
+            err.set_text("Opening the window…");
             app::bg(
                 &ui,
                 move |src| src.start_agent(&req, false),
@@ -166,7 +166,7 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
         })
     };
     let s2 = submit.clone();
-    let go = w::button("Open the tab", Some("Ctrl+Enter"), &["mint"], move || s2());
+    let go = w::button("Open the window", Some("Ctrl+Enter"), &["mint"], move || s2());
     row.append(&go);
     card.append(&row);
     dialogs::show(ui, &card, Some(submit));

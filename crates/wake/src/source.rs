@@ -13,7 +13,7 @@ pub fn live_source(quiet: bool) -> Arc<dyn Source> {
     if quiet {
         live.set_options(&wake_core::settings::CoreOptions { quiet: true, remote_every: None, notify_behind: false, ..Default::default() });
     }
-    // The index, Konsole and git threads; without them the window only sees live sessions.
+    // The index, windows and git threads; without them the window only sees live sessions.
     live.start_background();
     if quiet {
         return live;

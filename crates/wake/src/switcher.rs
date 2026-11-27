@@ -104,17 +104,9 @@ fn items(ui: &Ui) -> Vec<Item> {
                 return true;
             }
             let (loc, ..) = app::loc_of(s, unsure);
-            let hay = [
-                s.project_name.clone().unwrap_or_default(),
-                s.title.clone(),
-                format!("{:?}", s.agent),
-                loc,
-                s.location.as_ref().map(|l| l.tab_title.clone()).unwrap_or_default(),
-                s.last_prompt.clone().unwrap_or_default(),
-                w::state_word(s.state).1.to_string(),
-            ]
-            .join(" ")
-            .to_lowercase();
+            let hay = [s.project_name.clone().unwrap_or_default(), s.title.clone(), format!("{:?}", s.agent), loc, s.last_prompt.clone().unwrap_or_default(), w::state_word(s.state).1.to_string()]
+                .join(" ")
+                .to_lowercase();
             terms.iter().all(|t| hay.contains(t))
         })
         .collect();
@@ -139,7 +131,7 @@ pub fn selected_session(ui: &Ui) -> Option<String> {
     it.get(i).map(|x| x.session().id.clone())
 }
 
-const FIND_HINT: &str = "Find a session: type a project, a title or a tab…";
+const FIND_HINT: &str = "Find a session: type a project or a title…";
 const IDEA_HINT: &str = "New idea: what did you notice? Enter keeps it";
 
 /// Find: the pop-up on its Find tab.
@@ -351,7 +343,7 @@ fn render_rows(ui: &Ui) {
         let has = ui.st.borrow().ov.as_ref().is_some_and(|ov| !ov.sessions.is_empty());
         let q = ui.st.borrow().sw.q.clone();
         list.append(&w::wrap(
-            &if has { format!("Nothing matches “{q}”. Try part of a project or tab name.") } else { "No sessions yet. Start Claude in a project and it appears here.".into() },
+            &if has { format!("Nothing matches “{q}”. Try part of a project or a title.") } else { "No sessions yet. Start Claude in a project and it appears here.".into() },
             &["none", "pad"],
         ));
     }
@@ -468,7 +460,7 @@ fn render_inside_rows(ui: &Ui) {
     let ih = w::vbox(3, &["ih"]);
     if let Item::Back(_) = x {
         ih.append(&w::label("Back to your last place", &["b"]));
-        ih.append(&w::wrap("Enter goes back to the tab you were on before your last go to.", &["s"]));
+        ih.append(&w::wrap("Enter goes back to the session you were on before your last go to.", &["s"]));
         el.append(&ih);
         return;
     }

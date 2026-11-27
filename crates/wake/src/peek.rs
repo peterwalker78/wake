@@ -3,8 +3,9 @@
 //! comes back too. A quick tap keeps its usual meaning (Space activates, Tab moves the focus).
 //!
 //! How Wake shows the agent is the core's choice ([`Source::look_kind`]): on Slipstream or KDE
-//! Plasma the desktop flies to the agent's window and highlights it, with the keyboard left on
-//! Wake; anywhere else, and for agents with no window (background sessions), Wake floats a live
+//! Plasma the desktop flies to the agent's window (in any terminal app) and highlights it, with the
+//! keyboard left on Wake; anywhere else, and for agents with no window (a background session with
+//! nothing attached, or a terminal with no window such as tmux), Wake floats a live
 //! text preview of the agent's terminal ([`Source::screen`]) over its own window. The preview is a
 //! popover that never takes the keyboard, so the key release always reaches Wake.
 //!
@@ -22,7 +23,7 @@ use crate::{
 
 /// A press held this long is a peek; shorter is a tap.
 pub const HOLD_MS: i64 = 180;
-const KONSOLE_POLL: Duration = Duration::from_millis(250);
+const SCREEN_POLL: Duration = Duration::from_millis(250);
 const LOGS_POLL: Duration = Duration::from_millis(1000);
 const SUBS_EVERY: u32 = 8;
 
@@ -187,6 +188,10 @@ pub struct Peek {
     /// Test hook (`--show look:PID`, `--show hold:look=PID`): every peek flies to the window
     /// holding this process, through a desktop link of the hook's own, instead of a session's tab.
     pub fake_pid: Option<u32>,
+    /// Space is down and its press went on to what has the keyboard (not a session row): its
+    /// repeats are dropped until it is let go, so holding Space never presses a button again and
+    /// again. Typing (a text box) keeps its repeats.
+    through: bool,
 }
 
 fn hook_look() -> Option<std::sync::Arc<wake_core::look::Look>> {
@@ -204,25 +209,55 @@ fn now_ms() -> i64 {
     glib::monotonic_time() / 1000
 }
 
-/// Asks the core once how this desktop can show a window (read-only D-Bus checks).
+/// Asks the core once how this desktop can show a window (read-only D-Bus checks). When that
+/// changes what holding Space does, the rows and the details say so again.
 pub fn learn_kind(ui: &Ui) {
     app::bg(
         ui,
         |src| src.look_kind(),
         |ui, k| {
+            let before = can_fly(ui);
             ui.peek.borrow_mut().kind = Some(k);
-            crate::views::render_status(ui);
+            if can_fly(ui) != before {
+                app::render_all(ui);
+            } else {
+                crate::views::render_status(ui);
+            }
         },
     );
 }
 
-/// The word for the status bar's peek hint.
-pub fn hint_word(ui: &Ui) -> &'static str {
-    let kind = ui.peek.borrow().kind;
-    match kind {
-        Some(LookKind::Slipstream | LookKind::Kwin) => "fly to it",
-        _ => "preview",
-    }
+/// Whether this desktop can fly to a window.
+pub fn can_fly(ui: &Ui) -> bool {
+    ui.peek.try_borrow().is_ok_and(|p| matches!(p.kind, Some(LookKind::Slipstream | LookKind::Kwin)))
+}
+
+/// Whether holding Space on session `s` zooms to its window (else it previews it).
+pub fn zooms(ui: &Ui, s: &SessionSummary) -> bool {
+    s.location.is_some() && can_fly(ui)
+}
+
+/// What holding Space does for `s`, as the Space key and a few words: "zoom to window" when a
+/// window shows it, else "preview". `long` gives the details panel's fuller words.
+pub fn cue(ui: &Ui, s: &SessionSummary, long: bool) -> gtk::Box {
+    let zoom = zooms(ui, s);
+    let words = match (zoom, long) {
+        (true, false) => "zoom to window",
+        (true, true) => "hold to zoom to its window",
+        (false, false) => "preview",
+        (false, true) => "hold to preview",
+    };
+    let b = w::hbox(5, &["peek-cue", if zoom { "zoom" } else { "look" }]);
+    b.append(&w::kbd("Space"));
+    b.append(&w::label(words, &["hint"]));
+    b.set_tooltip_text(Some(if zoom {
+        "Hold Space to zoom to the window this session is in. Let go to come back to Wake, or press Enter while holding to stay there."
+    } else if can_fly(ui) {
+        "No window shows this session, so holding Space previews its screen here instead. Let go to close it."
+    } else {
+        "Hold Space to preview this session's screen without leaving Wake. Let go to close it."
+    }));
+    b
 }
 
 /// The session a peek would show from where the keyboard is now, if any.
@@ -267,11 +302,18 @@ fn target(ui: &Ui, key: HoldKey) -> Option<String> {
 
 /// The window's key press, before anything else sees it. None: not the peek's, carry on.
 pub fn on_press(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
-    let phase = ui.peek.borrow().phase;
+    let Ok(p) = ui.peek.try_borrow() else { return None };
+    let (phase, through) = (p.phase, p.through);
+    drop(p);
     let hk = hold_key(key, mods);
     let ev = match (phase, hk) {
+        // A repeat of a Space that went on to a button or a row's own action: dropped.
+        (Phase::Idle, Some(_)) if through => return Some(glib::Propagation::Stop),
         (Phase::Idle, Some(k)) => {
-            let id = target(ui, k)?;
+            let Some(id) = target(ui, k) else {
+                ui.peek.borrow_mut().through = !typing(ui);
+                return None;
+            };
             ui.peek.borrow_mut().target = Some(id);
             Ev::Down(k, now_ms())
         }
@@ -291,13 +333,26 @@ pub fn on_release(ui: &Ui, key: gdk::Key) {
         gdk::Key::space => HoldKey::Space,
         _ => return,
     };
-    if ui.peek.borrow().phase != Phase::Idle {
+    let Ok(mut p) = ui.peek.try_borrow_mut() else { return };
+    p.through = false;
+    let busy = p.phase != Phase::Idle;
+    drop(p);
+    if busy {
         feed(ui, Ev::Up(k, now_ms()));
     }
 }
 
-/// Wake's window stopped being the active one: a peek ends.
+/// Whether the keyboard is in a text box, where a held Space types spaces.
+fn typing(ui: &Ui) -> bool {
+    gtk::prelude::GtkWindowExt::focus(&ui.window).is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::Entry>() || f.is::<gtk::TextView>())
+}
+
+/// Wake's window stopped being the active one: a peek ends, and a Space let go elsewhere is
+/// forgotten.
 pub fn focus_lost(ui: &Ui) {
+    if let Ok(mut p) = ui.peek.try_borrow_mut() {
+        p.through = false;
+    }
     if ui.peek.borrow().phase != Phase::Idle {
         feed(ui, Ev::FocusLost);
     }
@@ -375,10 +430,11 @@ pub fn start(ui: &Ui, id: &str, preview_only: bool) {
         (p.kind, p.fake_pid)
     };
     let can_fly = matches!(kind, Some(LookKind::Slipstream | LookKind::Kwin));
-    // Background agents (no Konsole tab, or no window at all) go straight to the preview.
-    let has_tab = fake.is_some() || app::find_session(ui, id).is_some_and(|s| s.location.is_some());
-    if preview_only || !can_fly || !has_tab {
-        log(|| format!("preview for {id} (can fly: {can_fly}, has a tab: {has_tab})"));
+    // Always the agent's own window first, whatever terminal it is in and however busy it is;
+    // the core says when there is none (a background session nothing is attached to), and then
+    // it's the preview.
+    if preview_only || !can_fly {
+        log(|| format!("preview for {id} (can fly: {can_fly})"));
         open_preview(ui, id, epoch, None);
         return;
     }
@@ -390,7 +446,7 @@ pub fn start(ui: &Ui, id: &str, preview_only: bool) {
         ui,
         move |src| match hook {
             Some((l, pid)) => {
-                let loc = Location { konsole_pid: pid, service: String::new(), window: 0, session: 0, tab_index: 0, tab_title: String::new(), label: None };
+                let loc = Location { pid, app: None };
                 l.start(Some(&loc), false)
             }
             None => src.look_start(&sid, false),
@@ -451,7 +507,7 @@ fn look_end(src: &dyn Source, stay: bool) -> ActionResult {
     }
 }
 
-/// The desktop link the `look:` test hook uses: the real one, with no Konsole tab to pick first.
+/// The desktop link the `look:` test hook uses: the real one.
 static HOOK_ARC: std::sync::Mutex<Option<std::sync::Arc<wake_core::look::Look>>> = std::sync::Mutex::new(None);
 
 /// End the peek: back to Wake as it was, or (`stay`) over to the agent.
@@ -674,12 +730,12 @@ fn show(ui: &Ui, screen: Option<&Screen>, subs: Option<Vec<SubagentSummary>>) ->
             }
         }
         None => {
-            // Running, but in a terminal Wake can't read (Ghostty, say): don't call it stopped.
+            // Running, but in a terminal app, whose screen Wake can't read: don't call it stopped.
             let target = ui.peek.borrow().target.clone();
             let live = target.and_then(|id| app::find_session(ui, &id)).is_some_and(|s| app::is_live(s.state));
             if live {
                 v.source.set_text("can't read this terminal");
-                v.note.set_text("This agent is running in a terminal Wake can't read. Wake can show the screen of agents in a Konsole tab, or ones running in the background.");
+                v.note.set_text("This agent is running, but Wake can't read its terminal, so there is no screen to show here.");
             } else {
                 v.source.set_text("not running");
                 v.note.set_text("This session isn't running, so there is no live screen to show. Enter opens it.");
@@ -709,25 +765,25 @@ fn show(ui: &Ui, screen: Option<&Screen>, subs: Option<Vec<SubagentSummary>>) ->
         }
         v.subs.set_visible(!subs.is_empty());
     }
-    if background { LOGS_POLL } else { KONSOLE_POLL }
+    if background { LOGS_POLL } else { SCREEN_POLL }
 }
 
 const NO_SCREEN_WORDS: &str = wake_core::look::NO_SCREEN;
 
 /// `--show peek[:session]`: the preview for a screenshot, never asking the desktop to move. On real
-/// data only a session in a Konsole tab is shown (read-only), never a background one.
+/// data only a background session is shown (its screen is the only one Wake can read).
 pub fn show_for_shot(ui: &Ui, arg: Option<String>) {
     let pick = {
         let st = ui.st.borrow();
         let ov = st.ov.as_ref();
-        let ok = |s: &&SessionSummary| app::is_live(s.state) && (ui.demo || s.location.is_some());
+        let ok = |s: &&SessionSummary| app::is_live(s.state) && (ui.demo || s.job_id.is_some());
         match arg {
             Some(id) => ov.and_then(|o| o.sessions.iter().find(|s| s.id == id || s.id.starts_with(&id))).filter(ok).map(|s| s.id.clone()),
             None => ov.and_then(|o| o.sessions.iter().filter(ok).find(|s| s.state == State::Working).or_else(|| o.sessions.iter().find(ok)).map(|s| s.id.clone())),
         }
     };
     let Some(id) = pick else {
-        eprintln!("wake: --show peek: no live session {}to preview", if ui.demo { "" } else { "in a Konsole tab " });
+        eprintln!("wake: --show peek: no live session {}to preview", if ui.demo { "" } else { "in the background " });
         return;
     };
     ui.peek.borrow_mut().reads_left = Some(3);
@@ -746,6 +802,8 @@ pub fn hook_look_at(ui: &Ui, pid: u32) {
         p.fake_pid = Some(pid);
         p.kind = Some(kind);
     }
+    // The rows and details say what holding Space does, which this changes.
+    app::render_all(ui);
     eprintln!("wake: look hook: peeks fly to pid {pid}'s window ({kind:?})");
     focus_first_row(ui);
 }

@@ -579,8 +579,8 @@ fn rail_project(ui: &Ui, id: &str) {
 /// The status bar: whether the data is fresh, and at most four keys for where the keyboard is;
 /// the rest are behind `?`.
 pub fn render_status(ui: &Ui) {
-    // A banner under the title bar, only when there is something to know: made-up data, Wake
-    // falling behind or failing to read, or Konsole's tabs out of sight while a session is open.
+    // A banner under the title bar, only when there is something to know: made-up data, or Wake
+    // falling behind or failing to read.
     let (err, last_ok, procs_at) = {
         let st = ui.st.borrow();
         if st.ov.is_none() {
@@ -588,8 +588,6 @@ pub fn render_status(ui: &Ui) {
         }
         (st.ov_error.clone(), st.last_ok, st.procs.as_ref().map(|p| p.generated_at.clone()))
     };
-    let any_live = ui.st.borrow().ov.as_ref().is_some_and(|o| o.sessions.iter().any(|s| app::is_live(s.state)));
-    let tabs_unknown = app::tabs_unknown(ui).filter(|_| any_live);
     let secs = last_ok.map(|t| (glib::monotonic_time() - t) / 1_000_000).unwrap_or(0);
     let (icon, words, class, tip) = if ui.demo {
         (w::icons::INFO, "You're looking at made-up data. Nothing here is real.".to_string(), "info", "Demo mode: made-up sessions and agents.".to_string())
@@ -597,8 +595,6 @@ pub fn render_status(ui: &Ui) {
         (w::icons::WARNING, err.clone(), "bad", err.clone())
     } else if secs > 15 {
         (w::icons::WARNING, format!("Wake last checked {} ago.", fmt::span(secs as u64)), "late", "Wake reads your sessions every few seconds; it hasn't managed to lately.".to_string())
-    } else if let Some(why) = tabs_unknown {
-        (w::icons::WARNING, "Wake can't see Konsole's tabs, so Go to may open a new window.".to_string(), "late", format!("{why} Run wake doctor in a terminal to see why."))
     } else {
         (w::icons::INFO, String::new(), "", String::new())
     };
@@ -774,7 +770,7 @@ pub fn render_chips(ui: &Ui) {
                 let n = st.picked.len() as u64;
                 let ui2 = ui.clone();
                 let start = w::button(&format!("Start an agent on {}", fmt::pl(n, "idea", "ideas")), None, &["violet"], move || crate::start::open(&ui2, None));
-                start.set_tooltip_text(Some("Opens a Konsole tab in the project's folder with the agent and this brief typed in, waiting for your Enter"));
+                start.set_tooltip_text(Some("Opens a new terminal window in the project's folder and starts the agent with this brief"));
                 chips.add_next(&start);
                 let ui2 = ui.clone();
                 chips.add_next(&w::button("Copy as a brief", None, &["ghost", "sm"], move || {
@@ -1077,10 +1073,10 @@ fn stable_key(s: &SessionSummary) -> String {
     serde_json::to_string(&key).unwrap_or_default()
 }
 
-/// Whether Wake is still finding the tabs or has given up: the rows' "Where" words change with it
-/// even when no session does.
+/// Whether Wake is still finding the windows, and whether a hold can zoom: the rows' words change
+/// with them even when no session does.
 fn loc_sig(ui: &Ui) -> String {
-    format!("{}{}", app::unsure(ui), app::tabs_unknown(ui).is_some())
+    format!("{}{}", app::unsure(ui), crate::peek::can_fly(ui))
 }
 
 fn monitor(ui: &Ui) {
@@ -1223,14 +1219,14 @@ fn board(ui: &Ui, rows: &[SessionSummary], compact: bool) {
         let n = working.len();
         for (i, s) in working.into_iter().enumerate() {
             let wave = (!narrow).then(|| wave_cell(ui, s)).flatten();
-            vw.list.append(&session_item(ui, s, now_cell(s), wave, (i == 0, i + 1 == n), !narrow));
+            vw.list.append(&session_item(ui, s, now_cell(s), wave, (i == 0, i + 1 == n), !narrow, true));
         }
     }
     if !rest.is_empty() {
         vw.list.append(&section_row("Earlier", rest.len()));
         let n = rest.len();
         for (i, s) in rest.into_iter().enumerate() {
-            vw.list.append(&session_item(ui, s, now_cell(s), None, (i == 0, i + 1 == n), !narrow));
+            vw.list.append(&session_item(ui, s, now_cell(s), None, (i == 0, i + 1 == n), !narrow, true));
         }
     }
 }
@@ -1271,6 +1267,28 @@ fn who_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
 }
 
 /// "just now", "2 h ago", kept current in place.
+/// The age, sharing its place with what holding Space does (`peek`, running sessions only): the
+/// selected row shows the Space cue instead of its age, since the keyboard is on that row when
+/// Space is held (style.css: .peek-cue). One cell for both, so nothing moves.
+fn age_cell(ui: &Ui, s: &SessionSummary, peek: bool) -> gtk::Widget {
+    let age = age_label(ui, s);
+    age.set_halign(gtk::Align::End);
+    if !peek || !app::is_live(s.state) {
+        return age.upcast();
+    }
+    age.add_css_class("peek-age");
+    let cue = crate::peek::cue(ui, s, false);
+    cue.set_halign(gtk::Align::End);
+    cue.set_valign(gtk::Align::Center);
+    // Hidden rows' cues never catch the pointer; the details say the same with a tooltip.
+    cue.set_can_target(false);
+    let g = gtk::Grid::new();
+    g.set_halign(gtk::Align::End);
+    g.attach(&age, 0, 0, 1, 1);
+    g.attach(&cue, 0, 0, 1, 1);
+    g.upcast()
+}
+
 fn age_label(ui: &Ui, s: &SessionSummary) -> gtk::Label {
     let last = w::label(&fmt::ago(s.last_at.as_deref()), &["num", "dim"]);
     last.set_xalign(1.0);
@@ -1286,7 +1304,7 @@ fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
     let who = who_line(ui, s);
     who.set_hexpand(true);
     top.append(&who);
-    top.append(&age_label(ui, s));
+    top.append(&age_cell(ui, s, true));
     card.append(&top);
     let q = s.question.clone().or_else(|| s.away_summary.as_deref().map(fmt::recap)).unwrap_or_else(|| "It is waiting for you.".into());
     let ql = w::wrap(&fmt::clip(&q, 600), &["title-3"]);
@@ -1337,7 +1355,8 @@ fn wave_cell(ui: &Ui, s: &SessionSummary) -> Option<gtk::Widget> {
 
 /// One session as a row of a boxed list, the same on Monitor and History: an optional lead (the
 /// wave), who, a second line, and at the end its status and age. `edge` is (first, last) in its list.
-pub fn session_item(ui: &Ui, s: &SessionSummary, second: gtk::Widget, lead: Option<gtk::Widget>, edge: (bool, bool), wide: bool) -> gtk::ListBoxRow {
+/// `peek`: the row says what holding Space does when it is selected (Monitor; History can't peek).
+pub fn session_item(ui: &Ui, s: &SessionSummary, second: gtk::Widget, lead: Option<gtk::Widget>, edge: (bool, bool), wide: bool, peek: bool) -> gtk::ListBoxRow {
     let row = w::hbox(14, &["item"]);
     if let Some(l) = lead {
         row.append(&l);
@@ -1357,9 +1376,7 @@ pub fn session_item(ui: &Ui, s: &SessionSummary, second: gtk::Widget, lead: Opti
     if wide {
         end.append(&tag);
     }
-    let age = age_label(ui, s);
-    age.set_halign(gtk::Align::End);
-    end.append(&age);
+    end.append(&age_cell(ui, s, peek));
     row.append(&end);
     let r = list_row(&s.id, &row);
     r.add_css_class("itemrow");
@@ -2596,7 +2613,7 @@ fn history(ui: &Ui) {
             vw.list.append(&section_row(&day, 0));
             let n = ss.len();
             for (i, s) in ss.into_iter().enumerate() {
-                vw.list.append(&session_item(ui, s, now_cell(s), None, (i == 0, i + 1 == n), !compact));
+                vw.list.append(&session_item(ui, s, now_cell(s), None, (i == 0, i + 1 == n), !compact, false));
             }
         }
     } else {
@@ -2613,7 +2630,7 @@ fn history(ui: &Ui) {
         for (i, (s, m)) in results.iter().enumerate() {
             let l = w::clip("", &["snip"]);
             l.set_markup(&highlight(m, &q));
-            vw.list.append(&session_item(ui, s, l.upcast(), None, (i == 0, i + 1 == n), !compact));
+            vw.list.append(&session_item(ui, s, l.upcast(), None, (i == 0, i + 1 == n), !compact, false));
         }
     }
     finish(ui, View::History, had_focus);

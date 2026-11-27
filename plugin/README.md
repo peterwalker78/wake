@@ -30,7 +30,7 @@ Wake writes it atomically (temp file and rename) every 15 seconds while it runs;
 
 ## What Wake reads: jump requests
 
-A sandboxed plugin has no session bus, so it cannot switch Konsole tabs or send notifications.
+A sandboxed plugin has no session bus, so it cannot bring a window forward or send notifications.
 A press (the button, an explorer answer or the action's keys) instead writes
 `~/.local/state/slipstream/plugins/wake/state/request.json`:
 

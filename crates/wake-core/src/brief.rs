@@ -1,5 +1,5 @@
-//! Starting an agent on ideas (added 2026-11-20): the brief Wake writes, and the one command it
-//! types into a new Konsole tab for it.
+//! Starting an agent on ideas (added 2026-11-20): the brief Wake writes, and the one command a new
+//! terminal window runs for it.
 //!
 //! The brief goes in a file under `<data>/briefs/<id>.md` (Wake's own folder), never on the
 //! command line, so nothing in an idea (quotes, `$`, backticks, line breaks) is ever seen by a

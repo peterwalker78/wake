@@ -1,4 +1,4 @@
-//! Looking at an agent's window from Wake (hold-to-peek), and reading its screen.
+//! Looking at an agent's window from Wake (hold-to-peek), and reading a background agent's screen.
 //!
 //! Three ways to look, picked at run time by [`detect`]:
 //! - **Slipstream** (a Wayland desktop, github.com/peterwalker78/slipstream-desktop) serves its Look
@@ -9,7 +9,7 @@
 //!   active so the key release still reaches it. UNTESTED ON A REAL PLASMA SESSION: written from the
 //!   KWin 6 scripting API and the effect's source (see [`kwin_start_script`]), checked only with fakes.
 //! - **Preview** everywhere else and for agents with no window (background sessions): the app shows
-//!   the agent's terminal text itself, from [`Screen`]s read here.
+//!   the agent's terminal text itself, from [`Screen`]s read here (`claude logs`).
 //!
 //! Every D-Bus call goes through the injectable [`Runner`], so tests never touch the desktop, and
 //! every call that changes the desktop takes `dry_run` (the steps are returned, nothing is run).
@@ -31,8 +31,7 @@ pub const SLIPSTREAM_PATH: &str = "/io/github/peterwalker78/Slipstream";
 pub const SLIPSTREAM_LOOK: &str = "io.github.peterwalker78.Slipstream.Look";
 pub const KWIN_NAME: &str = "org.kde.KWin";
 
-/// Reading a Konsole tab's text gives up after this long; `claude logs` after the longer one.
-pub const KONSOLE_SCREEN_TIMEOUT: Duration = Duration::from_millis(700);
+/// Reading `claude logs` gives up after this long.
 pub const LOGS_TIMEOUT: Duration = Duration::from_millis(2500);
 pub const MAX_LINES: usize = 400;
 /// Two polls this close together share one read.
@@ -60,11 +59,6 @@ pub fn detect(run: &Runner, current_desktop: &str) -> LookKind {
         return LookKind::Kwin;
     }
     LookKind::Preview
-}
-
-/// The exact `setCurrentSession` call that selects an agent's Konsole tab before looking at it.
-fn select_tab_argv(loc: &Location) -> Vec<String> {
-    vec![QDBUS.into(), loc.service.clone(), format!("/Windows/{}", loc.window), "setCurrentSession".into(), loc.session.to_string()]
 }
 
 fn argv(parts: &[&str]) -> Vec<String> {
@@ -146,21 +140,15 @@ impl Look {
         };
         self.end_monitor();
         *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        // A window with no Konsole tab to pick first (an empty service) goes straight to the look.
-        let select = (!loc.service.is_empty()).then(|| select_tab_argv(loc));
-        let mut steps: Vec<String> = select.iter().map(|s| shell_join(s)).collect();
+        let mut steps: Vec<String> = Vec::new();
         match kind {
             LookKind::Slipstream => {
                 let mut start = argv(&[GDBUS, "call", "--session", "--dest", SLIPSTREAM_NAME, "--object-path", SLIPSTREAM_PATH, "--method"]);
                 start.push(format!("{SLIPSTREAM_LOOK}.Start"));
-                start.push(loc.konsole_pid.to_string());
+                start.push(loc.pid.to_string());
                 steps.push(shell_join(&start));
                 if dry_run {
                     return ActionResult { ok: true, message: "Dry run.".into(), steps };
-                }
-                // The tab first, so the window Slipstream flies to shows the agent.
-                if let Some(select) = &select {
-                    let _ = (self.run)(select, TIMEOUT);
                 }
                 let (code, out) = (self.run)(&start, TIMEOUT);
                 let (ok, message) = parse_start_reply(&out);
@@ -183,16 +171,13 @@ impl Look {
                 if dry_run {
                     return ActionResult { ok: true, message: "Dry run.".into(), steps };
                 }
-                if let Some(select) = &select {
-                    let _ = (self.run)(select, TIMEOUT);
-                }
                 let (code, desk) = (self.run)(&current, TIMEOUT);
                 let desk = desk.trim().to_string();
                 if code != 0 || !util_id_ok(&desk) {
                     self.recheck_if_gone(code);
                     return fail("KWin didn't say which desktop is current.", steps);
                 }
-                if let Err(e) = self.write_script(&script, &kwin_start_script(loc.konsole_pid, self.wake_pid)) {
+                if let Err(e) = self.write_script(&script, &kwin_start_script(loc.pid, self.wake_pid)) {
                     return fail(&e, steps);
                 }
                 if !self.run_kwin_script(&load) {
@@ -200,17 +185,17 @@ impl Look {
                 }
                 let mut l = self.looking.lock().unwrap_or_else(|e| e.into_inner());
                 l.desktop = Some(desk);
-                l.target = Some(loc.konsole_pid);
+                l.target = Some(loc.pid);
                 ActionResult { ok: true, message: String::new(), steps }
             }
             LookKind::Preview => unreachable!(),
         }
     }
 
-    /// Go straight to the window holding `konsole_pid` (the tab already selected): Slipstream's
-    /// Look then End(stay), or a KWin script that activates it. ok=false on a desktop with no link
-    /// (the caller then just says where the tab is). Never a notification.
-    pub fn bring(&self, konsole_pid: u32, dry_run: bool) -> ActionResult {
+    /// Go straight to the window of terminal app `pid`: Slipstream's Look then End(stay), or a
+    /// KWin script that activates it. ok=false on a desktop with no link (the caller then just says
+    /// which window it is). Never a notification.
+    pub fn bring(&self, pid: u32, dry_run: bool) -> ActionResult {
         let none = |m: &str| ActionResult { ok: false, message: m.into(), steps: vec![] };
         match self.kind() {
             LookKind::Preview => none(""),
@@ -221,7 +206,7 @@ impl Look {
                     a.push(arg);
                     a
                 };
-                let start = call("Start", konsole_pid.to_string());
+                let start = call("Start", pid.to_string());
                 let end = call("End", "true".into());
                 let steps = vec![shell_join(&start), shell_join(&end)];
                 if dry_run {
@@ -244,7 +229,7 @@ impl Look {
                 if dry_run {
                     return ActionResult { ok: true, message: "Dry run.".into(), steps };
                 }
-                let ok = self.write_script(&script, &kwin_bring_script(konsole_pid)).is_ok() && self.run_kwin_script(&load);
+                let ok = self.write_script(&script, &kwin_bring_script(pid)).is_ok() && self.run_kwin_script(&load);
                 ActionResult { ok, message: String::new(), steps }
             }
         }
@@ -354,7 +339,7 @@ fn util_id_ok(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-{}_".contains(c))
 }
 
-/// `(true, 'Looking at Konsole')` from gdbus → (true, "Looking at Konsole").
+/// `(true, 'Looking at it')` from gdbus → (true, "Looking at it").
 pub fn parse_start_reply(out: &str) -> (bool, String) {
     let t = out.trim().trim_start_matches('(').trim_end_matches(')').trim_end_matches(',');
     let (ok, rest) = t.split_once(',').unwrap_or((t, ""));
@@ -531,14 +516,6 @@ pub fn last_lines(text: &str, max: usize) -> Vec<String> {
     lines.split_off(skip)
 }
 
-/// What a Konsole tab shows: `getAllDisplayedText` (read-only) on its session.
-pub fn read_konsole(run: &Runner, loc: &Location) -> Screen {
-    let source = loc.label.clone().unwrap_or_else(|| format!("Konsole {} · tab {}", loc.window, loc.tab_index + 1));
-    let argv = vec![QDBUS.into(), loc.service.clone(), format!("/Sessions/{}", loc.session), "getAllDisplayedText".into(), "true".into()];
-    let (code, out) = run(&argv, KONSOLE_SCREEN_TIMEOUT);
-    screen_from(code, &out, source)
-}
-
 /// What a background session's terminal shows: `claude logs <jobId>` (read-only), played onto a
 /// grid of the terminal's size (`size`, rows and columns; a common size when it can't be read).
 pub fn read_logs(run: &Runner, job: &str, size: Option<(usize, usize)>) -> Screen {
@@ -611,7 +588,7 @@ mod tests {
     }
 
     fn loc() -> Location {
-        Location { konsole_pid: 3264, service: "org.kde.konsole-3264".into(), window: 2, session: 7, tab_index: 0, tab_title: "claude".into(), label: Some("Konsole 2 · tab 1".into()) }
+        Location { pid: 3264, app: Some("Term".into()) }
     }
 
     fn has_owner(names: &'static [&'static str]) -> impl Fn(&[String]) -> (i32, String) + Send + Sync {
@@ -654,8 +631,8 @@ mod tests {
         let look = Look::new(r, "Slipstream", std::env::temp_dir(), 99, false);
         let dry = look.start(Some(&loc()), true);
         assert!(dry.ok);
-        assert_eq!(dry.steps[0], "qdbus-qt6 org.kde.konsole-3264 /Windows/2 setCurrentSession 7");
-        assert!(dry.steps[1].ends_with("--method io.github.peterwalker78.Slipstream.Look.Start 3264"), "{}", dry.steps[1]);
+        assert_eq!(dry.steps.len(), 1, "straight to the window: nothing to pick first");
+        assert!(dry.steps[0].ends_with("--method io.github.peterwalker78.Slipstream.Look.Start 3264"), "{}", dry.steps[0]);
         assert_eq!(calls.lock().unwrap().len(), 1, "a dry run only asks who is on the bus");
         let r = look.start(Some(&loc()), false);
         assert!(r.ok, "{}", r.message);
@@ -663,9 +640,8 @@ mod tests {
         assert!(end.ok);
         let calls = calls.lock().unwrap();
         let methods: Vec<&str> = calls.iter().map(|c| c.iter().rev().nth(1).map(String::as_str).unwrap_or("")).collect();
-        assert!(calls[1].contains(&"setCurrentSession".to_string()));
-        assert!(calls[2].iter().any(|x| x.ends_with(".Look.Start")));
-        assert!(calls[3].iter().any(|x| x.ends_with(".Look.End")) && calls[3].last().unwrap() == "true", "{methods:?}");
+        assert!(calls[1].iter().any(|x| x.ends_with(".Look.Start")));
+        assert!(calls[2].iter().any(|x| x.ends_with(".Look.End")) && calls[2].last().unwrap() == "true", "{methods:?}");
     }
 
     #[test]
@@ -737,13 +713,13 @@ mod tests {
         assert!(calls[2].iter().any(|x| x.ends_with(".Look.End")) && calls[2].last().unwrap() == "true");
         assert!(!calls.iter().any(|c| c.iter().any(|x| x.contains("Notifications"))));
         let (r, _) = fake(has_owner(&[]));
-        assert!(!Look::new(r, "", std::env::temp_dir(), 1, false).bring(3264, false).ok, "no link: the caller says where the tab is");
+        assert!(!Look::new(r, "", std::env::temp_dir(), 1, false).bring(3264, false).ok, "no link: the caller says which window it is");
         assert!(kwin_bring_script(77).contains("workspace.activeWindow = target"));
     }
 
     #[test]
     fn replies_and_signals_parse() {
-        assert_eq!(parse_start_reply("(true, 'Looking at Konsole')\n"), (true, "Looking at Konsole".into()));
+        assert_eq!(parse_start_reply("(true, 'Looking at Term')\n"), (true, "Looking at Term".into()));
         assert_eq!(parse_start_reply("(false, 'No window holds that process.')"), (false, "No window holds that process.".into()));
         let line = "/io/github/peterwalker78/Slipstream: io.github.peterwalker78.Slipstream.Look.Ended (true,)";
         assert_eq!(parse_ended(line), Some(true));
@@ -756,16 +732,6 @@ mod tests {
         let raw = "\u{1b}[1;32m✓ tests\u{1b}[0m passed\r\n\u{1b}]0;title\u{7}next \u{1b}[2Kline\rover\n\tend\u{1b}(B";
         assert_eq!(strip_ansi(raw), "✓ tests passed\nover\n\tend");
         assert_eq!(last_lines("a\nb  \nc\n\n\n", 2), vec!["b", "c"]);
-    }
-
-    #[test]
-    fn konsole_screen_is_read_with_the_read_only_call() {
-        let (r, calls) = fake(|_| (0, "$ cargo test\n   Compiling wake   \n\n".into()));
-        let s = read_konsole(&r, &loc());
-        assert_eq!(s.lines, vec!["$ cargo test", "   Compiling wake"]);
-        assert_eq!(s.source, "Konsole 2 · tab 1");
-        assert_eq!(s.note, None);
-        assert_eq!(calls.lock().unwrap()[0], vec!["qdbus-qt6", "org.kde.konsole-3264", "/Sessions/7", "getAllDisplayedText", "true"]);
     }
 
     #[test]

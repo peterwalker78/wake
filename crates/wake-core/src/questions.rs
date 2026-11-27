@@ -1650,8 +1650,15 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
         use crate::Source;
         let env = Env::new();
         let actor = Arc::new(crate::procs::tests::FakeActor { calls: Mutex::new(vec![]) });
-        let bus = crate::desktop::tests::FakeBus::new(crate::desktop::tests::konsoles());
-        let live = crate::source::Live::new(crate::source::LiveConfig { paths: env.paths.clone(), proc_root: PathBuf::from("/proc"), runner: bus.runner(), systemd_run: Some(String::new()), actor });
+        let bus = crate::desktop::tests::FakeBus::new();
+        let live = crate::source::Live::new(crate::source::LiveConfig {
+            paths: env.paths.clone(),
+            proc_root: PathBuf::from("/proc"),
+            runner: bus.runner(),
+            systemd_run: Some(String::new()),
+            actor,
+            terminal: None,
+        });
         let original = fs::read_to_string(env.paths.claude.join("projects/-home/sess-aaaa.jsonl")).unwrap();
         let home = format!("\"cwd\":\"{}\"", env.paths.home.display());
         assert!(original.contains(&home));

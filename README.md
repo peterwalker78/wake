@@ -6,8 +6,8 @@
 
 ### Every coding agent you have running, and every project you left, on one board.
 
-For people who keep several Claude Code or Codex sessions going at once, in Konsole tabs and in
-the background, on a Linux desktop.<br>
+For people who keep several Claude Code or Codex sessions going at once, in terminal windows and
+in the background, on a Linux desktop.<br>
 It only reads. Nothing it learns about your sessions leaves your computer.
 
 [**What it does**](#what-it-does) ·
@@ -23,7 +23,7 @@ It only reads. Nothing it learns about your sessions leaves your computer.
 ## What it does
 
 You start an agent on something, then another, then switch projects, and an hour later you don't
-know which tab is which, which one is waiting on you, or where you'd got to in the project you put
+know which window is which, which one is waiting on you, or where you'd got to in the project you put
 down yesterday. Wake reads what the agents already leave on disk and puts it in one window.
 
 - **Monitor** starts with what needs you: each session waiting on a question or a decision is a
@@ -47,10 +47,13 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
   without opening a terminal, in threads you can come back to. They may only search and read;
   nothing that changes files is allowed.
 - **Peek**: hold `Space` on a session to see it without leaving Wake, and let go to come back.
-  On Slipstream the desktop slides to the agent's window; on KDE Plasma a small KWin script
-  switches to it; anywhere else, and for background sessions, Wake shows the agent's terminal text.
-- **Go there** takes you to the session: its Konsole tab, a new window attached to a
-  background session (`claude attach`), or a new window resuming an ended one.
+  The selected session says what holding `Space` will do: zoom to its window, or a preview.
+  On Slipstream the desktop slides to the agent's window, idle or working, in whatever terminal
+  it is in; on KDE Plasma a small KWin script switches to it. Anywhere else, and for a background
+  session nothing is attached to, Wake shows the agent's terminal text.
+- **Go there** takes you to the session: the terminal window it is in, whatever the terminal
+  app, a new window attached to a background session (`claude attach`), or a new window resuming
+  an ended one. New windows open in your default terminal app.
 - **Behind**: Wake asks each project's remote, now and then, whether someone pushed commits you
   haven't pulled, and says so before you start work on an old copy. It asks with
   `git ls-remote` and never fetches.
@@ -104,7 +107,7 @@ wake doctor       # what Wake can see on this computer
 ## What it reads and writes
 
 Wake is a reader. It reads `~/.claude` (transcripts, subagents, live sessions, background jobs),
-Codex's sessions, `/proc`, Konsole's tabs over D-Bus, and your git repositories. Git is only ever
+Codex's sessions, `/proc` (which terminal window shows each agent), and your git repositories. Git is only ever
 read, without taking locks, so it never gets in the way of an agent working in the same repository.
 It never reads `*.key`, `.env` or credential files, never types into a terminal and never answers
 an agent.
@@ -123,7 +126,7 @@ Everything else it does is something you ask for, and it asks again first:
 - **Clear** build output or a cache: moved to the Trash, never deleted.
 - **Remove** an agent's worktree whose branch is merged and whose tree is clean
   (`git worktree remove`, never `--force`).
-- **Go there** and **Start an agent** open a new Konsole window.
+- **Go there** and **Start an agent** open a new window of your default terminal app.
 
 ## Getting it
 
@@ -159,13 +162,15 @@ recaps and questions it is waiting on. Codex sessions are read from their transc
 live state. Gemini CLI processes appear in Agents, and Ask can use any of the three that
 is installed.
 
-**Desktops.** Go there and Start an agent use Konsole. Switching to a session's tab needs
-`qdbus-qt6` (Fedora's `qt6-qttools`), or `qdbus6`, as Debian and Ubuntu name it in their
-`qdbus-qt6` package. Peek on Slipstream and KWin, and
-the notice when a project is behind, use `gdbus`. On Slipstream and KDE Plasma the desktop
-brings the window forward; elsewhere Konsole switches tab and Wake says which window it is in.
-An agent in another terminal (Ghostty, say) is still listed, but Go there and Peek can't reach
-its window; Peek shows its screen only if it runs in the background.
+**Desktops.** Wake works with any terminal app. It finds the window showing each agent from
+`/proc` (the terminal app holds the other end of the agent's terminal), including a
+`claude agents` window that has the session open, which it tells by the session's terminal size.
+New windows (Go there for a session in none, Start an agent) open in your default terminal app,
+through `xdg-terminal-exec`, else `$TERMINAL`. Peek and Go there on Slipstream, and the notice when
+a project is behind, use `gdbus`; on KDE Plasma they use `qdbus-qt6` (Fedora's `qt6-qttools`, or
+`qdbus6` on Debian and Ubuntu). On Slipstream and KDE Plasma the desktop brings the window forward;
+elsewhere Wake says which window it is in. A terminal app shows its tabs its own way, so with
+several tabs in one window Wake goes to the window, not the tab.
 The KWin scripts are written against KWin 6's scripting API and have not yet been tried on a
 real Plasma session.
 

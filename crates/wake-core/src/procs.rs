@@ -11,7 +11,7 @@
 //!   claim socket is still there (unclaimed);
 //! - subagents: an agent process with another agent session above it in the tree, folded into
 //!   that session (kind `Subagent`), named by the session's job `fan` entry;
-//! - attach clients: `claude attach <jobId>`, usually under agent-notify in a Konsole tab.
+//! - attach clients: `claude attach <jobId>`, usually under agent-notify in a terminal window.
 //!
 //! Rows come out as a tree in order: daemons, then each session followed by the rows folded into it
 //! (its pty host and attach clients, kind `PtyHost`), then spares (each followed by its pty host),
@@ -30,7 +30,7 @@ use crate::live::LiveInfo;
 use crate::types::{ActionResult, Agent, AgentProc, Location, ProcKind, ProcOverview, ProjectResources, Resources, SessionResources, State, StopHow, WorkingNote};
 use crate::util;
 
-/// Idle this long with no Konsole tab and no attach client counts as stale.
+/// Idle this long with no terminal window and no attach client counts as stale.
 pub const STALE_IDLE: f64 = 6.0 * 3600.0;
 /// A spare nobody has claimed for this long counts as stale.
 pub const STALE_SPARE: f64 = 3600.0;
@@ -272,7 +272,7 @@ pub struct Inputs<'a> {
     /// sessionId -> live info, from ~/.claude/sessions.
     pub live: &'a HashMap<String, LiveInfo>,
     pub view: &'a dyn Fn(&LiveInfo) -> SessionView,
-    /// (pid, job id) -> Konsole tab.
+    /// (pid, job id) -> the terminal window showing it.
     pub locate: &'a dyn Fn(u32, Option<&str>) -> Option<Location>,
     /// pids with an agent-notify note (alive or not) and their notes.
     pub notes: &'a HashMap<u32, WorkingNote>,
@@ -467,7 +467,7 @@ impl Explorer {
         let age = |c: &Cand| inp.now - started(c.p);
         // Only a session Claude's daemon hosts, or one left behind with init (or the user's systemd)
         // as its parent, can be stale. Anything another program started (an editor, a script, a
-        // terminal other than Konsole) belongs to that program, and so do headless runs.
+        // terminal multiplexer) belongs to that program, and so do headless runs.
         let can_be_stale = |c: &Cand| {
             if is_headless(&c.p.argv) {
                 return false;
@@ -555,7 +555,7 @@ impl Explorer {
                         // Unknown is not the same as stale: a stray is listed, never counted as stale.
                         let mut r = mk(c, ProcKind::Stray);
                         r.state = State::Unknown;
-                        r.title = Some(if is_headless(&c.p.argv) { "Started by another program (not a session)".into() } else { "Not tied to any session, Konsole tab or status file".into() });
+                        r.title = Some(if is_headless(&c.p.argv) { "Started by another program (not a session)".into() } else { "Not tied to any session, terminal window or status file".into() });
                         let mut group = vec![];
                         fold(&mut r, &hosts_of(c.p.pid), &mut group);
                         group.insert(0, r);
@@ -585,13 +585,12 @@ impl Explorer {
                         fold(&mut r, &extra, &mut group);
                         let idle = r.idle_seconds.unwrap_or(0) as f64;
                         if idle > STALE_IDLE && location.is_none() && !attached && can_be_stale(c) {
-                            r.stale_reason = Some(format!("idle for {}, with no Konsole tab and nothing attached", util::ago(Some(idle))));
+                            r.stale_reason = Some(format!("idle for {}, with no terminal window and nothing attached", util::ago(Some(idle))));
                         }
                         group.insert(0, r);
                         sessions.push(group);
                     } else {
                         r.session_id = codex_sid;
-                        r.title = location.as_ref().map(|l| l.tab_title.clone());
                         r.state = State::Unknown;
                         let mut group = Vec::new();
                         fold(&mut r, &hosts_of(c.p.pid), &mut group);
@@ -833,6 +832,41 @@ pub fn codex_session_of(root: &Path, pid: u32) -> Option<String> {
     None
 }
 
+// ------------------------------------------------------------------ which terminal shows it
+
+/// The pseudo-terminal a process reads from: N for `/dev/pts/N` on its standard input.
+pub fn pts_of(root: &Path, pid: u32) -> Option<u32> {
+    let link = fs::read_link(root.join(pid.to_string()).join("fd/0")).ok()?;
+    link.to_str()?.strip_prefix("/dev/pts/")?.parse().ok()
+}
+
+/// Every pseudo-terminal's other end, by its number N (`/dev/pts/N`): the processes that opened it
+/// from `/dev/ptmx`, as the kernel's `tty-index` says. That is the terminal app drawing it
+/// (whichever it is, a Flatpak's too) or a program in between (tmux, Claude's
+/// background host). Read only: a process's open files are listed, never opened.
+pub fn pty_masters(root: &Path) -> HashMap<u32, Vec<u32>> {
+    let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
+    let Ok(rd) = fs::read_dir(root) else { return out };
+    for e in rd.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|x| x.parse::<u32>().ok()) else { continue };
+        let Ok(fds) = fs::read_dir(e.path().join("fd")) else { continue };
+        for fd in fds.flatten() {
+            if !fs::read_link(fd.path()).is_ok_and(|l| l == Path::new("/dev/ptmx") || l == Path::new("/dev/pts/ptmx")) {
+                continue;
+            }
+            let info = fs::read_to_string(e.path().join("fdinfo").join(fd.file_name())).unwrap_or_default();
+            if let Some(n) = info.lines().find_map(|l| l.strip_prefix("tty-index:")).and_then(|n| n.trim().parse().ok()) {
+                let v = out.entry(n).or_default();
+                if !v.contains(&pid) {
+                    v.push(pid);
+                }
+            }
+        }
+    }
+    out.values_mut().for_each(|v| v.sort_unstable());
+    out
+}
+
 // ------------------------------------------------------------------ stopping
 
 /// Does the real work of stopping; tests use a fake.
@@ -958,6 +992,36 @@ pub(crate) mod tests {
     use super::*;
     use crate::desktop::tests::TmpDir;
 
+    #[test]
+    fn the_terminal_showing_a_process_is_whoever_holds_its_pty() {
+        use std::os::unix::fs::symlink;
+        let dir = TmpDir::new("ptys");
+        let root = dir.0.as_path();
+        let fd = |pid: u32, n: u32, to: &str, info: Option<&str>| {
+            fs::create_dir_all(root.join(format!("{pid}/fd"))).unwrap();
+            fs::create_dir_all(root.join(format!("{pid}/fdinfo"))).unwrap();
+            symlink(to, root.join(format!("{pid}/fd/{n}"))).unwrap();
+            if let Some(i) = info {
+                fs::write(root.join(format!("{pid}/fdinfo/{n}")), format!("pos:\t0\nflags:\t0100002\nmnt_id:\t30\nino:\t2\n{i}")).unwrap();
+            }
+        };
+        // The agent reads /dev/pts/7; a terminal app (in a Flatpak, say) holds its other end; another terminal
+        // holds pts 17, and a program has ptmx open with no index.
+        fd(500, 0, "/dev/pts/7", None);
+        fd(300, 4, "/dev/null", None);
+        fd(300, 19, "/dev/ptmx", Some("tty-index:\t7\n"));
+        fd(301, 8, "/dev/pts/ptmx", Some("tty-index:\t17\n"));
+        fd(302, 3, "/dev/ptmx", Some(""));
+        fd(600, 0, "pipe:[1234]", None);
+        assert_eq!(pts_of(root, 500), Some(7));
+        assert_eq!(pts_of(root, 600), None, "not on a terminal");
+        assert_eq!(pts_of(root, 999), None, "gone");
+        let m = pty_masters(root);
+        assert_eq!(m.get(&7), Some(&vec![300]));
+        assert_eq!(m.get(&17), Some(&vec![301]));
+        assert_eq!(m.len(), 2, "an open ptmx with no index names no terminal");
+    }
+
     /// A fake /proc with this user's uid.
     pub struct FakeProc {
         pub dir: TmpDir,
@@ -1020,7 +1084,7 @@ pub(crate) mod tests {
         };
         let (c_claim, d_claim) = (claim("c.claim.sock"), claim("d.claim.sock"));
         fp.add(100, 1, &[V, "daemon", "run", "--origin", "transient"], V, 100_000, 50, st(86400.0), uid);
-        // session A: used, idle 10 h, attached from a Konsole tab
+        // session A: used, idle 10 h, attached from a terminal window
         fp.add(200, 100, &["claude", "bg-pty-host", "--bg-pty-host", "/tmp/s.sock", "--", V, "--bg-spare"], V, 40_000, 5, st(36000.0), uid);
         fp.add(201, 200, &["claude", "bg-spare", "--bg-spare", "/tmp/a.claim.sock"], V, 300_000, 900, st(36000.0), uid);
         fp.add(300, 299, &["claude", "attach", "jobA"], "/home/u/.local/share/claude/versions/2.1.327", 70_000, 10, st(36000.0), uid);
@@ -1075,13 +1139,7 @@ pub(crate) mod tests {
             idle_since: if i.status.as_deref() == Some("idle") { i.status_updated_at } else { None },
             used: i.session_id != "sess-B",
         };
-        let locate = |pid: u32, job: Option<&str>| -> Option<Location> {
-            if pid == 400 || pid == 600 || job == Some("jobA") {
-                Some(Location { konsole_pid: 3264, service: "org.kde.konsole-3264".into(), window: 1, session: pid, tab_index: 0, tab_title: format!("tab {pid}"), label: None })
-            } else {
-                None
-            }
-        };
+        let locate = |pid: u32, job: Option<&str>| -> Option<Location> { if pid == 400 || pid == 600 || job == Some("jobA") { Some(Location { pid: 3264, app: Some("Term".into()) }) } else { None } };
         let mut notes = HashMap::new();
         notes.insert(201, WorkingNote { name: "claude: alpha".into(), idle: true, helpers: vec![] });
         notes.insert(4242, WorkingNote { name: "claude: gone".into(), idle: true, helpers: vec![] });
@@ -1234,7 +1292,7 @@ pub(crate) mod tests {
         assert_eq!(a(&["codex"], Some("/u/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/codex/codex")), Some(Agent::Codex));
         assert_eq!(a(&["codex-x86_64-unknown-linux-musl"], Some("/u/vendor/codex-x86_64-unknown-linux-musl")), Some(Agent::Codex));
         assert_eq!(a(&["codex", "resume", "y"], Some("/home/u/.cargo/bin/codex")), Some(Agent::Codex));
-        assert_eq!(a(&["konsole", "-e", "zsh", "-c", "claude attach x"], Some("/usr/bin/konsole")), None);
+        assert_eq!(a(&["some-terminal", "-e", "zsh", "-c", "claude attach x"], Some("/usr/bin/some-terminal")), None);
         assert_eq!(a(&["node", "server.js"], Some("/usr/bin/node")), None);
         assert_eq!(a(&["agent-notify", "keep", "claude"], Some("/x/agent-notify")), None);
         // look-alikes: a word in a path is not enough

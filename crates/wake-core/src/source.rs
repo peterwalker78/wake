@@ -1,13 +1,13 @@
 //! `Live`: the real [`Source`], reading this machine.
 //!
 //! Heavy work runs on Live's own threads once [`Live::start_background`] is called: indexing every
-//! 10 s, Konsole locations every 5 s, git totals every minute. `Source` methods answer from what is
+//! 10 s, where sessions are every 5 s, git totals every minute. `Source` methods answer from what is
 //! ready. The command line uses `Live::new` without threads and calls `index_now` itself.
 //!
-//! Where each session is (which Konsole tab) is decided in one place, [`Inner::refresh_locations`],
-//! from one reading of Konsole and one scan of /proc ([`Desktop::assign`]: a tab goes to at most one
-//! session). Every view, the Agents rows and "go to" read that one map. When Konsole does not answer,
-//! the last map is kept for 15 s and the overview says the locations are unsure.
+//! Where each session is (which terminal window) is decided in one place,
+//! [`Inner::refresh_locations`], from one scan of /proc: the terminal app holding the other end of
+//! an agent's pty shows it, whichever app that is. Every view and the Agents rows read that one
+//! map; "go to" and hold-to-peek work it out afresh for their one session.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,36 +33,42 @@ pub const RECENT_DAYS: f64 = 14.0;
 const INDEX_EVERY: Duration = Duration::from_secs(10);
 const SIDE_EVERY: Duration = Duration::from_secs(5);
 const CARD_EVERY: f64 = 15.0;
-/// When Konsole stops answering, keep showing the tabs last seen for this long.
-const KEEP_LOCATIONS: Duration = Duration::from_secs(15);
 
 /// How a `Live` reaches the machine. Tests swap in fakes.
 pub struct LiveConfig {
     pub paths: Paths,
     pub proc_root: PathBuf,
-    /// Runs qdbus-qt6 / gdbus for the desktop part.
+    /// Runs gdbus (and qdbus for KWin) for the desktop part, and `claude logs`.
     pub runner: Runner,
     /// Path to systemd-run, Some("") for none, None to look it up.
     pub systemd_run: Option<String>,
     pub actor: Arc<dyn Actor>,
+    /// How new windows open in the default terminal app (`desktop::terminal_launcher`); None
+    /// when the system names none.
+    pub terminal: Option<Vec<String>>,
 }
 
 impl LiveConfig {
     pub fn real() -> LiveConfig {
-        LiveConfig { paths: Paths::from_env(), proc_root: PathBuf::from("/proc"), runner: desktop::default_runner(), systemd_run: None, actor: Arc::new(RealActor { root: PathBuf::from("/proc") }) }
+        LiveConfig {
+            paths: Paths::from_env(),
+            proc_root: PathBuf::from("/proc"),
+            runner: desktop::default_runner(),
+            systemd_run: None,
+            actor: Arc::new(RealActor { root: PathBuf::from("/proc") }),
+            terminal: desktop::terminal_launcher(),
+        }
     }
 }
 
 type LiveMap = Arc<HashMap<String, LiveInfo>>;
 
-/// Which agent process is in which Konsole tab (by owner pid), and how sure Wake is of it.
+/// Which terminal window shows which agent process (by owner pid), as last worked out.
 #[derive(Default)]
 struct Locations {
     map: HashMap<u32, Location>,
-    /// When Konsole was last read successfully.
+    /// When they were last worked out; None until the first time.
     ok_at: Option<Instant>,
-    /// Why the last reading failed, if it did.
-    failing: Option<String>,
 }
 
 struct Inner {
@@ -80,7 +86,7 @@ struct Inner {
     stop: AtomicBool,
     background: AtomicBool,
     plugin: Mutex<(Option<Instant>, Option<f64>)>,
-    /// Runs read-only commands for `screen` (Konsole's text, `claude logs`).
+    /// Runs read-only commands for `screen` (`claude logs`).
     runner: Runner,
     look: Look,
     screens: ScreenCache,
@@ -152,7 +158,7 @@ impl Live {
         Live {
             inner: Arc::new(Inner {
                 indexer: Indexer::new(cfg.paths.clone()),
-                desktop: Desktop::new(cfg.runner.clone(), &cfg.proc_root, cfg.systemd_run.as_deref()),
+                desktop: Desktop::new(cfg.runner.clone(), &cfg.proc_root, cfg.systemd_run.as_deref()).with_launcher(cfg.terminal.clone()),
                 look: Look::new(cfg.runner.clone(), &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(), cfg.paths.data.join("kwin"), std::process::id(), true),
                 runner: cfg.runner.clone(),
                 screens: ScreenCache::default(),
@@ -187,7 +193,7 @@ impl Live {
         l
     }
 
-    /// Index, Konsole and git threads. They stop when this `Live` is dropped.
+    /// Index, windows and git threads. They stop when this `Live` is dropped.
     pub fn start_background(&self) {
         if self.inner.background.swap(true, Ordering::SeqCst) {
             return;
@@ -221,7 +227,7 @@ impl Live {
                     // "background" while git runs; then git (milliseconds per project; an unchecked
                     // project would read as "all on GitHub"), then locations every pass.
                     if first {
-                        b.refresh_locations(false);
+                        b.refresh_locations();
                     }
                     if last_git.is_none_or(|t| t.elapsed().as_secs_f64() > gitinfo::CACHE_SECONDS) {
                         last_git = Some(Instant::now());
@@ -237,7 +243,7 @@ impl Live {
                     // Behind the remote: notice building starting in a project that is behind.
                     b.watch_behind();
                     if !first {
-                        b.refresh_locations(false);
+                        b.refresh_locations();
                     }
                 }));
                 first = false;
@@ -245,9 +251,9 @@ impl Live {
                 if let Err(e) = &r
                     && cur.is_none()
                 {
-                    log::note_error(&b.paths, "Checking git and Konsole tabs", &panic_text(e));
+                    log::note_error(&b.paths, "Checking git and where sessions are", &panic_text(e));
                 }
-                *cur = r.err().map(|_| "Checking git and Konsole tabs failed once; Wake keeps trying.".to_string());
+                *cur = r.err().map(|_| "Checking git and where sessions are failed once; Wake keeps trying.".to_string());
                 drop(cur);
                 wait(&b.stop, SIDE_EVERY);
             }
@@ -337,9 +343,9 @@ impl Live {
         self.inner.disk_report(&sessions)
     }
 
-    /// Place every agent process in a Konsole tab now (reading Konsole afresh).
+    /// Place every agent process in its terminal window now.
     pub fn refresh_locations(&self) {
-        self.inner.refresh_locations(true);
+        self.inner.refresh_locations();
     }
 
     /// The Slipstream plugin bridge; call it about once a second. Writes card/card.json every 15 s
@@ -435,15 +441,12 @@ impl Inner {
         data
     }
 
-    /// Every agent process that could be in a tab, with whom a tab showing it is credited to: an
-    /// attach client's tab goes to the session it attaches to.
-    fn placees(&self) -> Vec<Placee> {
-        let infos = self.live();
-        self.explorer
-            .scan()
-            .into_iter()
+    /// Every agent process that could be in a window, with whom a window showing it is credited
+    /// to: an attach client's goes to the session it attaches to.
+    fn placees(&self, all: &[procs::ProcInfo], infos: &HashMap<String, LiveInfo>) -> Vec<Placee> {
+        all.iter()
             .filter_map(|p| {
-                let agent = procs::identify(&p, &infos)?;
+                let agent = procs::identify(p, infos)?;
                 let role = if agent == Agent::Claude { procs::role_of(&p.argv) } else { procs::Role::Main };
                 let owner = match role {
                     procs::Role::Daemon | procs::Role::PtyHost => return None,
@@ -455,32 +458,72 @@ impl Inner {
             .collect()
     }
 
-    /// The one place locations are decided (see the module doc).
-    fn refresh_locations(&self, fresh: bool) {
-        match self.desktop.tabs(fresh) {
-            Ok(tabs) => {
-                let map = if tabs.is_empty() { HashMap::new() } else { self.desktop.assign(&tabs, &self.placees()) };
-                *self.locations.write().unwrap_or_else(|e| e.into_inner()) = Locations { map, ok_at: Some(Instant::now()), failing: None };
-            }
-            Err(why) => {
-                let mut l = self.locations.write().unwrap_or_else(|e| e.into_inner());
-                if l.ok_at.is_none_or(|t| t.elapsed() > KEEP_LOCATIONS) {
-                    l.map.clear();
-                }
-                l.failing = Some(why);
+    /// The terminal window process `pid` reads its terminal from: the terminal app holding the
+    /// other end of its pty, never an agent (a background session's own host).
+    fn window_of(&self, pid: u32, agents: &[u32], masters: &HashMap<u32, Vec<u32>>) -> Option<Location> {
+        let n = procs::pts_of(&self.proc_root, pid)?;
+        let holder = *masters.get(&n)?.iter().find(|h| !agents.contains(h))?;
+        Some(self.desktop.window(holder))
+    }
+
+    /// The window a Claude dashboard (`claude agents`) shows session `info` in. A dashboard shows
+    /// one session at a time inside one process, and nothing outside it says which; but a session's
+    /// terminal takes the size of the window showing it. Newest dashboard first when two fit.
+    fn dashboard_of(&self, info: &LiveInfo, all: &[procs::ProcInfo], agents: &[u32], masters: &HashMap<u32, Vec<u32>>) -> Option<Location> {
+        let size = crate::vt::term_size(info.pid)?;
+        let mut fits: Vec<u32> =
+            all.iter().filter(|p| agents.contains(&p.pid) && p.argv.get(1).map(String::as_str) == Some("agents") && crate::vt::term_size(p.pid) == Some(size)).map(|p| p.pid).collect();
+        fits.sort_unstable_by(|a, b| b.cmp(a));
+        fits.into_iter().find_map(|pid| self.window_of(pid, agents, masters))
+    }
+
+    /// The terminal window showing a live session, worked out now: an attach client's (for a
+    /// background session), its own, or a dashboard's that has it open.
+    fn find_window(&self, info: &LiveInfo) -> Option<Location> {
+        let infos = self.live();
+        let all = self.explorer.scan();
+        let masters = procs::pty_masters(&self.proc_root);
+        let agents: Vec<u32> = all.iter().filter(|p| procs::identify(p, &infos).is_some()).map(|p| p.pid).collect();
+        let attach = self.placees(&all, &infos).into_iter().filter(|p| p.owner == info.pid && p.pid != info.pid).map(|p| p.pid);
+        attach.chain([info.pid]).find_map(|pid| self.window_of(pid, &agents, &masters)).or_else(|| self.dashboard_of(info, &all, &agents, &masters))
+    }
+
+    /// The one place locations are decided (see the module doc): which terminal window shows each
+    /// agent process (the Agents view's Where), and each live session (an attach client's window
+    /// is its session's), read from /proc. Works with any terminal app.
+    fn refresh_locations(&self) {
+        let infos = self.live();
+        let all = self.explorer.scan();
+        let masters = procs::pty_masters(&self.proc_root);
+        let agents: Vec<u32> = all.iter().filter(|p| procs::identify(p, &infos).is_some()).map(|p| p.pid).collect();
+        let mut map: HashMap<u32, Location> = HashMap::new();
+        let mut placees = self.placees(&all, &infos);
+        // A session's own terminal before an attach client's.
+        placees.sort_by_key(|p| (p.pid != p.owner, p.pid));
+        for p in placees {
+            if let Some(loc) = self.window_of(p.pid, &agents, &masters) {
+                map.entry(p.owner).or_insert_with(|| loc.clone());
+                map.entry(p.pid).or_insert(loc);
             }
         }
+        let unplaced: Vec<&LiveInfo> = infos.values().filter(|i| i.alive && !map.contains_key(&i.pid)).collect();
+        for i in unplaced {
+            if let Some(loc) = self.dashboard_of(i, &all, &agents, &masters) {
+                map.insert(i.pid, loc);
+            }
+        }
+        *self.locations.write().unwrap_or_else(|e| e.into_inner()) = Locations { map, ok_at: Some(Instant::now()) };
     }
 
     /// In the background the side thread keeps locations fresh; without it (the command line, tests
-    /// that never start it) read them now when they are older than Konsole's own 2 s cache.
+    /// that never start it) work them out now when they are more than a couple of seconds old.
     fn locations_now(&self) {
         if self.background.load(Ordering::SeqCst) {
             return;
         }
-        let stale = self.locations.read().unwrap_or_else(|e| e.into_inner()).ok_at.is_none_or(|t| t.elapsed().as_secs_f64() > desktop::CACHE_SECS);
+        let stale = self.locations.read().unwrap_or_else(|e| e.into_inner()).ok_at.is_none_or(|t| t.elapsed().as_secs_f64() > 2.0);
         if stale {
-            self.refresh_locations(false);
+            self.refresh_locations();
         }
     }
 
@@ -488,15 +531,10 @@ impl Inner {
         self.locations.read().unwrap_or_else(|e| e.into_inner()).map.get(&pid).cloned()
     }
 
-    /// Why the locations shown may be wrong, or None when they are current.
+    /// Why the locations shown may be wrong: only before they are first worked out.
     fn locations_unsure(&self) -> Option<String> {
         let l = self.locations.read().unwrap_or_else(|e| e.into_inner());
-        match (&l.failing, l.ok_at) {
-            (None, Some(_)) => None,
-            (None, None) => Some("Wake is still finding which Konsole tab each session is in.".into()),
-            (Some(why), Some(at)) if !l.map.is_empty() => Some(format!("{why} Showing the tabs seen {} ago.", util::ago(Some(at.elapsed().as_secs_f64())))),
-            (Some(why), _) => Some(why.clone()),
-        }
+        l.ok_at.is_none().then(|| "Wake is still finding which window each session is in.".to_string())
     }
 
     fn summary(&self, acc: &Acc, projects: &[ProjectRec], infos: &HashMap<String, LiveInfo>, now: f64, counts: bool) -> SessionSummary {
@@ -1151,16 +1189,9 @@ impl Source for Live {
         let i = &self.inner;
         let infos = i.live();
         let info = infos.get(session).filter(|x| x.alive)?.clone();
-        // The one tab assignment every view uses; without one, a background job's logs.
-        let loc = i.location(info.pid);
-        if loc.is_none() && info.job_id.is_none() {
-            return None;
-        }
-        Some(i.screens.get_or(session, || match (&loc, &info.job_id) {
-            (Some(l), _) => look::read_konsole(&i.runner, l),
-            (None, Some(job)) => look::read_logs(&i.runner, job, crate::vt::term_size(info.pid)),
-            (None, None) => unreachable!(),
-        }))
+        // A background session's recent output; a terminal app's own screen can't be read.
+        let job = info.job_id.clone()?;
+        Some(i.screens.get_or(session, || look::read_logs(&i.runner, &job, crate::vt::term_size(info.pid))))
     }
 
     fn agent_choices(&self) -> Vec<brief::Agent> {
@@ -1191,8 +1222,19 @@ impl Source for Live {
     fn look_start(&self, session: &str, dry_run: bool) -> ActionResult {
         let i = &self.inner;
         let infos = i.live();
-        let loc = infos.get(session).filter(|x| x.alive).and_then(|info| i.location(info.pid));
-        i.look.start(loc.as_ref(), dry_run)
+        let Some(info) = infos.get(session).filter(|x| x.alive) else {
+            return i.look.start(None, dry_run);
+        };
+        // The window showing it, worked out now (it may have moved since the last pass).
+        let Some(loc) = i.find_window(info) else {
+            return i.look.start(None, dry_run);
+        };
+        let mut r = i.look.start(Some(&loc), dry_run);
+        if !r.ok {
+            // The terminal is there but no window holds it (tmux, say): the preview, quietly.
+            r.message = "This agent's terminal has no window to go to; showing a preview.".into();
+        }
+        r
     }
 
     fn look_end(&self, stay: bool, dry_run: bool) -> ActionResult {
@@ -1348,15 +1390,11 @@ impl Live {
             return fail(&format!("Couldn't save the brief: {}", e.0));
         }
         let mut steps = vec![format!("write {}", path.display())];
-        let (mut r, konsole) = i.desktop.start_typed(root, &cmd, &briefs, dry_run);
+        let mut r = i.desktop.start_typed(root, &cmd, &briefs, dry_run);
         steps.append(&mut r.steps);
         r.steps = steps;
         if !r.ok {
             return r;
-        }
-        if let Some(k) = konsole {
-            let b = i.look.bring(k, dry_run);
-            r.steps.extend(b.steps);
         }
         if !dry_run && let Err(e) = i.store.mark_sent(&req.ideas, &p.id, Some(&req.id)) {
             r.message = format!("{} (Wake couldn't mark the ideas as sent: {})", r.message, e.0);
@@ -1364,7 +1402,7 @@ impl Live {
         }
         let pre = if dry_run { "Dry run. " } else { "" };
         r.message = format!(
-            "{pre}{} is starting in a new Konsole window in {}.",
+            "{pre}{} is starting in a new terminal window in {}.",
             agent.label(),
             match std::path::Path::new(root).strip_prefix(&i.paths.home) {
                 Ok(rest) => format!("~/{}", rest.display()),
@@ -1421,42 +1459,34 @@ impl Live {
         let projects = i.store.load_projects();
         let acc = i.indexer.get_lite(session);
         if let Some(info) = info.filter(|x| x.alive) {
-            // The shared map; if it has no tab for this session, read Konsole afresh before deciding
-            // the session is in the background (a second attach is worse than a short wait).
-            let loc = i.location(info.pid).or_else(|| {
-                i.refresh_locations(true);
-                i.location(info.pid)
-            });
+            // Worked out now, not from the last pass: a second attach is worse than a short wait.
+            let loc = i.find_window(info);
             let title = i.title_for(session, Some(info), &projects);
             let target = format!("'{title}' (PID {})", info.pid);
-            if loc.is_none()
-                && let Some(job) = &info.job_id
-            {
-                // A background session no tab shows: a new Konsole window attached to it.
+            let Some(loc) = loc else {
+                let Some(job) = &info.job_id else {
+                    return (fail(&format!("Wake can't tell which window {title} is in. It may be inside another program, such as tmux.")), "go to", target);
+                };
+                // A background session no window shows: a new window attached to it.
                 let cmd = format!("claude attach {job}");
                 let cwd = info.cwd.clone().or_else(|| acc.as_ref().and_then(|a| a.launch_cwd.clone()));
-                let (mut r, konsole) = i.desktop.reopen_at(cwd.as_deref(), &cmd, dry_run);
-                if let Some(k) = konsole {
-                    let b = i.look.bring(k, dry_run);
-                    r.steps.extend(b.steps);
-                }
+                let mut r = i.desktop.reopen(cwd.as_deref(), &cmd, dry_run);
                 if r.ok {
                     let pre = if dry_run { "Dry run. " } else { "" };
-                    r.message = format!("{pre}{title} runs in the background. Opened it in a new Konsole window ({cmd}).");
+                    r.message = format!("{pre}{title} runs in the background. Opened it in a new terminal window ({cmd}).");
                 }
                 return (r, "reopen", target);
-            }
-            let mut r = i.desktop.jump(loc.as_ref(), &title, dry_run);
-            if r.ok
-                && let Some(l) = &loc
-            {
-                // Then straight to the window, by the desktop's own means; never a notification.
-                let b = i.look.bring(l.konsole_pid, dry_run);
-                r.steps.extend(b.steps);
-                if b.ok && !dry_run {
-                    r.message = format!("Went to {title} ({}).", l.label.clone().unwrap_or_else(|| l.tab_title.clone()));
-                }
-            }
+            };
+            // Straight to the window, by the desktop's own means; never a notification.
+            let window = loc.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"));
+            let b = i.look.bring(loc.pid, dry_run);
+            let r = if b.ok {
+                let pre = if dry_run { "Dry run. " } else { "" };
+                ActionResult { ok: true, message: format!("{pre}Went to {title}, in {window}."), steps: b.steps }
+            } else {
+                // No desktop link (Wayland lets no app raise another's window): say where it is.
+                ActionResult { ok: false, message: format!("{title} is in {window}. This desktop doesn't let Wake bring it forward, so switch to it yourself."), steps: b.steps }
+            };
             return (r, "go to", target);
         }
         let Some(acc) = acc else {
@@ -1464,10 +1494,7 @@ impl Live {
         };
         let cmd = info.and_then(|x| x.resume_command.clone()).unwrap_or_else(|| if acc.agent == "codex" { format!("codex resume {session}") } else { format!("claude --resume {session}") });
         let cwd = acc.launch_cwd.clone().or_else(|| info.and_then(|x| x.cwd.clone()));
-        let (mut r, konsole) = i.desktop.reopen_at(cwd.as_deref(), &cmd, dry_run);
-        if let Some(k) = konsole {
-            r.steps.extend(i.look.bring(k, dry_run).steps);
-        }
+        let r = i.desktop.reopen(cwd.as_deref(), &cmd, dry_run);
         let title = i.title_for(session, info, &projects);
         let target = match &cwd {
             Some(c) => format!("'{title}' in {}", tilde(c, &i.paths.home)),
@@ -1629,23 +1656,72 @@ impl Inner {
 
 #[cfg(test)]
 mod tests {
+    /// On this machine, read only: where a peek at each live session would fly (a dry run, so
+    /// nothing moves). `cargo test -p wake-core real_peek_targets -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_peek_targets() {
+        let l = Live::new(LiveConfig::real());
+        l.inner.refresh_locations();
+        for (id, info) in l.inner.live().iter().filter(|(_, i)| i.alive) {
+            let r = l.look_start(id, true);
+            let pid = r.steps.iter().find_map(|s| s.rsplit(' ').next().filter(|_| s.contains(".Start")).map(str::to_string));
+            let what = pid.as_deref().and_then(|p| std::fs::read_to_string(format!("/proc/{p}/comm")).ok()).unwrap_or_default();
+            println!("{} pid {} job {:?}: ok {} -> {:?} {} | {}", &id[..8], info.pid, info.job_id, r.ok, pid, what.trim(), r.message);
+        }
+    }
+
     use super::*;
-    use crate::desktop::tests::{FakeBus, konsoles};
-    use crate::procs::tests::FakeActor;
+    use crate::desktop::tests::{FakeBus, launcher};
+    use crate::procs::tests::{FakeActor, FakeProc};
     use crate::store::testenv::Env;
     use std::fs;
 
-    fn make(env: &Env, bus: &FakeBus) -> (Live, Arc<FakeActor>) {
+    /// When the fake session process (this test's pid) started, in clock ticks.
+    const START: u64 = 777;
+
+    /// A fake /proc holding the session process (this test's pid), so nothing reads the real
+    /// desktop: not even the terminal the tests run in.
+    fn fake_proc() -> FakeProc {
+        let fp = FakeProc::new();
+        fp.add(std::process::id(), 1, &["/usr/bin/claude"], "/usr/bin/claude", 1000, 1, START, procs::my_uid());
+        fp
+    }
+
+    fn live_with(env: &Env, fp: &FakeProc, runner: Runner, actor: Arc<FakeActor>) -> Live {
+        Live::new(LiveConfig { paths: env.paths.clone(), proc_root: fp.root().to_path_buf(), runner, systemd_run: Some(String::new()), actor, terminal: Some(launcher()) })
+    }
+
+    fn make(env: &Env, bus: &FakeBus) -> (Live, Arc<FakeActor>, FakeProc) {
+        let fp = fake_proc();
         let actor = Arc::new(FakeActor { calls: Mutex::new(vec![]) });
-        let l = Live::new(LiveConfig { paths: env.paths.clone(), proc_root: PathBuf::from("/proc"), runner: bus.runner(), systemd_run: Some(String::new()), actor: actor.clone() });
+        let l = live_with(env, &fp, bus.runner(), actor.clone());
         l.index_now();
-        (l, actor)
+        (l, actor, fp)
+    }
+
+    /// Process `pid` reads its terminal from /dev/pts/`n`, whose other end terminal app `term`
+    /// holds (a fake /proc's fd and fdinfo entries).
+    fn in_window(fp: &FakeProc, pid: u32, n: u32, term: u32) {
+        let root = fp.root();
+        fs::create_dir_all(root.join(format!("{pid}/fd"))).unwrap();
+        let _ = fs::remove_file(root.join(format!("{pid}/fd/0")));
+        std::os::unix::fs::symlink(format!("/dev/pts/{n}"), root.join(format!("{pid}/fd/0"))).unwrap();
+        if !root.join(term.to_string()).exists() {
+            fp.add(term, 1, &["/usr/bin/some-terminal"], "/usr/bin/some-terminal", 1000, 1, 5, procs::my_uid());
+        }
+        fs::create_dir_all(root.join(format!("{term}/fd"))).unwrap();
+        fs::create_dir_all(root.join(format!("{term}/fdinfo"))).unwrap();
+        let fd = 100 + n;
+        let _ = fs::remove_file(root.join(format!("{term}/fd/{fd}")));
+        std::os::unix::fs::symlink("/dev/ptmx", root.join(format!("{term}/fd/{fd}"))).unwrap();
+        fs::write(root.join(format!("{term}/fdinfo/{fd}")), format!("pos:\t0\nflags:\t02\ntty-index:\t{n}\n")).unwrap();
     }
 
     fn write_session(env: &Env, sid: &str, extra: Value) {
         let pid = std::process::id();
         let mut rec = serde_json::json!({"pid": pid, "sessionId": sid, "status": "idle",
-            "procStart": live::proc_start(Path::new("/proc"), pid)});
+            "procStart": START.to_string()});
         if let (Some(o), Some(e)) = (rec.as_object_mut(), extra.as_object()) {
             for (k, v) in e {
                 o.insert(k.clone(), v.clone());
@@ -1657,7 +1733,7 @@ mod tests {
     #[test]
     fn overview_shape() {
         let env = Env::new();
-        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let (l, _, _fp) = make(&env, &FakeBus::new());
         let o = l.overview();
         assert_eq!(o.indexing.done, o.indexing.total);
         // the fixtures are dated 2026-11-19; recent while the tests run near then, so check by id
@@ -1679,7 +1755,7 @@ mod tests {
     #[test]
     fn last_summary_comes_from_the_newest_recap() {
         let env = Env::new();
-        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let (l, _, _fp) = make(&env, &FakeBus::new());
         let projects = l.inner.store.load_projects();
         let all = l.inner.all_summaries(&projects, false);
         let alpha = store::project_by_id("alpha", &projects).unwrap();
@@ -1691,7 +1767,7 @@ mod tests {
     #[test]
     fn session_subagent_search() {
         let env = Env::new();
-        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let (l, _, _fp) = make(&env, &FakeBus::new());
         let d = l.session("sess-aaaa").unwrap();
         assert!(d.transcript.as_deref().is_some_and(|t| t.ends_with("/projects/-home/sess-aaaa.jsonl")), "{:?}", d.transcript);
         assert_eq!(d.subagents.len(), 2);
@@ -1707,7 +1783,7 @@ mod tests {
     #[test]
     fn ideas_pause_projects() {
         let env = Env::new();
-        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let (l, _, _fp) = make(&env, &FakeBus::new());
         let i = l.add_idea("try a dark theme", Some("alpha")).unwrap();
         assert_eq!((i.project_name.as_deref(), i.state.as_str()), (Some("alpha"), "inbox"));
         assert_eq!(l.set_idea(&i.id, Some("done"), None).unwrap().state, "done");
@@ -1739,8 +1815,8 @@ mod tests {
     #[test]
     fn starting_an_agent_writes_the_brief_types_the_command_and_marks_the_ideas_sent() {
         let env = Env::new();
-        let bus = FakeBus::new(konsoles());
-        let (l, _) = make(&env, &bus);
+        let bus = FakeBus::new();
+        let (l, _, _fp) = make(&env, &bus);
         let a = l.add_idea("say \"hi\" for $5 `now`", Some("alpha")).unwrap();
         let b = l.add_idea("second", Some("alpha")).unwrap();
         let other = l.add_idea("elsewhere", Some("beta")).unwrap();
@@ -1769,9 +1845,8 @@ mod tests {
         let started: Vec<Vec<String>> = bus.writes().into_iter().filter(|c| c[0] == "setsid").collect();
         assert_eq!(started.len(), 1);
         let alpha = env.paths.projects.join("alpha").to_string_lossy().to_string();
-        assert_eq!(started[0][4], alpha, "the window opens in the project's folder");
-        assert!(started[0][8].starts_with(&format!("{cmd}; exec ")), "{:?}", started[0]);
-        assert!(!bus.writes().iter().flatten().any(|x| x == "sendText"), "nothing typed into a terminal");
+        assert_eq!(started[0][2..5], [launcher()[0].as_str(), "/bin/sh", "-c"], "a window of the default terminal app");
+        assert!(started[0][5].contains(&format!("; cd {} && {cmd}; exec ", util::shell_quote(&alpha))), "the window opens in the project's folder: {:?}", started[0]);
         let ideas = l.ideas();
         for x in [&a, &b] {
             let i = ideas.iter().find(|i| i.id == x.id).unwrap();
@@ -1785,41 +1860,60 @@ mod tests {
     }
 
     #[test]
-    fn go_to_jumps_or_reopens() {
+    fn go_to_goes_to_the_window_or_reopens() {
         let env = Env::new();
-        let bus = FakeBus::new(konsoles());
-        let (l, _) = make(&env, &bus);
+        let bus = FakeBus::new();
+        let (l, _, fp) = make(&env, &bus);
         // ended -> reopen in the launch folder with the resume command, dry run
         let r = l.go_to("sess-aaaa", true);
         assert!(r.ok, "{r:?}");
-        assert!(r.steps[0].starts_with("setsid -f konsole --workdir") && r.steps[0].contains("claude --resume sess-aaaa; exec "), "{:?}", r.steps);
+        assert!(r.steps[0].starts_with("setsid -f /usr/bin/xdg-terminal-exec /bin/sh -c") && r.steps[0].contains("claude --resume sess-aaaa; exec "), "{:?}", r.steps);
         assert!(r.steps[0].contains(&env.paths.home.to_string_lossy().to_string()));
         assert!(!l.go_to("nope", true).ok);
-        // live, background, no tab -> a new window running `claude attach <job>`
+        // live, background, no window -> a new window running `claude attach <job>`
         write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01", "cwd": env.paths.home.to_string_lossy()}));
         *lock(&l.inner.live_cache) = None;
         let r = l.go_to("sess-aaaa", true);
         assert!(r.ok, "{r:?}");
-        assert!(r.message.contains("runs in the background"), "{r:?}");
+        assert!(r.message.contains("runs in the background") && r.message.contains("new terminal window"), "{r:?}");
         assert!(r.steps[0].contains("claude attach jobtest01; exec "), "{:?}", r.steps);
-        // live in a known tab -> jump with "project, title"
-        l.inner
-            .locations
-            .write()
-            .unwrap()
-            .map
-            .insert(std::process::id(), Location { konsole_pid: 3264, service: "org.kde.konsole-3264".into(), window: 1, session: 4, tab_index: 1, tab_title: "invites".into(), label: None });
+        // live in a terminal window -> that window; this desktop has no link, so Wake says where
+        in_window(&fp, std::process::id(), 7, 3264);
         let r = l.go_to("sess-aaaa", true);
-        assert!(r.ok, "{r:?}");
-        assert_eq!(r.steps.len(), 1, "select the tab; no notification (this desktop has no link)");
-        assert!(r.message.contains("It's in"), "{}", r.message);
+        assert!(!r.ok && r.message.contains("is in its window") && r.message.contains("switch to it yourself"), "{r:?}");
         assert!(bus.writes().is_empty());
         assert!(log::recent(&env.paths, 5).is_empty(), "a dry run was logged");
-        // a real one (through the fake bus) is logged with the task and its PID
+        // a real one is logged with the task and its PID
         let r = l.go_to("sess-aaaa", false);
         let lines = log::recent(&env.paths, 5);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("  go to  '") && lines[0].contains(&format!("(PID {})  {}", std::process::id(), if r.ok { "ok" } else { "failed" })), "{lines:?}");
+        assert!(!bus.writes().iter().any(|c| c[0] == "setsid"), "never a second window for a session that has one");
+    }
+
+    #[test]
+    fn every_agent_is_placed_in_the_window_of_its_terminal_whatever_the_app() {
+        let env = Env::new();
+        let (l, _, fp) = make(&env, &FakeBus::new());
+        assert!(l.inner.locations_unsure().unwrap().contains("still finding"));
+        l.inner.refresh_locations();
+        assert_eq!(l.inner.locations_unsure(), None);
+        write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01"}));
+        *lock(&l.inner.live_cache) = None;
+        // A background session: its own terminal is its host's (an agent), so no window yet.
+        let host = 5100;
+        fp.add(host, 1, &["/usr/bin/claude", "--bg-pty-host"], "/usr/bin/claude", 1000, 1, 5, procs::my_uid());
+        in_window(&fp, std::process::id(), 3, host);
+        l.inner.refresh_locations();
+        assert_eq!(l.inner.location(std::process::id()), None, "a background host is no window");
+        // Attached in some terminal app: the session is in that app's window.
+        let client = 5200;
+        fp.add(client, 1, &["/usr/bin/claude", "attach", "jobtest01"], "/usr/bin/claude", 1000, 1, 5, procs::my_uid());
+        in_window(&fp, client, 9, 6000);
+        l.inner.refresh_locations();
+        assert_eq!(l.inner.location(std::process::id()).map(|x| x.pid), Some(6000));
+        assert_eq!(l.inner.location(client).map(|x| x.pid), Some(6000), "the client's own row says so too");
+        assert_eq!(l.inner.find_window(&l.inner.live()["sess-aaaa"]).map(|x| x.pid), Some(6000));
     }
 
     #[test]
@@ -1828,9 +1922,9 @@ mod tests {
         let env = Env::new();
         let fp = FakeProc::new();
         fp.add(4321, 1, &["/usr/bin/claude", "--api-key", "sk-SECRET-123", "do the thing"], "/usr/bin/claude", 1000, 1, 100, procs::my_uid());
-        let bus = FakeBus::new(konsoles());
+        let bus = FakeBus::new();
         let actor = Arc::new(FakeActor { calls: Mutex::new(vec![]) });
-        let l = Live::new(LiveConfig { paths: env.paths.clone(), proc_root: fp.root().to_path_buf(), runner: bus.runner(), systemd_run: Some(String::new()), actor: actor.clone() });
+        let l = live_with(&env, &fp, bus.runner(), actor.clone());
         assert!(l.stop(4321, None, StopHow::Kill, true).ok);
         assert!(log::recent(&env.paths, 5).is_empty(), "a dry run was logged");
         let r = l.stop(4321, None, StopHow::Terminate, false);
@@ -1845,43 +1939,35 @@ mod tests {
     }
 
     #[test]
-    fn screen_reads_the_tab_or_the_background_logs_and_never_an_ended_session() {
+    fn screen_reads_the_background_logs_and_never_an_ended_session() {
         let env = Env::new();
-        let bus = FakeBus::new(konsoles());
+        let bus = FakeBus::new();
         let inner = bus.runner();
         let seen: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(vec![]));
         let seen2 = seen.clone();
-        // Konsole's text and `claude logs` are faked here; everything else is the fake bus.
+        // `claude logs` is faked here; everything else is the fake bus.
         let runner: Runner = Arc::new(move |argv: &[String], t: Duration| {
             seen2.lock().unwrap().push(argv.to_vec());
             if argv[0] == "claude" {
                 return (0, "\u{1b}[32mworking on it\u{1b}[0m\n".into());
             }
-            if argv.iter().any(|a| a == "getAllDisplayedText") {
-                return (0, "$ cargo test\nok\n".into());
-            }
             inner(argv, t)
         });
-        let actor = Arc::new(FakeActor { calls: Mutex::new(vec![]) });
-        let l = Live::new(LiveConfig { paths: env.paths.clone(), proc_root: PathBuf::from("/proc"), runner, systemd_run: Some(String::new()), actor });
+        let fp = fake_proc();
+        let l = live_with(&env, &fp, runner, Arc::new(FakeActor { calls: Mutex::new(vec![]) }));
         l.index_now();
         assert_eq!(l.screen("sess-aaaa"), None, "an ended session has no screen");
+        write_session(&env, "sess-aaaa", serde_json::json!({}));
+        *lock(&l.inner.live_cache) = None;
+        assert_eq!(l.screen("sess-aaaa"), None, "a terminal app's own screen can't be read");
         write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01"}));
         *lock(&l.inner.live_cache) = None;
-        l.inner.locations.write().unwrap().ok_at = Some(Instant::now());
         let s = l.screen("sess-aaaa").unwrap();
         assert_eq!(s.lines, vec!["working on it"]);
         assert_eq!(s.source, "claude logs");
         assert_eq!(l.screen("sess-aaaa").unwrap(), s, "a second poll within 250 ms shares the read");
-        assert_eq!(seen.lock().unwrap().iter().filter(|c| c[0] == "claude").count(), 1);
-        l.inner.locations.write().unwrap().map.insert(
-            std::process::id(),
-            Location { konsole_pid: 3264, service: "org.kde.konsole-3264".into(), window: 1, session: 4, tab_index: 1, tab_title: "invites".into(), label: Some("Konsole 2 · tab 2".into()) },
-        );
-        std::thread::sleep(look::SCREEN_CACHE);
-        let s = l.screen("sess-aaaa").unwrap();
-        assert_eq!((s.lines.len(), s.source.as_str()), (2, "Konsole 2 · tab 2"));
         let seen = seen.lock().unwrap();
+        assert_eq!(seen.iter().filter(|c| c[0] == "claude").count(), 1);
         assert!(seen.iter().all(|c| c[0] != "claude" || c[1] == "logs"), "no other claude command, ever");
         assert!(bus.writes().is_empty());
     }
@@ -1889,7 +1975,7 @@ mod tests {
     #[test]
     fn hides_unused_sessions_and_shows_named_live_ones() {
         let env = Env::new();
-        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let (l, _, _fp) = make(&env, &FakeBus::new());
         write_session(&env, "brand-new-1234", serde_json::json!({"name": "brand-new", "cwd": "/"}));
         *lock(&l.inner.live_cache) = None;
         let all = l.inner.all_summaries(&l.inner.store.load_projects(), true);
@@ -1905,8 +1991,8 @@ mod tests {
     #[test]
     fn card_and_plugin_request() {
         let env = Env::new();
-        let bus = FakeBus::new(konsoles());
-        let (l, _) = make(&env, &bus);
+        let bus = FakeBus::new();
+        let (l, _, _fp) = make(&env, &bus);
         assert!(l.plugin_tick(true).is_none());
         let card: Value = store::read_json(&env.paths.data.join("card/card.json")).unwrap();
         for k in ["working", "waiting", "idle", "ideas", "top", "sessions", "updatedAt"] {
@@ -1929,7 +2015,7 @@ mod tests {
     #[test]
     fn processes_and_stop_never_act_in_dry_run() {
         let env = Env::new();
-        let (l, actor) = make(&env, &FakeBus::new(konsoles()));
+        let (l, actor, _fp) = make(&env, &FakeBus::new());
         let o = l.processes();
         assert!(o.procs.iter().all(|p| p.pid != std::process::id()));
         let r = l.stop(std::process::id(), None, StopHow::Kill, true);
@@ -1940,33 +2026,9 @@ mod tests {
     }
 
     #[test]
-    fn locations_are_kept_briefly_and_flagged_when_konsole_fails() {
-        let env = Env::new();
-        let bus = FakeBus::new(konsoles());
-        let (l, _) = make(&env, &bus);
-        assert!(l.inner.locations_unsure().unwrap().contains("still finding"));
-        l.inner.refresh_locations(true);
-        assert_eq!(l.inner.locations_unsure(), None);
-        let here = Location { konsole_pid: 3264, service: "org.kde.konsole-3264".into(), window: 1, session: 4, tab_index: 1, tab_title: "invites".into(), label: None };
-        l.inner.locations.write().unwrap().map.insert(4242, here.clone());
-        // Konsole stops answering: the tab last seen stays, and the overview says it may be out of date
-        bus.fail.lock().unwrap().push("timeout");
-        l.inner.refresh_locations(true);
-        assert_eq!(l.inner.location(4242), Some(here));
-        let why = l.overview().locations_unsure.unwrap();
-        assert!(why.contains("did not answer") && why.contains("Showing the tabs seen"), "{why}");
-        // ...but not for long
-        l.inner.locations.write().unwrap().ok_at = Some(Instant::now() - Duration::from_secs(20));
-        l.inner.refresh_locations(true);
-        assert_eq!(l.inner.location(4242), None);
-        assert!(!l.overview().locations_unsure.unwrap().contains("Showing"));
-        assert!(bus.writes().is_empty());
-    }
-
-    #[test]
     fn a_broken_project_list_is_reported_in_the_overview() {
         let env = Env::new();
-        let (l, _) = make(&env, &FakeBus::new(konsoles()));
+        let (l, _, _fp) = make(&env, &FakeBus::new());
         fs::write(env.paths.data.join("projects.json"), "{\"projects\": [").unwrap();
         let o = l.overview();
         assert!(o.index_error.as_deref().is_some_and(|e| e.contains("project list was damaged, so it started a new one")), "{:?}", o.index_error);
@@ -1977,8 +2039,8 @@ mod tests {
     fn building_while_behind_alarms_and_notifies_once_through_the_fake() {
         use crate::remote::tests::{commit, g, trio};
         let env = Env::new();
-        let bus = FakeBus::new(konsoles());
-        let (l, _) = make(&env, &bus);
+        let bus = FakeBus::new();
+        let (l, _, _fp) = make(&env, &bus);
         let sent: Arc<Mutex<Vec<remote::Notice>>> = Arc::default();
         let s2 = sent.clone();
         l.set_notifier(Arc::new(move |n: &remote::Notice| s2.lock().unwrap().push(n.clone())));

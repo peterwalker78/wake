@@ -118,16 +118,9 @@ fn session(s: S) -> SessionSummary {
     }
 }
 
-fn tab(window: u32, tab_index: u32, title: &str) -> Option<Location> {
-    Some(Location {
-        konsole_pid: 3120,
-        service: "org.kde.konsole-3120".into(),
-        window,
-        session: tab_index + 1,
-        tab_index,
-        tab_title: title.into(),
-        label: Some(format!("Konsole {window} · tab {}", tab_index + 1)),
-    })
+/// A made-up terminal window (`window` tells them apart; the title is only for reading the demo).
+fn tab(window: u32, _tab_index: u32, _title: &str) -> Option<Location> {
+    Some(Location { pid: 3120 + window, app: Some("Terminal".into()) })
 }
 
 /// Tasks for the demo's long tail of finished subagents.
@@ -390,12 +383,12 @@ impl DemoSource {
         }
 
         let ideas = vec![
-            idea("i1", 20 * MIN, "Wake could show which tab each agent's helper is reading", Some("tideline-desktop"), "typed", "inbox"),
+            idea("i1", 20 * MIN, "Wake could show which window each agent's helper is reading", Some("tideline-desktop"), "typed", "inbox"),
             idea("i2", 3 * HOUR, "Ask Priya whether teachers want the reports as CSV too", Some("Gradebook"), "prompt", "inbox"),
             idea("i3", 26 * HOUR, "Moving platforms need their path saved with the level", Some("Skyhook"), "shell", "inbox"),
             idea("i4", 2 * DAY, "A night mode for the reading pages", None, "typed", "inbox"),
             idea("i6", 4 * HOUR, "Teacher invites: say when the link expires, in the email itself", Some("Gradebook"), "typed", "inbox"),
-            idea("i7", 3 * DAY, "Konsole tab titles could carry the project's name", Some("tideline-desktop"), "typed", "sent"),
+            idea("i7", 3 * DAY, "Terminal window titles could carry the project's name", Some("tideline-desktop"), "typed", "sent"),
             idea("i5", 6 * DAY, "Try the Italian feed with a fixed date parser", Some("waypoint"), "typed", "done"),
         ];
         for p in &mut projects {
@@ -788,7 +781,7 @@ impl Source for DemoSource {
             i.brief = Some(req.id.clone());
         }
         let agent = wake_core::brief::Agent::from_id(&req.agent).map_or("Claude", |a| a.label());
-        ActionResult { ok: true, message: format!("Demo: {agent} would start in a new Konsole window in ~/Projects/{}.", req.project), steps: vec![] }
+        ActionResult { ok: true, message: format!("Demo: {agent} would start in a new terminal window in ~/Projects/{}.", req.project), steps: vec![] }
     }
 
     fn go_to(&self, session: &str, _dry_run: bool) -> ActionResult {
@@ -797,11 +790,11 @@ impl Source for DemoSource {
             return ActionResult { ok: false, message: "Wake can't find that session.".into(), steps: Vec::new() };
         };
         let (message, steps) = if let Some(l) = &s.location {
-            (format!("Demo: would switch to Konsole {} · tab {}.", l.window, l.tab_index + 1), vec![format!("qdbus-qt6 {} /Windows/{} setCurrentSession {}", l.service, l.window, l.session)])
+            (format!("Demo: would bring the window of process {} forward.", l.pid), vec![format!("Look.Start {}", l.pid)])
         } else if let Some(job) = &s.job_id {
-            (format!("Demo: would open a new Konsole window running claude attach {job}."), vec![format!("konsole -e claude attach {job}")])
+            (format!("Demo: would open a new terminal window running claude attach {job}."), vec![format!("xdg-terminal-exec claude attach {job}")])
         } else if let Some(cmd) = &s.resume_command {
-            (format!("Demo: would open a new Konsole window running {cmd}."), vec![format!("konsole -e {cmd}")])
+            (format!("Demo: would open a new terminal window running {cmd}."), vec![format!("xdg-terminal-exec {cmd}")])
         } else {
             return ActionResult { ok: false, message: "Claude deleted this conversation, so it can't be reopened.".into(), steps: Vec::new() };
         };
@@ -833,10 +826,10 @@ impl Source for DemoSource {
         }
         let tick = (glib::real_time() / 1_000_000) as usize;
         let (source, mut lines): (String, Vec<String>) = match session {
-            "2b8f0d11-slip-scope" => ("Konsole 1 · tab 1".into(), DEMO_SCOPE.lines().map(String::from).collect()),
+            "2b8f0d11-slip-scope" => ("Terminal".into(), DEMO_SCOPE.lines().map(String::from).collect()),
             "91aa4e7c-skyhook-bg" => ("claude logs".into(), DEMO_SKYHOOK.lines().map(String::from).collect()),
             _ => (
-                s.location.as_ref().and_then(|l| l.label.clone()).unwrap_or_else(|| "claude logs".into()),
+                s.location.as_ref().and_then(|l| l.app.clone()).unwrap_or_else(|| "claude logs".into()),
                 vec![
                     format!("> {}", s.last_prompt.clone().unwrap_or_default()),
                     String::new(),

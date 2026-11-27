@@ -798,9 +798,9 @@ fn session_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
     let line = w::hbox(8, &["dline"]);
     line.append(&w::state_badge(s.state));
     let (mut loc, ..) = app::loc_for(ui, s);
-    // The tab's own title, as Konsole shows it, after Wake's "Konsole · tab 2".
-    if let Some(l) = s.location.as_ref().filter(|l| !l.tab_title.is_empty()) {
-        loc = format!("{loc} “{}”", l.tab_title);
+    // "in <app>": the terminal app whose window shows it.
+    if let Some(l) = &s.location {
+        loc = format!("in {}", l.app.as_deref().unwrap_or("a terminal window"));
     }
     let wl = w::wrap(&format!("{} · {loc}", crate::disk::project_reason(ui, s)), &["dim"]); // disk.rs hook
     wl.set_xalign(0.0);
@@ -885,12 +885,8 @@ fn session(ui: &Ui, id: &str) {
         if let Some(b) = go_button(ui, &s, true) {
             act.append(&b);
             if app::is_live(s.state) {
-                // Peek is only a held key, so say so where you'd go to the session.
-                let hint = w::hbox(5, &["peek-hint"]);
-                hint.append(&w::kbd("Space"));
-                hint.append(&w::label("hold to peek", &["hint"]));
-                hint.set_tooltip_text(Some("Hold Space to look at this session without leaving Wake. Let go to come back, or press Enter while holding to go to it."));
-                act.append(&hint);
+                // Holding Space is only a key, so say what it does here, where you'd go to it.
+                act.append(&crate::peek::cue(ui, &s, true));
             }
         } else {
             act.append(&w::clip(if s.deleted_by_claude { "Claude deleted the conversation; it can't be reopened." } else { "Nothing to reopen." }, &["meta"]));
@@ -1114,18 +1110,18 @@ pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Butt
     Some(b)
 }
 
-/// What the way-there button says, from `loc_for`'s place: "Go to tab 3" (with one Konsole),
-/// "Go to Konsole 2 · tab 1" (with several), "Open in a new window", "Resume in a new window".
+/// What the way-there button says, from `loc_for`'s place: "Go to <its terminal app>",
+/// "Go to its window", "Open in a new window", "Resume in a new window".
 pub fn go_words(s: &SessionSummary, loc: &str, can_go: bool) -> String {
     if s.location.is_some() {
-        format!("Go to {}", loc.strip_prefix("Konsole · ").unwrap_or(loc))
+        format!("Go to {loc}")
     } else if !can_go {
-        // Wake is still finding its tab.
+        // Wake is still finding its window.
         "Go to".into()
     } else if app::can_reopen(s) {
         "Resume in a new window".into()
     } else {
-        // Live with no tab: a background job, attached in a new window.
+        // Live in no window: a background job, attached in a new window.
         "Open in a new window".into()
     }
 }
@@ -1431,7 +1427,7 @@ fn project(ui: &Ui, id: &str) {
             let sid = last.id.clone();
             let b = w::button("Resume last", None, &["ghost"], move || app::go_to(&ui2, &sid));
             b.set_widget_name("resume-last");
-            b.set_tooltip_text(Some(&format!("Resume its last session, “{}” ({}): in a new Konsole window.", last.title, fmt::ago(last.last_at.as_deref()))));
+            b.set_tooltip_text(Some(&format!("Resume its last session, “{}” ({}): in a new terminal window.", last.title, fmt::ago(last.last_at.as_deref()))));
             act.append(&b);
         }
         act.append(&w::spacer());
@@ -1566,7 +1562,7 @@ fn project(ui: &Ui, id: &str) {
                 let b = w::button(&label, None, &["sm", "violet"], move || crate::start::open(&ui2, Some(ids.clone())));
                 b.set_widget_name("start-agent");
                 b.set_halign(gtk::Align::Start);
-                b.set_tooltip_text(Some("Starts an agent in a new Konsole window in this project's folder, with a brief of these ideas"));
+                b.set_tooltip_text(Some("Starts an agent in a new terminal window in this project's folder, with a brief of these ideas"));
                 x.append(&b);
             }
             if sent > 0 {

@@ -572,7 +572,9 @@ list.table > row.subrow { border-bottom: none; }
 .subtr.span .cell { padding-top: 0; padding-bottom: 0; }
 /* The connector's cell keeps a row's side padding, so a passing line meets the rows' line exactly. */
 .subtr.span .cell.conncell { padding-left: 12px; padding-right: 12px; }
-window.wake button.subbtn { padding: 0; margin: 0; border-radius: 0; background: none; }
+/* Only the panel's subagent and task cards use this class: they keep their own padding (above), or
+   their time would run into the card's edge. */
+window.wake button.subbtn { background: none; }
 window.wake button.subbtn:hover { background-color: @row; }
 window.wake button.subbtn:focus:focus-visible { outline-style: none; background-color: @rowhi; box-shadow: inset 2px 0 @accent; }
 .subtr .pj .title { font-size: 12.5px; }

@@ -66,9 +66,6 @@ fn switch(key: &str, name: &str, hint: &str, on: bool) -> Row {
     row(key, name, hint, Kind::Switch, vec![ch("on", "On"), ch("off", "Off")], if on { "on" } else { "off" })
 }
 
-/// The views Wake can open on, as Settings offers them.
-const START_VIEWS: [View; 6] = [View::Monitor, View::Agents, View::Projects, View::Ideas, View::History, View::Questions];
-
 /// Why an AI can't be chosen, in a few words.
 fn short_reason(c: &AiChoice) -> String {
     if c.hint.contains("isn't installed") {
@@ -96,7 +93,7 @@ pub fn sections(s: &Settings, ais: &[AiChoice]) -> Vec<(&'static str, Vec<Row>)>
         row("accent", "Accent", "", Kind::Swatches, theme::ACCENTS.iter().map(|(n, ..)| ch(n, &cap(n))).collect(), &s.accent),
         switch("motion", "Motion", "Panels slide and rows fade, briefly. Off keeps everything still.", s.motion != "reduced"),
     ];
-    let open = vec![row("start", "Start on", "", Kind::Dropdown, START_VIEWS.iter().map(|v| ch(v.id(), v.name())).collect(), &s.start_view)];
+    let open = vec![row("start", "Start on", "", Kind::Dropdown, View::ALL.iter().filter(|v| **v != View::Settings).map(|v| ch(v.id(), v.name())).collect(), &s.start_view)];
     let git = vec![
         row(
             "remote",

@@ -48,6 +48,8 @@ pub enum View {
 
 impl View {
     pub const ALL: [View; 7] = [View::Monitor, View::Agents, View::Projects, View::Ideas, View::History, View::Questions, View::Settings];
+    /// The view switcher's tabs, in their order: the tab bar, Ctrl+Tab, and Ctrl+1 to Ctrl+5.
+    pub const TABS: [View; 5] = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -307,7 +309,7 @@ pub struct Widgets {
     /// Back, at the start of the title bar, while the details are a page of their own.
     pub back_btn: gtk::Button,
     pub counts: crate::layout::Squeeze,
-    /// The three places, as tabs in the top bar: Monitor, Projects, History.
+    /// The view switcher: `View::TABS` in the top bar.
     pub tabs: gtk::Box,
     pub indexing: gtk::Label,
     pub clock: gtk::Label,
@@ -548,7 +550,7 @@ fn build(app: &gtk::Application, opts: Opts) {
     top.append(&start);
     let gap_l = w::spacer();
     top.append(&gap_l);
-    // The view switcher: Monitor, Projects, Ideas, History, Agents.
+    // The view switcher: View::TABS.
     let tabs = w::hbox(4, &["tabs"]);
     tabs.update_property(&[gtk::accessible::Property::Label("Views")]);
     top.append(&tabs);
@@ -2021,11 +2023,7 @@ fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib:
         K::f | K::F if ctrl => switcher::open(ui),
         K::n | K::N if ctrl => open_capture(ui),
         K::q | K::Q if ctrl => ui.window.close(),
-        K::_1 if ctrl && !shift => set_view(ui, View::Monitor),
-        K::_2 if ctrl && !shift => set_view(ui, View::Projects),
-        K::_3 if ctrl && !shift => set_view(ui, View::Ideas),
-        K::_4 if ctrl && !shift => set_view(ui, View::History),
-        K::_5 if ctrl && !shift => set_view(ui, View::Agents),
+        K::_1 | K::_2 | K::_3 | K::_4 | K::_5 if ctrl && !shift => set_view(ui, View::TABS[key.to_unicode().and_then(|c| c.to_digit(10)).map_or(0, |n| n as usize - 1)]),
         K::_6 if ctrl && !shift => set_view(ui, View::Questions),
         K::comma if ctrl && !shift => set_view(ui, View::Settings),
         K::F1 => dialogs::keys(ui),
@@ -2039,10 +2037,9 @@ fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib:
 
 /// Ctrl+Tab: the next view in the switcher's order (wrapping); back with Shift.
 fn step_view(ui: &Ui, d: i32) {
-    const ORDER: [View; 5] = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents];
     let now = ui.st.borrow().view;
-    let i = ORDER.iter().position(|v| *v == now).map_or(0, |i| (i as i32 + d).rem_euclid(ORDER.len() as i32) as usize);
-    set_view(ui, ORDER[i]);
+    let i = View::TABS.iter().position(|v| *v == now).map_or(0, |i| (i as i32 + d).rem_euclid(View::TABS.len() as i32) as usize);
+    set_view(ui, View::TABS[i]);
 }
 
 /// Shift+F10 or the Menu key: the selected item's ⋯ menu (its details open first).

@@ -312,13 +312,14 @@ pub fn render_top(ui: &Ui) {
     ui.st.borrow_mut().top_drawn = sig;
     ui.w.tabs.set_visible(!phone);
     ui.w.tabs_bottom.set_visible(phone);
-    let places: [(View, &[&str], u32, &str, String); 5] = [
-        (View::Monitor, w::icons::MONITOR, c.waiting, "attention", format!("{} waiting for you, {} working", c.waiting, c.working)),
-        (View::Projects, w::icons::PROJECTS, 0, "", "Where you left each project".into()),
-        (View::Ideas, w::icons::IDEAS, n_ideas, "", fmt::pl(n_ideas, "idea to sort", "ideas to sort")),
-        (View::History, w::icons::HISTORY, 0, "", "Every session, by day; search it".into()),
-        (View::Agents, w::icons::AGENTS, n_stale, "attention", if n_stale > 0 { format!("{n_stale} look stale") } else { "Agent processes and their memory".into() }),
-    ];
+    let places: [(View, &[&str], u32, &str, String); 5] = View::TABS.map(|v| match v {
+        View::Monitor => (v, w::icons::MONITOR, c.waiting, "attention", format!("{} waiting for you, {} working", c.waiting, c.working)),
+        View::Projects => (v, w::icons::PROJECTS, 0, "", "Where you left each project".into()),
+        View::Ideas => (v, w::icons::IDEAS, n_ideas, "", fmt::pl(n_ideas, "idea to sort", "ideas to sort")),
+        View::History => (v, w::icons::HISTORY, 0, "", "Every session, by day; search it".into()),
+        View::Agents => (v, w::icons::AGENTS, n_stale, "attention", if n_stale > 0 { format!("{n_stale} look stale") } else { "Agent processes and their memory".into() }),
+        View::Questions | View::Settings => unreachable!("not a tab"),
+    });
     for (bar, bottom) in [(&ui.w.tabs, false), (&ui.w.tabs_bottom, true)] {
         w::clear(bar);
         for (v, icon, n, badge_class, tip) in &places {
@@ -360,7 +361,7 @@ pub fn render_top(ui: &Ui) {
                 inner.append(&b);
             }
             b.set_child(Some(&inner));
-            let key = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents].iter().position(|x| x == v).map(|i| format!(" (Ctrl+{})", i + 1)).unwrap_or_default();
+            let key = View::TABS.iter().position(|x| x == v).map(|i| format!(" (Ctrl+{})", i + 1)).unwrap_or_default();
             b.set_tooltip_text(Some(&format!("{}: {tip}{key}", v.name())));
             b.update_property(&[gtk::accessible::Property::Label(v.name())]);
             if bottom {

@@ -6,7 +6,7 @@ use gtk4::{self as gtk, gdk, glib, prelude::*};
 use wake_core::*;
 
 use crate::{
-    app::{self, Ui},
+    app::{self, Ui, View},
     w,
 };
 
@@ -259,7 +259,7 @@ pub fn keys(ui: &Ui) {
             vec![
                 ("Ctrl+F", "find a session".into()),
                 ("Ctrl+N", "a new idea".into()),
-                ("Ctrl+1 to 5", "Monitor, Projects, Ideas, History, Agents".into()),
+                ("Ctrl+1 to 5", View::TABS.map(View::name).join(", ")),
                 ("Ctrl+6", "Ask".into()),
                 ("Ctrl+,", "Settings".into()),
                 ("Ctrl+Tab", "the next view (Shift: back)".into()),

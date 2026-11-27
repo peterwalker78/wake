@@ -491,14 +491,13 @@ impl Places {
     /// The real machine's, with symlinks resolved (on Bazzite /home is a link to /var/home, and
     /// project roots are written either way).
     pub fn real(paths: &store::Paths) -> Places {
-        let data_home = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| paths.home.join(".local/share"));
         Places {
             home: canonical(&paths.home),
             claude: canonical(&paths.claude),
             codex: canonical(&paths.codex),
             proc_root: PathBuf::from("/proc"),
             uid: crate::sys::uid(),
-            trash: canonical(&data_home.join("Trash")),
+            trash: canonical(&paths.data_home.join("Trash")),
         }
     }
 }

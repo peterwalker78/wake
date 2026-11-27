@@ -282,9 +282,7 @@ pub fn apply_show(ui: &Ui, show: &str) {
                 agents::stop_one(ui, pid);
             }
         }
-        _ => eprintln!(
-            "wake: --show takes scroll[:px], panel-scroll[:px], agents-open, readouts, switcher, switcher-subs, session[:id], project[:id], pause, stale, stop[:pid], toast[:text], tabs-unknown or track"
-        ),
+        _ => eprintln!("wake: --show takes scroll[:px], panel-scroll[:px], agents-open, switcher, switcher-subs, session[:id], project[:id], pause, stale, stop[:pid], toast[:text] or track"),
     }
 }
 

@@ -112,8 +112,7 @@ thread_local! {
 /// Where Slipstream's fonts are: installed under the data folder or beside Slipstream's programs.
 /// Without them the stylesheet's fallbacks apply.
 fn fonts_dir() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".local/share"));
+    let data = wake_core::store::Paths::from_env().data_home;
     [data.join("slipstream/fonts"), PathBuf::from("/usr/local/share/slipstream/fonts"), PathBuf::from("/usr/share/slipstream/fonts")].into_iter().find(|d| d.join(FONTS[0]).is_file())
 }
 

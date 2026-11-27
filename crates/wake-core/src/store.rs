@@ -34,12 +34,22 @@ pub struct Paths {
     pub runtime: PathBuf,
     /// Slipstream's state folder for Wake's plugin (request.json lives in it).
     pub plugin_state: PathBuf,
-    /// Wake's settings folder (settings.toml): $WAKE_CONFIG_DIR, else $XDG_CONFIG_HOME/wake, else ~/.config/wake.
+    /// Wake's settings folder (settings.toml): $WAKE_CONFIG_DIR, else `<config_home>/wake`.
     pub config: PathBuf,
+    /// The desktop's data folder: $XDG_DATA_HOME, else ~/.local/share.
+    pub data_home: PathBuf,
+    /// The desktop's settings folder: $XDG_CONFIG_HOME, else ~/.config.
+    pub config_home: PathBuf,
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
     std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// An XDG base folder: `$var` when it is an absolute path (the spec says to ignore any other),
+/// else `fallback`.
+fn xdg(var: &str, fallback: PathBuf) -> PathBuf {
+    env_path(var).filter(|p| p.is_absolute()).unwrap_or(fallback)
 }
 
 pub fn home_dir() -> PathBuf {
@@ -49,10 +59,8 @@ pub fn home_dir() -> PathBuf {
 impl Paths {
     pub fn from_env() -> Paths {
         let home = home_dir();
-        let runtime = env_path("WAKE_RUNTIME_DIR").unwrap_or_else(|| {
-            let base = env_path("XDG_RUNTIME_DIR").unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", crate::sys::uid())));
-            base.join("slipstream")
-        });
+        let runtime = env_path("WAKE_RUNTIME_DIR").unwrap_or_else(|| xdg("XDG_RUNTIME_DIR", PathBuf::from(format!("/run/user/{}", crate::sys::uid()))).join("slipstream"));
+        let config_home = xdg("XDG_CONFIG_HOME", home.join(".config"));
         Paths {
             data: env_path("WAKE_DATA_DIR").unwrap_or_else(|| home.join(".local/share/wake")),
             // Claude Code and Codex move their folders with these, so Wake follows them.
@@ -60,7 +68,9 @@ impl Paths {
             codex: env_path("WAKE_CODEX_DIR").or_else(|| env_path("CODEX_HOME")).unwrap_or_else(|| home.join(".codex")),
             projects: env_path("WAKE_PROJECTS_DIR").unwrap_or_else(|| home.join("Projects")),
             plugin_state: home.join(".local/state/slipstream/plugins/wake/state"),
-            config: env_path("WAKE_CONFIG_DIR").or_else(|| env_path("XDG_CONFIG_HOME").filter(|p| p.is_absolute()).map(|p| p.join("wake"))).unwrap_or_else(|| home.join(".config/wake")),
+            config: env_path("WAKE_CONFIG_DIR").unwrap_or_else(|| config_home.join("wake")),
+            data_home: xdg("XDG_DATA_HOME", home.join(".local/share")),
+            config_home,
             runtime,
             home,
         }
@@ -77,6 +87,8 @@ impl Paths {
             runtime: root.join("run/slipstream"),
             plugin_state: root.join("plugin-state"),
             config: root.join("config"),
+            data_home: home.join(".local/share"),
+            config_home: home.join(".config"),
             home,
         }
     }

@@ -70,8 +70,7 @@ pub struct Look {
 }
 
 fn settings_path() -> PathBuf {
-    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    config.join("slipstream").join("settings.toml")
+    wake_core::store::Paths::from_env().config_home.join("slipstream").join("settings.toml")
 }
 
 impl Look {

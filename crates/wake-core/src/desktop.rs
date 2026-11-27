@@ -209,9 +209,9 @@ fn unescape_unit(s: &str) -> String {
 /// The folders desktop entries live in: `$XDG_DATA_HOME/applications`, then each of
 /// `$XDG_DATA_DIRS` (Flatpak adds its exports there).
 fn application_dirs() -> Vec<PathBuf> {
-    let home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+    let home = crate::store::Paths::from_env().data_home;
     let dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-    home.into_iter().chain(dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from)).map(|d| d.join("applications")).collect()
+    std::iter::once(home).chain(dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from)).map(|d| d.join("applications")).collect()
 }
 
 /// The plain `Name=` of a desktop entry's main section.

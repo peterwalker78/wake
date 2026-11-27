@@ -734,7 +734,8 @@ window.wake dropdown.notedd > button:hover { border-color: @line2; }
 
 /* Agents: the page title over the table, sharing its left edge */
 .agentstitle { padding: 26px 28px 8px; }
-.agentacts { margin-right: 24px; }
+/* A page title's actions (and the peek chip) end the line at the right edge of the boxes below. */
+.pageacts { margin-right: 24px; }
 .warnline { color: @amber; }
 
 /* Agents: each group a boxed list, like Monitor's and History's. The column heads line up with
@@ -796,5 +797,3 @@ list.table > row:selected .peek-cue { opacity: 1; }
 list.table > row:selected .peek-age { opacity: 0; }
 .peek-cue.zoom .kbd { color: @accent; border-color: alpha(@accent, .55); }
 .peek-cue.zoom .hint { color: @accent; }
-/* "PEEK AVAILABLE" in the title bar: a pill in the working green, a size up from a row's pills. */
-window.wake .pill.peekchip { font-size: 11px; padding: 4px 10px; border-radius: 999px; letter-spacing: .5px; background-color: alpha(@mint, .14); border: 1px solid alpha(@mint, .45); }

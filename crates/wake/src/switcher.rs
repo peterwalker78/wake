@@ -37,6 +37,8 @@ pub fn widgets() -> (gtk::Box, gtk::Entry, gtk::Box, gtk::Box, gtk::ScrolledWind
     entry.update_property(&[gtk::accessible::Property::Label("Find a session")]);
     entry.add_css_class("bare");
     top.append(&entry);
+    // At the end of the top line, as on the pages: holding Space peeks while nothing is typed.
+    top.append(&crate::peek::chip());
     pal.append(&top);
     let cols = w::hbox(0, &["cols2"]);
     let list = w::vbox(0, &["swlist"]);

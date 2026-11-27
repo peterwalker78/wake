@@ -792,7 +792,7 @@ pub fn build(ui: &Ui) {
             }
             focus_moved(&ui2);
             mark(&ui2);
-            crate::peek::update_chip(&ui2);
+            crate::peek::update_chip_soon(&ui2);
         });
     }
     {
@@ -809,8 +809,7 @@ pub fn build(ui: &Ui) {
         click.connect_released(move |_, _, _, _| {
             note_input();
             // Once the click has done its work (a row picked, Find opened or closed).
-            let ui3 = ui2.clone();
-            glib::idle_add_local_once(move || crate::peek::update_chip(&ui3));
+            crate::peek::update_chip_soon(&ui2);
         });
         ui.window.add_controller(click);
     }

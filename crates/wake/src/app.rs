@@ -650,7 +650,9 @@ fn build(app: &gtk::Application, opts: &Opts) {
     {
         let sb = w::hbox(10, &["searchbox"]);
         sb.append(&history_entry);
-
+        // History has no page title: the peek chip ends its top line, the search box's, instead
+        // (Space peeks from a session's details).
+        sb.append(&peek::chip());
         views[&View::History].top.append(&sb);
     }
     main.append(&stack);
@@ -1909,8 +1911,7 @@ pub fn command_for(key: gdk::Key, view: View, on_control: bool) -> Option<Cmd> {
 pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagation {
     crate::keynav::note_key(ui, key);
     // Once the key has done its work (a selection moved, Find opened or closed).
-    let ui2 = ui.clone();
-    glib::idle_add_local_once(move || crate::peek::update_chip(&ui2));
+    crate::peek::update_chip_soon(ui);
     // WAKE_KEY_DEBUG=1: every key the window gets, and where the keyboard is after it.
     if std::env::var_os("WAKE_KEY_DEBUG").is_some() {
         let r = on_key_inner(ui, key, mods);

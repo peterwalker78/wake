@@ -254,16 +254,21 @@ pub fn cue(ui: &Ui, s: &SessionSummary, long: bool) -> gtk::Box {
 }
 
 thread_local! {
-    /// Every "PEEK AVAILABLE" chip (one in each page's title row), and what they say now: shown or
-    /// not, and the tooltip. A page drawn later starts with the same.
+    /// Every "Peek available" tag (one at the top right of each place where holding Space works:
+    /// Monitor, History, Agents and Find), and what they say now: shown or not, and the tooltip. A
+    /// page drawn later starts with the same.
     static CHIPS: std::cell::RefCell<(Vec<glib::WeakRef<gtk::Label>>, Option<String>)> = Default::default();
+    /// An update is already on its way (`update_chip_soon`).
+    static CHIP_DUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A "PEEK AVAILABLE" chip for a page's title row, at the end where its actions go. It shows while
-/// holding Space would peek at the session the keyboard is on.
+/// The "Peek available" tag, drawn as Wake's other small tags are (a status tag's pill, in the
+/// working green, with no dot: it is not a status). It ends a page's title row, where the page's
+/// actions go, and shows while holding Space would peek at the session the keyboard is on.
 pub fn chip() -> gtk::Label {
-    let c = w::label("PEEK AVAILABLE", &["pill", "mint", "peekchip"]);
+    let c = w::label("Peek available", &["state", "tag", "working", "peekchip"]);
     c.set_valign(gtk::Align::Center);
+    c.set_halign(gtk::Align::End);
     CHIPS.with(|cs| {
         let mut cs = cs.borrow_mut();
         cs.0.retain(|x| x.upgrade().is_some());
@@ -281,8 +286,22 @@ fn show_chip(c: &gtk::Label, tip: Option<&str>) {
     }
 }
 
+/// `update_chip` once the event in hand has done its work (a key, a click, a focus change). Any
+/// number of events before then make one update.
+pub fn update_chip_soon(ui: &Ui) {
+    if CHIP_DUE.with(|d| d.replace(true)) {
+        return;
+    }
+    let ui = ui.clone();
+    glib::idle_add_local_once(move || {
+        CHIP_DUE.with(|d| d.set(false));
+        update_chip(&ui);
+    });
+}
+
 /// Shows the chips while holding Space would peek at the session the keyboard is on (the same
-/// check a held Space makes), and says in their tooltip what it would do.
+/// check a held Space makes), and says in their tooltip what it would do. Touches nothing when
+/// that hasn't changed.
 pub fn update_chip(ui: &Ui) {
     if ui.st.try_borrow_mut().is_err() || ui.peek.try_borrow_mut().is_err() {
         return;
@@ -303,6 +322,10 @@ pub fn update_chip(ui: &Ui) {
     });
     CHIPS.with(|cs| {
         let mut cs = cs.borrow_mut();
+        // A chip drawn since took the state as it was then, so it is current too.
+        if cs.1 == tip {
+            return;
+        }
         cs.0.retain(|x| x.upgrade().is_some());
         for c in cs.0.iter().filter_map(|x| x.upgrade()) {
             show_chip(&c, tip.as_deref());

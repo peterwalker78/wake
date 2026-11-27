@@ -799,10 +799,7 @@ pub fn render_chips(ui: &Ui) {
         View::History => {
             chips.add_next(&w::label("History", &["ttl"]));
             chips.add_next(&w::spacer());
-            chips.add_next(&w::label("searches titles, your prompts, files touched and Claude's recaps", &["meta"]));
-            // No page title here: the peek chip ends this row instead (Space peeks from a session's
-            // details).
-            chips.add_next(&crate::peek::chip());
+            chips.add_next(&w::label("searches titles, your prompts, files touched and the agents' recaps", &["meta"]));
         }
         View::Questions => {
             chips.add_next(&w::label("Ask", &["ttl"]));
@@ -1126,12 +1123,16 @@ fn monitor(ui: &Ui) {
     head.set_focusable(false);
     head.add_css_class("grouprow");
     head.add_css_class("herorow");
-    // The title, and at its end (where Agents has its actions) the peek chip.
+    // The title, and at its end (where Agents has its actions, and with the same margin, so it
+    // lines up with the cards' right edge) the peek chip.
     let line = w::hbox(8, &[]);
     let title = hero(tally);
     title.set_hexpand(true);
     line.append(&title);
-    line.append(&crate::peek::chip());
+    let acts = w::hbox(8, &["pageacts"]);
+    acts.set_valign(gtk::Align::Center);
+    acts.append(&crate::peek::chip());
+    line.append(&acts);
     head.set_child(Some(&line));
     vw.list.append(&head);
     agents::follow_notes(ui);

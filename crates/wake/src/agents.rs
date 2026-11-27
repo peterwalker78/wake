@@ -283,7 +283,7 @@ pub fn render(ui: &Ui) {
     let head = w::hbox(8, &[]);
     line.set_hexpand(true);
     head.append(&line);
-    let acts = w::hbox(8, &["agentacts"]);
+    let acts = w::hbox(8, &["pageacts"]);
     acts.set_valign(gtk::Align::Center);
     acts.append(&crate::peek::chip());
     let n_stale = stale_summary(&p).0;

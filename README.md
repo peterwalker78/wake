@@ -91,7 +91,7 @@ anywhere in the details puts the keyboard there. Every action is a button or in 
 | `Ctrl+,` | Settings |
 | `Ctrl+Tab` | the next view (`Shift` for the one before) |
 | the Menu key or `Shift+F10` | the selected item's ⋯ menu |
-| hold `Space` | peek at the session; let go to come back, `Enter` to stay. "Peek available" shows at the top when you can |
+| hold `Space` | peek at the session; let go to come back, `Enter` to stay. "Peek available" shows at the top right (Monitor, History, Agents and Find) when you can |
 | `Delete` | in Agents: stop the selected agent (it asks first) |
 | `F1` | the keys |
 

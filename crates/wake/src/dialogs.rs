@@ -250,7 +250,7 @@ pub fn keys(ui: &Ui) {
                 ("Home  End", "the first or last".into()),
                 ("Enter", "open the details, or press the button".into()),
                 ("Esc", "go back, or close".into()),
-                ("hold Space", format!("{peek}; let go to come back. PEEK AVAILABLE shows at the top when you can")),
+                ("hold Space", format!("{peek}; let go to come back. \"Peek available\" shows at the top right when you can")),
             ],
         ),
         (

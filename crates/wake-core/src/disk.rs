@@ -407,6 +407,7 @@ pub fn dirty_files(wt: &Path) -> Option<u32> {
 
 /// A process of this user whose working folder is `path` or inside it: (pid, its short name).
 pub fn process_inside(path: &Path, proc_root: &Path, uid: u32) -> Option<(u32, String)> {
+    let want = canonical(path);
     let rd = fs::read_dir(proc_root).ok()?;
     for e in rd.flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
@@ -414,12 +415,30 @@ pub fn process_inside(path: &Path, proc_root: &Path, uid: u32) -> Option<(u32, S
             continue;
         }
         let Ok(cwd) = fs::read_link(e.path().join("cwd")) else { continue };
-        if cwd == path || cwd.starts_with(path) {
+        if folder_views(&cwd, &e.path()).iter().any(|c| c.starts_with(path) || c.starts_with(&want)) {
             let comm = fs::read_to_string(e.path().join("comm")).unwrap_or_default().trim().to_string();
             return Some((pid, comm));
         }
     }
     None
+}
+
+/// The ways a process's working folder can be written on the host. A process in a distrobox or
+/// toolbox reports its folder as the container sees it (`/home/u/x` where the host has
+/// `/var/home/u/x` behind the `/home` link), so the folder is also resolved on the host and, when
+/// the process has its own root, through `/proc/<pid>/root`.
+fn folder_views(cwd: &Path, proc_dir: &Path) -> Vec<PathBuf> {
+    let mut out = vec![cwd.to_path_buf()];
+    if cwd.exists() {
+        out.push(canonical(cwd));
+    }
+    if let Ok(root) = fs::read_link(proc_dir.join("root"))
+        && root != Path::new("/")
+        && let Ok(inner) = cwd.strip_prefix("/")
+    {
+        out.push(canonical(&root.join(inner)));
+    }
+    out
 }
 
 /// Whether a cargo or rustc process of this user is running (the registry is in use).
@@ -803,7 +822,8 @@ fn conversation_items(sessions: &[&SessionDisk], jobs: &HashMap<String, PathBuf>
     if jt.bytes >= SMALL {
         ids.sort_by_key(|x| std::cmp::Reverse(x.0));
         let names: Vec<String> = ids.iter().take(6).map(|(_, n)| n.clone()).collect();
-        let command = if names.len() == 1 { format!("ls -la ~/.claude/jobs/{}/tmp", names[0]) } else { format!("du -sh ~/.claude/jobs/{{{}}}", names.join(",")) };
+        let names: Vec<String> = names.iter().map(|n| util::shell_quote(n)).collect();
+        let command = if names.len() == 1 { format!("ls -la ~/.claude/jobs/{}/tmp", names[0]) } else { format!("cd ~/.claude/jobs && du -sh {}", names.join(" ")) };
         out.push(DiskItem {
             path: places.claude.join("jobs").display().to_string(),
             kind: DiskKind::JobFiles,
@@ -1603,6 +1623,31 @@ mod tests {
         assert_eq!(v[0], ("Images".into(), 6_600_000_000, 1_500_000_000));
         assert_eq!(v[2].0, "Volumes");
         assert_eq!(v[2].2, 10_500_000);
+    }
+
+    #[test]
+    fn a_process_in_a_container_is_found_through_its_own_view_of_the_folder() {
+        // The host keeps homes in var/home with a home link to it (as on Bazzite); a build in a
+        // distrobox reports its folder through the link.
+        let s0 = scratch("disk-inside");
+        let r = fs::canonicalize(&s0.0).unwrap();
+        fs::create_dir_all(r.join("var/home/u/proj/target")).unwrap();
+        std::os::unix::fs::symlink(r.join("var/home"), r.join("home")).unwrap();
+        let p = r.join("proc/4242");
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("comm"), "cargo\n").unwrap();
+        std::os::unix::fs::symlink(r.join("home/u/proj"), p.join("cwd")).unwrap();
+        let (uid, procs) = (crate::procs::my_uid(), r.join("proc"));
+        assert_eq!(process_inside(&r.join("var/home/u/proj"), &procs, uid), Some((4242, "cargo".into())));
+        assert_eq!(process_inside(&r.join("home/u/proj"), &procs, uid), Some((4242, "cargo".into())));
+        assert_eq!(process_inside(&r.join("var/home/u/proj/target"), &procs, uid), None, "a folder below the process is not in use");
+        // A folder only the process's own root has: found through /proc/<pid>/root.
+        fs::create_dir_all(r.join("ctr/rootfs/work")).unwrap();
+        fs::create_dir_all(r.join("proc/4343")).unwrap();
+        fs::write(r.join("proc/4343/comm"), "make\n").unwrap();
+        std::os::unix::fs::symlink("/work", r.join("proc/4343/cwd")).unwrap();
+        std::os::unix::fs::symlink(r.join("ctr/rootfs"), r.join("proc/4343/root")).unwrap();
+        assert_eq!(process_inside(&r.join("ctr/rootfs/work"), &procs, uid), Some((4343, "make".into())));
     }
 
     #[test]

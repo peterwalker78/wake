@@ -134,12 +134,15 @@ pub fn check_command(command: Option<&str>) -> Option<String> {
     let Some(prefix) = RESUME_PREFIXES.iter().find(|p| command.starts_with(*p)) else {
         return Some("Refused to type this command: it must start with 'claude --resume ', 'claude attach ' or 'codex resume '.".into());
     };
-    let rest = &command[prefix.len()..];
-    let plain = rest.chars().all(|c| c.is_ascii_alphanumeric() || "._:=@/+ -".contains(c));
-    if rest.trim().is_empty() || !plain {
-        return Some("Refused to type this command: only a session id and plain options may follow.".into());
+    if !plain_id(&command[prefix.len()..]) {
+        return Some("Refused to type this command: only a session id may follow.".into());
     }
     None
+}
+
+/// A session or job id as the agents write them: 1 to 80 letters, digits, `-` and `_`.
+pub fn plain_id(id: &str) -> bool {
+    (1..=80).contains(&id.len()) && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
 /// The parent pid from a /proc/<pid>/stat line, counting fields after the last ')'.
@@ -557,6 +560,9 @@ pub(crate) mod tests {
             Some(""),
             None,
             Some("bash -c 'claude --resume x'"),
+            Some("claude --resume x --dangerously-skip-permissions"),
+            Some("claude --resume x "),
+            Some("claude attach ../x"),
         ] {
             assert!(check_command(bad).is_some(), "{bad:?}");
         }

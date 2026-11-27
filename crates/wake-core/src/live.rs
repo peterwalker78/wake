@@ -49,6 +49,16 @@ pub struct LiveInfo {
     /// The process start time the entry recorded (`procStart`, clock ticks as text), when it has one.
     /// `alive` already means it matched.
     pub proc_start: Option<String>,
+    /// A running Codex process holding this session's rollout file (no session file of its own:
+    /// only `pid`, `session_id` and `alive` are known).
+    pub codex: bool,
+    /// Kept from the last pass because the session file didn't parse this time.
+    pub carried: bool,
+}
+
+/// sessionId -> live info for every running Codex process that holds a session open.
+pub fn read_codex_live(proc_root: &Path, uid: u32) -> HashMap<String, LiveInfo> {
+    crate::procs::codex_sessions(proc_root, uid).into_iter().map(|(pid, sid)| (sid.clone(), LiveInfo { pid, session_id: sid, alive: true, codex: true, ..Default::default() })).collect()
 }
 
 /// Process start time in clock ticks (field 22 of /proc/<pid>/stat), as text.
@@ -64,7 +74,15 @@ pub fn pid_alive(proc_root: &Path, pid: u32, expected_start: Option<&str>) -> bo
     }
     match expected_start {
         Some(e) if !e.is_empty() => proc_start(proc_root, pid).as_deref() == Some(e),
-        _ => true,
+        // No start time to check: the pid may have been reused, so it must at least be an agent
+        // (a bare `claude` when the executable can't be read, as inside a distrobox).
+        _ => {
+            let argv = crate::procs::read_cmdline(proc_root, pid);
+            match fs::read_link(proc_root.join(pid.to_string()).join("exe")) {
+                Ok(exe) => crate::procs::agent_of(&argv, Some(exe.to_string_lossy().trim_end_matches(" (deleted)"))).is_some(),
+                Err(_) => crate::procs::agent_of(&argv, None).is_some() || argv.first().is_some_and(|a| a.rsplit('/').next() == Some("claude")),
+            }
+        }
     }
 }
 
@@ -99,6 +117,12 @@ pub fn read_resume_note(paths: &Paths, pid: u32) -> Option<String> {
 
 /// sessionId -> live info for every session file in ~/.claude/sessions.
 pub fn read_live(paths: &Paths, proc_root: &Path) -> HashMap<String, LiveInfo> {
+    read_live_after(paths, proc_root, &HashMap::new())
+}
+
+/// [`read_live`], given the last pass's result: a session file caught mid-rewrite (it doesn't
+/// parse) keeps that pid's last entry for one pass, so its row doesn't flicker.
+pub fn read_live_after(paths: &Paths, proc_root: &Path, prev: &HashMap<String, LiveInfo>) -> HashMap<String, LiveInfo> {
     let d = paths.claude.join("sessions");
     let Ok(rd) = fs::read_dir(&d) else { return HashMap::new() };
     let mut out: HashMap<String, LiveInfo> = HashMap::new();
@@ -108,7 +132,14 @@ pub fn read_live(paths: &Paths, proc_root: &Path) -> HashMap<String, LiveInfo> {
         if stem.is_empty() || !stem.bytes().all(|c| c.is_ascii_digit()) || store::is_forbidden(Path::new(&n)) {
             continue;
         }
-        let Some(rec) = store::read_json::<Value>(&d.join(&n)) else { continue };
+        let Some(rec) = store::read_json::<Value>(&d.join(&n)) else {
+            let pid: u32 = stem.parse().unwrap_or(0);
+            if let Some(old) = prev.values().find(|l| l.pid == pid && !l.codex && !l.carried && !out.contains_key(&l.session_id)) {
+                let alive = pid_alive(proc_root, pid, old.proc_start.as_deref());
+                out.insert(old.session_id.clone(), LiveInfo { alive, carried: true, ..old.clone() });
+            }
+            continue;
+        };
         let Some(sid) = rec.get("sessionId").and_then(Value::as_str).filter(|s| !s.is_empty()) else { continue };
         let pid = rec.get("pid").and_then(Value::as_u64).map(|p| p as u32).or_else(|| stem.parse().ok()).unwrap_or(0);
         let proc_start_s = match rec.get("procStart") {
@@ -141,6 +172,8 @@ pub fn read_live(paths: &Paths, proc_root: &Path) -> HashMap<String, LiveInfo> {
             resume_command: read_resume_note(paths, pid),
             spare: rec.get("spare") == Some(&Value::Bool(true)),
             proc_start: proc_start_s.filter(|s| !s.is_empty()),
+            codex: false,
+            carried: false,
         };
         let better = match out.get(sid) {
             None => true,
@@ -243,6 +276,13 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
     }
     if summary.agent == crate::types::Agent::Codex {
         use std::os::unix::fs::MetadataExt;
+        if let Some(i) = info.filter(|i| i.alive) {
+            // Running: never offered a reopen (a second `codex resume` of the same conversation).
+            summary.pid = Some(i.pid);
+            summary.state = State::Unknown;
+            summary.evidence = "Codex is running it; Wake cannot see Codex live state".into();
+            return;
+        }
         let mtime = acc.and_then(|a| a.source.as_deref()).and_then(|s| fs::metadata(s).ok()).map(|m| m.mtime() as f64);
         match mtime {
             Some(m) if now - m < 120.0 => {
@@ -517,6 +557,34 @@ mod tests {
         a.last_text_at = Some("2020-01-01T00:11:00Z".into());
         apply_live(&mut s, Some(&a), live.get("sess-bbbb"), util::now());
         assert_eq!(s.state, State::Idle);
+    }
+
+    #[test]
+    fn without_a_start_time_only_an_agent_process_counts_as_alive() {
+        use crate::procs::tests::FakeProc;
+        let fp = FakeProc::new();
+        let uid = crate::procs::my_uid();
+        fp.add(4100, 1, &["/usr/bin/python3", "x.py"], "/usr/bin/python3", 1000, 1, 5, uid); // a reused pid
+        fp.add(4101, 1, &["/usr/bin/claude"], "/usr/bin/claude", 1000, 1, 5, uid);
+        fp.add(4102, 1, &["claude", "--resume", "x"], "", 1000, 1, 5, uid); // in a distrobox
+        assert!(!pid_alive(fp.root(), 4100, None));
+        assert!(pid_alive(fp.root(), 4101, None));
+        assert!(pid_alive(fp.root(), 4102, Some("")));
+        assert!(pid_alive(fp.root(), 4100, Some("5")), "a matching start time is enough");
+    }
+
+    #[test]
+    fn a_session_file_caught_mid_rewrite_keeps_its_last_entry_for_one_pass() {
+        let f = setup();
+        f.write_session("sess-bbbb", "idle", None, None);
+        let first = read_live(&f.env.paths, Path::new("/proc"));
+        assert!(first["sess-bbbb"].alive);
+        let file = f.env.paths.claude.join("sessions").join(format!("{}.json", f.pid));
+        fs::write(&file, "{\"pid\": ").unwrap();
+        let second = read_live_after(&f.env.paths, Path::new("/proc"), &first);
+        assert!(second["sess-bbbb"].alive && second["sess-bbbb"].carried);
+        assert!(read_live_after(&f.env.paths, Path::new("/proc"), &second).is_empty(), "only for one pass");
+        assert!(read_live(&f.env.paths, Path::new("/proc")).is_empty());
     }
 
     #[test]

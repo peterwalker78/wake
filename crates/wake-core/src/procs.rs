@@ -226,6 +226,18 @@ fn secretish(s: &str) -> bool {
     SECRET_WORDS.iter().any(|w| l.contains(w))
 }
 
+/// Token shapes that start a word (`sk-…`, GitHub and Slack tokens).
+const TOKEN_STARTS: &[&str] = &["sk-", "ghp_", "gho_", "ghs_", "ghu_", "github_pat_", "xoxb-", "xoxp-", "xoxa-", "xoxs-"];
+
+/// An argument to hide whole: JSON (it can carry keys), a bearer header, or a word shaped like a token.
+fn looks_secret(a: &str) -> bool {
+    let t = a.trim_start();
+    t.starts_with('{')
+        || t.starts_with('[')
+        || a.to_lowercase().contains("bearer ")
+        || a.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')).any(|w| TOKEN_STARTS.iter().any(|p| w.starts_with(p)))
+}
+
 /// A short command line (≤ 120 chars) with values of secret-looking options hidden.
 pub fn short_command(argv: &[String]) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -237,7 +249,14 @@ pub fn short_command(argv: &[String]) -> String {
             continue;
         }
         let a = if i == 0 { base(a).to_string() } else { a.clone() };
-        if a.starts_with('-') && secretish(&a) {
+        if i > 0 && looks_secret(&a) {
+            out.push("…".into());
+        } else if a == "-H" || a == "--header" {
+            out.push(a);
+            hide_next = true;
+        } else if a.starts_with("--header=") {
+            out.push("--header=…".into());
+        } else if a.starts_with('-') && secretish(&a) {
             match a.split_once('=') {
                 Some((k, _)) => out.push(format!("{k}=…")),
                 None => {
@@ -276,6 +295,9 @@ pub struct Inputs<'a> {
     pub locate: &'a dyn Fn(u32, Option<&str>) -> Option<Location>,
     /// pids with an agent-notify note (alive or not) and their notes.
     pub notes: &'a HashMap<u32, WorkingNote>,
+    /// Which window shows each process has been worked out at least once. Until then nothing is
+    /// called stale for having no terminal window.
+    pub windows_known: bool,
     pub now: f64,
 }
 
@@ -385,7 +407,8 @@ impl Explorer {
         let now_i = Instant::now();
         let boot = boot_time(&self.root, inp.now);
         let by_pid: HashMap<u32, &ProcInfo> = all.iter().map(|p| (p.pid, p)).collect();
-        let live_by_pid: HashMap<u32, &LiveInfo> = inp.live.values().filter(|l| l.alive).map(|l| (l.pid, l)).collect();
+        // Codex entries are listed from the process itself (codex_session_of), as before.
+        let live_by_pid: HashMap<u32, &LiveInfo> = inp.live.values().filter(|l| l.alive && !l.codex).map(|l| (l.pid, l)).collect();
         let started = |p: &ProcInfo| boot + p.start_ticks as f64 / self.hz;
 
         struct Cand<'a> {
@@ -584,7 +607,7 @@ impl Explorer {
                         extra.extend(att);
                         fold(&mut r, &extra, &mut group);
                         let idle = r.idle_seconds.unwrap_or(0) as f64;
-                        if idle > STALE_IDLE && location.is_none() && !attached && can_be_stale(c) {
+                        if idle > STALE_IDLE && inp.windows_known && location.is_none() && !attached && can_be_stale(c) {
                             r.stale_reason = Some(format!("idle for {}, with no terminal window and nothing attached", util::ago(Some(idle))));
                         }
                         group.insert(0, r);
@@ -830,6 +853,26 @@ pub fn codex_session_of(root: &Path, pid: u32) -> Option<String> {
         }
     }
     None
+}
+
+/// This user's running Codex processes that hold a session open: (pid, session id). Only a
+/// process whose executable could be an agent has its command line read.
+pub fn codex_sessions(root: &Path, uid: u32) -> Vec<(u32, String)> {
+    let Ok(rd) = fs::read_dir(root) else { return Vec::new() };
+    rd.flatten()
+        .filter_map(|e| {
+            let pid = e.file_name().to_str()?.parse::<u32>().ok()?;
+            if !e.metadata().is_ok_and(|m| m.uid() == uid) {
+                return None;
+            }
+            let exe = fs::read_link(e.path().join("exe")).ok().map(|p| p.to_string_lossy().trim_end_matches(" (deleted)").to_string());
+            if exe.as_deref().is_some_and(|x| native_agent(x).is_none() && !is_js_runner(x)) {
+                return None;
+            }
+            (agent_of(&read_cmdline(root, pid), exe.as_deref()) == Some(Agent::Codex)).then_some(())?;
+            Some((pid, codex_session_of(root, pid)?))
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------------ which terminal shows it
@@ -1143,7 +1186,7 @@ pub(crate) mod tests {
         let mut notes = HashMap::new();
         notes.insert(201, WorkingNote { name: "claude: alpha".into(), idle: true, helpers: vec![] });
         notes.insert(4242, WorkingNote { name: "claude: gone".into(), idle: true, helpers: vec![] });
-        ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, now })
+        ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, windows_known: true, now })
     }
 
     #[test]
@@ -1232,7 +1275,7 @@ pub(crate) mod tests {
         let view = |_: &LiveInfo| SessionView::default();
         let locate = |_: u32, _: Option<&str>| -> Option<Location> { None };
         let notes = HashMap::new();
-        let inp = Inputs { live: &live, view: &view, locate: &locate, notes: &notes, now: util::now() };
+        let inp = Inputs { live: &live, view: &view, locate: &locate, notes: &notes, windows_known: true, now: util::now() };
         assert_eq!(ex.processes(&inp).procs[0].cpu_percent, None);
         {
             let mut s = ex.samples.lock().unwrap();
@@ -1315,6 +1358,11 @@ pub(crate) mod tests {
         assert_eq!(r(&["claude", "bg-pty-host", "--bg-pty-host", "s", "--", V, "--bg-spare"]), Role::PtyHost);
         assert_eq!(r(&[V, "--resume", "/x.jsonl"]), Role::Main);
         assert_eq!(short_command(&["x".into(), "TOKEN=abc".into(), "--password=p".into()]), "x TOKEN=… --password=…");
+        let s = |argv: &[&str]| short_command(&argv.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(s(&["curl", "-H", "X-Api: abc", "--header=Cookie: c", "https://x"]), "curl -H … --header=… https://x");
+        assert_eq!(s(&["node", "srv.js", r#"{"apiKey":"abc"}"#, "Authorization: Bearer abc"]), "node srv.js … …");
+        assert_eq!(s(&["tool", "sk-ant-abc123", "--gh=ghp_abc", "xoxb-1-2", "desk-top"]), "tool … … … desk-top");
+        assert_eq!(s(&["/usr/bin/claude", "--resume", "8b1c4e7a"]), "claude --resume 8b1c4e7a");
     }
 
     #[test]
@@ -1359,12 +1407,15 @@ pub(crate) mod tests {
         let view = |i: &LiveInfo| SessionView { title: Some(i.session_id.clone()), state: Some(State::Idle), idle_since: i.status_updated_at, used: true, ..Default::default() };
         let locate = |_: u32, _: Option<&str>| -> Option<Location> { None };
         let notes = HashMap::new();
-        let o = ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, now });
+        let o = ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, windows_known: true, now });
         let stale: Vec<u32> = o.procs.iter().filter(|p| p.stale_reason.is_some()).map(|p| p.pid).collect();
         assert_eq!(stale, [111, 120]);
         assert_eq!(o.stale_count, 2);
         let stray = o.procs.iter().find(|p| p.pid == 160).unwrap();
         assert_eq!((stray.kind, stray.stale_reason.as_deref()), (ProcKind::Stray, None));
+        // Before windows are worked out, "no terminal window" means nothing yet: none is stale.
+        let o = ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, windows_known: false, now });
+        assert_eq!(o.stale_count, 0);
     }
 
     /// Inside a toolbox /proc/<pid>/exe can't be read and argv[0] is a bare `claude`: such a process
@@ -1392,7 +1443,7 @@ pub(crate) mod tests {
         let view = |i: &LiveInfo| SessionView { title: i.name.clone(), state: Some(State::Idle), used: true, ..Default::default() };
         let locate = |_: u32, _: Option<&str>| -> Option<Location> { None };
         let notes = HashMap::new();
-        let o = ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, now: util::now() });
+        let o = ex.processes(&Inputs { live: &live, view: &view, locate: &locate, notes: &notes, windows_known: true, now: util::now() });
         assert_eq!(o.procs.iter().map(|r| r.pid).collect::<Vec<_>>(), [610]);
         // Stopping keeps its checks: the vouched-for process can be stopped, the others can't.
         let actor = FakeActor { calls: Mutex::new(vec![]) };
@@ -1495,7 +1546,7 @@ pub(crate) mod tests {
             let view = |i: &LiveInfo| SessionView { title: None, project_name: Some("wake".into()), state: Some(State::Idle), idle_since: i.status_updated_at, used: false };
             let locate = |_: u32, _: Option<&str>| -> Option<Location> { None };
             let notes = HashMap::new();
-            ex.processes(&Inputs { live: &self.live, view: &view, locate: &locate, notes: &notes, now: self.now })
+            ex.processes(&Inputs { live: &self.live, view: &view, locate: &locate, notes: &notes, windows_known: true, now: self.now })
         }
     }
 

@@ -436,7 +436,12 @@ impl Inner {
         {
             return data.clone();
         }
-        let data = Arc::new(live::read_live(&self.paths, &self.proc_root));
+        let prev = c.as_ref().map(|(_, d)| d.clone()).unwrap_or_default();
+        let mut data = live::read_live_after(&self.paths, &self.proc_root, &prev);
+        for (sid, info) in live::read_codex_live(&self.proc_root, procs::my_uid()) {
+            data.entry(sid).or_insert(info);
+        }
+        let data = Arc::new(data);
         *c = Some((Instant::now(), data.clone()));
         data
     }
@@ -506,7 +511,7 @@ impl Inner {
                 map.entry(p.pid).or_insert(loc);
             }
         }
-        let unplaced: Vec<&LiveInfo> = infos.values().filter(|i| i.alive && !map.contains_key(&i.pid)).collect();
+        let unplaced: Vec<&LiveInfo> = infos.values().filter(|i| i.alive && !i.codex && !map.contains_key(&i.pid)).collect();
         for i in unplaced {
             if let Some(loc) = self.dashboard_of(i, &all, &agents, &masters) {
                 map.insert(i.pid, loc);
@@ -836,6 +841,16 @@ fn tilde(p: &str, home: &Path) -> String {
     util::tilde(Path::new(p), home)
 }
 
+/// A session id's first eight characters, as Wake's log names sessions.
+fn short_id(sid: &str) -> String {
+    sid.chars().take(8).collect()
+}
+
+/// `message` with a session's title taken out (titles can be prompt text, kept out of the log).
+fn without(message: &str, title: &str) -> String {
+    if title.trim().is_empty() { message.to_string() } else { message.replace(title, "the session") }
+}
+
 fn snippet(text: Option<&str>, q: &str) -> Option<String> {
     let text = text?;
     let low = text.to_lowercase();
@@ -1096,7 +1111,10 @@ impl Source for Live {
     fn go_to(&self, session: &str, dry_run: bool) -> ActionResult {
         let (r, what, target) = self.go_to_steps(session, dry_run);
         if !dry_run {
-            log::record_action(&self.inner.paths, what, &target, r.ok, &r.message, &r.steps);
+            // Titles can be prompt text: the log gets the session's short id instead.
+            let i = &self.inner;
+            let title = i.title_for(session, i.live().get(session), &i.store.load_projects());
+            log::record_action(&i.paths, what, &target, r.ok, &without(&r.message, &title), &r.steps);
         }
         r
     }
@@ -1174,13 +1192,16 @@ impl Source for Live {
         *lock(&i.live_cache) = None;
         if !dry_run {
             // The task's title and PID and which agent it is: never its command line.
-            let name = infos.values().find(|l| l.alive && l.pid == pid).and_then(title).map_or(format!("PID {pid}"), |t| format!("'{t}' (PID {pid})"));
+            // Titles can be prompt text: the session's short id instead.
+            let info = infos.values().find(|l| l.alive && l.pid == pid);
+            let name = info.map_or(format!("PID {pid}"), |l| format!("session {} (PID {pid})", short_id(&l.session_id)));
+            let message = info.and_then(title).map_or(r.message.clone(), |t| without(&r.message, &t));
             let agent = procs::read_proc(&i.explorer.root, pid).and_then(|p| procs::identify(&p, &infos)).map(|a| format!(", {a:?}")).unwrap_or_default();
             let what = match how {
                 StopHow::Kill => "force",
                 _ => "stop",
             };
-            log::record_action(&i.paths, what, &format!("{name}{agent}"), r.ok, &r.message, &r.steps);
+            log::record_action(&i.paths, what, &format!("{name}{agent}"), r.ok, &message, &r.steps);
         }
         r
     }
@@ -1462,9 +1483,9 @@ impl Live {
             // Worked out now, not from the last pass: a second attach is worse than a short wait.
             let loc = i.find_window(info);
             let title = i.title_for(session, Some(info), &projects);
-            let target = format!("'{title}' (PID {})", info.pid);
+            let target = format!("session {} (PID {})", short_id(session), info.pid);
             let Some(loc) = loc else {
-                let Some(job) = &info.job_id else {
+                let Some(job) = info.job_id.as_ref().filter(|j| desktop::plain_id(j)) else {
                     return (fail(&format!("Wake can't tell which window {title} is in. It may be inside another program, such as tmux.")), "go to", target);
                 };
                 // A background session no window shows: a new window attached to it.
@@ -1495,10 +1516,9 @@ impl Live {
         let cmd = info.and_then(|x| x.resume_command.clone()).unwrap_or_else(|| if acc.agent == "codex" { format!("codex resume {session}") } else { format!("claude --resume {session}") });
         let cwd = acc.launch_cwd.clone().or_else(|| info.and_then(|x| x.cwd.clone()));
         let r = i.desktop.reopen(cwd.as_deref(), &cmd, dry_run);
-        let title = i.title_for(session, info, &projects);
         let target = match &cwd {
-            Some(c) => format!("'{title}' in {}", tilde(c, &i.paths.home)),
-            None => format!("'{title}'"),
+            Some(c) => format!("session {} in {}", short_id(session), tilde(c, &i.paths.home)),
+            None => format!("session {}", short_id(session)),
         };
         (r, "reopen", target)
     }
@@ -1531,7 +1551,7 @@ impl Inner {
         i.locations_now();
         let view = |info: &LiveInfo| i.session_view(info, &projects, now);
         let locate = |pid: u32, _job: Option<&str>| -> Option<Location> { i.location(pid) };
-        let mut ov = i.explorer.processes(&Inputs { live: &infos, view: &view, locate: &locate, notes: &notes, now });
+        let mut ov = i.explorer.processes(&Inputs { live: &infos, view: &view, locate: &locate, notes: &notes, windows_known: i.locations_unsure().is_none(), now });
         i.questions.hider().label_procs(&mut ov);
         *lock(&i.procs_cache) = Some((Instant::now(), ov.clone()));
         ov
@@ -1887,8 +1907,38 @@ mod tests {
         let r = l.go_to("sess-aaaa", false);
         let lines = log::recent(&env.paths, 5);
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].contains("  go to  '") && lines[0].contains(&format!("(PID {})  {}", std::process::id(), if r.ok { "ok" } else { "failed" })), "{lines:?}");
+        assert!(lines[0].contains("  go to  session sess-aaa (PID ") && lines[0].contains(&format!("(PID {})  {}", std::process::id(), if r.ok { "ok" } else { "failed" })), "{lines:?}");
+        let title = l.inner.title_for("sess-aaaa", None, &l.inner.store.load_projects());
+        assert!(!lines[0].contains(&title), "the title stays out of the log: {lines:?}");
         assert!(!bus.writes().iter().any(|c| c[0] == "setsid"), "never a second window for a session that has one");
+    }
+
+    #[test]
+    fn a_running_codex_session_is_never_reopened() {
+        let env = Env::new();
+        let bus = FakeBus::new();
+        let (l, _, fp) = make(&env, &bus);
+        let sid = "0193c2aa-0000-7c93-9c1d-5e2f8a0b4c17";
+        // Ended: reopened with `codex resume`.
+        let r = l.go_to(sid, true);
+        assert!(r.steps.iter().any(|s| s.contains(&format!("codex resume {sid}"))), "{r:?}");
+        assert_eq!(l.session(sid).unwrap().summary.pid, None);
+        // Running: a codex process holds its rollout file open.
+        let pid = 5300;
+        fp.add(pid, 1, &["/usr/bin/codex"], "/usr/bin/codex", 1000, 1, 5, procs::my_uid());
+        let rollout = env.paths.codex.join(format!("sessions/2026/11/19/rollout-2026-11-19T11-00-00-{sid}.jsonl"));
+        fs::create_dir_all(fp.root().join(format!("{pid}/fd"))).unwrap();
+        std::os::unix::fs::symlink(&rollout, fp.root().join(format!("{pid}/fd/3"))).unwrap();
+        *lock(&l.inner.live_cache) = None;
+        assert_eq!(l.session(sid).unwrap().summary.pid, Some(pid), "a live session carries its pid");
+        let r = l.go_to(sid, true);
+        assert!(!r.ok && r.message.contains("can't tell which window"), "{r:?}");
+        assert!(!r.steps.iter().any(|s| s.contains("codex resume")), "{r:?}");
+        // In a terminal window: that window, never a second `codex resume`.
+        in_window(&fp, pid, 4, 3300);
+        let r = l.go_to(sid, true);
+        assert!(r.message.contains("is in its window") || r.message.contains("Went to"), "{r:?}");
+        assert!(!bus.writes().iter().any(|c| c[0] == "setsid"));
     }
 
     #[test]

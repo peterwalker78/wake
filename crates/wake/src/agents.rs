@@ -1223,9 +1223,9 @@ fn task_rows(ui: &Ui, a: &AgentProc, cols: &[Col], hide: u8) -> Vec<gtk::ListBox
             let title = w::clip(&t.label, &["title"]);
             title.set_width_chars(9);
             task.append(&title);
-            // With the wave column gone (a narrow window) the PID column, and the kind word in it,
-            // gives way to the line: the kind goes under the label instead.
-            if hide & 1 != 0 {
+            // When the PID column makes way (a narrower window, or the wave column gone, whose
+            // place the line takes), so does the kind word in it: it goes under the label instead.
+            if hide & 0b11 != 0 {
                 task.append(&w::clip(kind, &["desc"]));
             }
             let age = w::clip(&crate::why::task_age(t.started_at.as_deref()), &["ev"]);

@@ -164,7 +164,7 @@ fn show_tab(ui: &Ui) {
     let idea = ui.st.borrow().sw.idea;
     let root: gtk::Widget = ui.w.switcher.clone().upcast();
     for (name, on) in [("pal-find", !idea), ("pal-idea", idea)] {
-        if let Some(b) = panel::find_named(&root, name) {
+        if let Some(b) = w::named(&root, name) {
             if on {
                 b.add_css_class("on");
             } else {
@@ -175,7 +175,7 @@ fn show_tab(ui: &Ui) {
     mark_pair(ui, Some(idea));
     ui.w.sw_entry.set_placeholder_text(Some(if idea { IDEA_HINT } else { FIND_HINT }));
     ui.w.sw_entry.update_property(&[gtk::accessible::Property::Label(if idea { "New idea" } else { "Find a session" })]);
-    if let Some(ft) = panel::find_named(&root, "pal-ft").and_downcast::<crate::layout::Squeeze>() {
+    if let Some(ft) = w::named(&root, "pal-ft").and_downcast::<crate::layout::Squeeze>() {
         ft.clear();
         let keys: &[(&[&str], &str, i32)] = if idea {
             &[(&["↑", "↓"], "choose the project", 2), (&["Enter"], "keep it", 0), (&["Tab"], "Find", 3), (&["Esc"], "close", 1)]
@@ -236,7 +236,7 @@ fn open_tab(ui: &Ui, idea: bool) {
             render(&ui2);
         });
         for (name, idea) in [("pal-find", false), ("pal-idea", true)] {
-            if let Some(b) = panel::find_named(ui.w.switcher.upcast_ref(), name).and_downcast::<gtk::Button>() {
+            if let Some(b) = w::named(&ui.w.switcher, name).and_downcast::<gtk::Button>() {
                 let ui2 = ui.clone();
                 b.connect_clicked(move |_| set_tab(&ui2, idea));
             }

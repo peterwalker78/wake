@@ -263,20 +263,7 @@ pub fn sort_head(ui: &Ui, view: View, cols: &[Col], keys: &[Option<&'static str>
 }
 
 fn focus_header(ui: &Ui, view: View, key: &str) {
-    fn find(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
-        if w.widget_name() == name {
-            return Some(w.clone());
-        }
-        let mut c = w.first_child();
-        while let Some(x) = c {
-            if let Some(f) = find(&x, name) {
-                return Some(f);
-            }
-            c = x.next_sibling();
-        }
-        None
-    }
-    if let Some(b) = find(ui.w.views[&view].head.upcast_ref(), &format!("sort-{key}")) {
+    if let Some(b) = w::named(&ui.w.views[&view].head, &format!("sort-{key}")) {
         b.grab_focus();
     }
 }
@@ -451,28 +438,12 @@ pub fn render_rail(ui: &Ui) {
     fill_rail(ui, &ui.w.nav, &ui.w.plist, slim, view, pf.as_deref(), &navs, &ps);
     if slim {
         // The keyboard stays on the same item when the full form is redrawn under it.
-        let at = gtk::prelude::GtkWindowExt::focus(&ui.window).and_then(|f| {
-            [&ui.w.peek_nav, &ui.w.peek_plist].into_iter().enumerate().find_map(|(k, b)| {
-                let mut i = 0;
-                let mut c = b.first_child();
-                while let Some(x) = c {
-                    if x == f || f.is_ancestor(&x) {
-                        return Some((k, i));
-                    }
-                    i += 1;
-                    c = x.next_sibling();
-                }
-                None
-            })
-        });
+        let at = gtk::prelude::GtkWindowExt::focus(&ui.window)
+            .and_then(|f| [&ui.w.peek_nav, &ui.w.peek_plist].into_iter().enumerate().find_map(|(k, b)| w::children(b).position(|x| x == f || f.is_ancestor(&x)).map(|i| (k, i))));
         fill_rail(ui, &ui.w.peek_nav, &ui.w.peek_plist, false, view, pf.as_deref(), &navs, &ps);
         if let Some((k, i)) = at {
             let b = if k == 0 { &ui.w.peek_nav } else { &ui.w.peek_plist };
-            let mut c = b.first_child();
-            for _ in 0..i {
-                c = c.and_then(|x| x.next_sibling());
-            }
-            if let Some(x) = c {
+            if let Some(x) = w::children(b).nth(i) {
                 x.grab_focus();
             }
         }
@@ -697,13 +668,11 @@ pub fn render_chips(ui: &Ui) {
     if had_focus {
         let chips = chips.clone();
         glib::idle_add_local_once(move || {
-            let mut c = chips.first_child();
-            while let Some(x) = c {
+            for x in w::children(&chips) {
                 if x.is::<gtk::Button>() && x.has_css_class("on") {
                     x.grab_focus();
                     return;
                 }
-                c = x.next_sibling();
             }
         });
     }
@@ -906,9 +875,7 @@ pub fn begin(ui: &Ui, view: View, sig: String) -> Option<bool> {
     let had_focus = focus.is_some_and(|f| f.is_ancestor(&vw.list) || f == *vw.list.upcast_ref::<gtk::Widget>());
     // The rows as they were, so `finish` can fade in the ones that arrive and out the ones that go.
     let mut old = Vec::new();
-    let mut c = vw.list.first_child();
-    while let Some(x) = c {
-        c = x.next_sibling();
+    for x in w::children(&vw.list) {
         if let Ok(row) = x.downcast::<gtk::ListBoxRow>()
             && !row.widget_name().is_empty()
         {
@@ -947,9 +914,7 @@ pub fn finish(ui: &Ui, view: View, had_focus: bool) {
     let list = &ui.w.views[&view].list;
     if same && crate::motion::on() && !old.is_empty() {
         let mut keys = std::collections::HashSet::new();
-        let mut c = list.first_child();
-        while let Some(x) = c {
-            c = x.next_sibling();
+        for x in w::children(&list) {
             let name = x.widget_name().to_string();
             if name.is_empty() {
                 continue;
@@ -981,9 +946,7 @@ pub fn finish(ui: &Ui, view: View, had_focus: bool) {
     app::restore_sel(ui, view, had_focus);
     // How to open a row, shown on hovering it (Agents says it on the rows that have details).
     if app::opens_panel(view) && view != View::Agents {
-        let mut c = list.first_child();
-        while let Some(x) = c {
-            c = x.next_sibling();
+        for x in w::children(&list) {
             if let Ok(row) = x.downcast::<gtk::ListBoxRow>()
                 && row.is_selectable()
                 && !row.widget_name().is_empty()
@@ -1838,28 +1801,13 @@ pub fn focus_idea_project(ui: &Ui, id: &str) {
         Some(g) => g.upcast(),
         None => ui.w.views[&View::Ideas].list.clone().upcast(),
     };
-    let mut child = list.first_child();
-    while let Some(c) = child {
+    for c in w::children(&list) {
         if c.widget_name() == id {
-            fn find(w: &gtk::Widget) -> Option<gtk::Widget> {
-                if w.is::<gtk::DropDown>() {
-                    return Some(w.clone());
-                }
-                let mut c = w.first_child();
-                while let Some(x) = c {
-                    if let Some(f) = find(&x) {
-                        return Some(f);
-                    }
-                    c = x.next_sibling();
-                }
-                None
-            }
-            if let Some(dd) = find(&c) {
+            if let Some(dd) = w::find(&c, |w| w.is::<gtk::DropDown>()) {
                 dd.grab_focus();
             }
             return;
         }
-        child = c.next_sibling();
     }
 }
 

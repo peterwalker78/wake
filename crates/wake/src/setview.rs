@@ -301,12 +301,10 @@ fn dropdown(ui: &Ui, r: &Row) -> gtk::DropDown {
     d.add_css_class("setdrop");
     d.set_focusable(false);
     // Its button never takes the keyboard: the row has it, and Enter or Space opens the list.
-    let mut c = d.first_child();
-    while let Some(x) = c {
+    for x in w::children(&d) {
         if x.is::<gtk::Button>() {
             x.set_focusable(false);
         }
-        c = x.next_sibling();
     }
     if let Some(i) = r.choices.iter().position(|c| c.id == r.current) {
         d.set_selected(i as u32);
@@ -372,12 +370,10 @@ fn find_widget<T: IsA<gtk::Widget>>(w: &gtk::Widget) -> Option<T> {
     if let Some(t) = w.downcast_ref::<T>() {
         return Some(t.clone());
     }
-    let mut c = w.first_child();
-    while let Some(x) = c {
+    for x in w::children(&w) {
         if let Some(f) = find_widget::<T>(&x) {
             return Some(f);
         }
-        c = x.next_sibling();
     }
     None
 }

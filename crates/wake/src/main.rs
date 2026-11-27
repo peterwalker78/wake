@@ -14,6 +14,7 @@ mod demo;
 mod dialogs;
 mod disk;
 mod fmt;
+mod hooks;
 mod keynav;
 mod layout;
 mod motion;

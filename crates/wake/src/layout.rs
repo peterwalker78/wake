@@ -671,9 +671,7 @@ mod shell {
                 Some(p) => (Some(p.peek.clone()), Some(p.peek_edge.clone()), p.peek.width()),
                 None => (None, None, 0),
             };
-            let mut c = obj.first_child();
-            while let Some(x) = c {
-                c = x.next_sibling();
+            for x in crate::w::children(&*obj) {
                 let t = self.peek_t.get();
                 if (Some(&x) == peek.as_ref() || Some(&x) == edge.as_ref()) && t < 1.0 {
                     // Sliding out from under the slim rail as it fades in, its shadow with it.
@@ -781,12 +779,10 @@ impl Squeeze {
     pub fn dropped(&self) -> Vec<gtk::Widget> {
         let keep = self.imp().overflow.borrow().clone();
         let mut out = Vec::new();
-        let mut c = self.first_child();
-        while let Some(x) = c {
+        for x in crate::w::children(&self) {
             if x.is_visible() && !x.is_child_visible() && Some(&x) != keep.as_ref() {
                 out.push(x.clone());
             }
-            c = x.next_sibling();
         }
         out
     }
@@ -801,12 +797,10 @@ fn label_text(w: &gtk::Widget) -> String {
             }
             return;
         }
-        let mut c = w.first_child();
-        while let Some(x) = c {
+        for x in crate::w::children(&w) {
             if x.is_visible() {
                 walk(&x, out);
             }
-            c = x.next_sibling();
         }
     }
     let mut out = Vec::new();
@@ -848,14 +842,12 @@ mod squeeze {
             let prio = self.prio.borrow();
             let more = self.overflow.borrow().clone();
             let mut out = Vec::new();
-            let mut c = self.obj().first_child();
-            while let Some(w) = c {
+            for w in crate::w::children(&*self.obj()) {
                 if w.is_visible() && Some(&w) != more.as_ref() {
                     let p = prio.iter().find(|(x, _)| x == &w).map_or(0, |x| x.1);
                     let (min, nat, _, _) = w.measure(gtk::Orientation::Horizontal, -1);
                     out.push((w.clone(), p, min, nat));
                 }
-                c = w.next_sibling();
             }
             out
         }
@@ -984,12 +976,10 @@ pub fn describe(w: &gtk::Widget) -> String {
         if let Some(l) = w.downcast_ref::<gtk::Label>() {
             out.push(format!("{:?}({})", l.text().chars().take(24).collect::<String>(), l.measure(gtk::Orientation::Horizontal, -1).0));
         }
-        let mut c = w.first_child();
-        while let Some(x) = c {
+        for x in crate::w::children(&w) {
             if x.is_visible() {
                 texts(&x, out);
             }
-            c = x.next_sibling();
         }
     }
     let mut t = Vec::new();
@@ -1010,9 +1000,7 @@ pub fn clips(root: &gtk::Widget) -> Vec<(String, f32)> {
         w.downcast_ref::<gtk::ScrolledWindow>().is_some_and(|s| s.hscrollbar_policy() != gtk::PolicyType::Never)
     }
     fn walk(w: &gtk::Widget, root: &gtk::Widget, rw: f32, path: &str, sideways: bool, out: &mut Vec<(String, f32)>) {
-        let mut c = w.first_child();
-        while let Some(x) = c {
-            c = x.next_sibling();
+        for x in crate::w::children(&w) {
             if !x.is_visible() || !x.is_child_visible() || !x.is_mapped() || x.is::<gtk::Popover>() {
                 continue;
             }
@@ -1076,7 +1064,7 @@ pub fn hook(ui: &crate::app::Ui) {
             let mut found = clips(&root);
             // A dialog must be in sight: a card laid out below the window draws nothing at all.
             if matches!(what, "dialog" | "keys") {
-                let card = find_class(ui.w.modal.upcast_ref(), "modal");
+                let card = crate::w::find(&ui.w.modal, |c| c.has_css_class("modal"));
                 let b = card.as_ref().and_then(|c| c.compute_bounds(&root));
                 if b.is_none_or(|b| b.y() < 0.0 || b.y() > root.height() as f32 - 40.0) {
                     found.push((format!("the {what} card is out of sight ({b:?})"), 0.0));
@@ -1102,7 +1090,7 @@ pub fn hook(ui: &crate::app::Ui) {
             let prev = steps[i - 1];
             // A dialog just put up may not be laid out yet (Broadway's frame clock is lazy): give it
             // a few more ticks before judging where it is.
-            if matches!(prev.1, "dialog" | "keys") && find_class(ui.w.modal.upcast_ref(), "modal").is_some_and(|c| c.width() < 100) && waited.get() < 5 {
+            if matches!(prev.1, "dialog" | "keys") && crate::w::find(&ui.w.modal, |c| c.has_css_class("modal")).is_some_and(|c| c.width() < 100) && waited.get() < 5 {
                 waited.set(waited.get() + 1);
                 return glib::ControlFlow::Continue;
             }
@@ -1141,21 +1129,6 @@ pub fn hook(ui: &crate::app::Ui) {
         }
         glib::ControlFlow::Continue
     });
-}
-
-/// The first widget under `w` (or `w`) with CSS class `class`.
-fn find_class(w: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
-    if w.has_css_class(class) {
-        return Some(w.clone());
-    }
-    let mut c = w.first_child();
-    while let Some(x) = c {
-        if let Some(f) = find_class(&x, class) {
-            return Some(f);
-        }
-        c = x.next_sibling();
-    }
-    None
 }
 
 #[cfg(test)]

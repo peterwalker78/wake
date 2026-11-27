@@ -94,6 +94,27 @@ pub fn button(text: &str, key: Option<&str>, classes: &[&str], on_click: impl Fn
     b
 }
 
+/// A widget's children, first to last.
+pub fn children<W: AsRef<gtk::Widget>>(w: &W) -> impl Iterator<Item = gtk::Widget> + use<W> {
+    std::iter::successors(w.as_ref().first_child(), |c| c.next_sibling())
+}
+
+/// The first widget in `root`'s tree (`root` itself first, then depth first) that `pred` accepts.
+pub fn find(root: &impl IsA<gtk::Widget>, pred: impl Fn(&gtk::Widget) -> bool) -> Option<gtk::Widget> {
+    fn walk(w: &gtk::Widget, pred: &dyn Fn(&gtk::Widget) -> bool) -> Option<gtk::Widget> {
+        if pred(w) {
+            return Some(w.clone());
+        }
+        children(w).find_map(|c| walk(&c, pred))
+    }
+    walk(root.as_ref(), &pred)
+}
+
+/// The first widget in `root`'s tree named `name`.
+pub fn named(root: &impl IsA<gtk::Widget>, name: &str) -> Option<gtk::Widget> {
+    find(root, |w| w.widget_name() == name)
+}
+
 pub fn clear(b: &impl IsA<gtk::Widget>) {
     let w = b.upcast_ref::<gtk::Widget>();
     while let Some(child) = w.first_child() {
@@ -137,10 +158,8 @@ pub fn shrinkable(w: &gtk::Widget) {
         }
         return;
     }
-    let mut c = w.first_child();
-    while let Some(x) = c {
+    for x in children(&w) {
         shrinkable(&x);
-        c = x.next_sibling();
     }
 }
 

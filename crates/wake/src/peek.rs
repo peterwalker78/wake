@@ -146,7 +146,7 @@ pub fn hold_key(key: gdk::Key, mods: gdk::ModifierType) -> Option<HoldKey> {
 // ---------- the app side ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Mode {
+pub enum Mode {
     #[default]
     None,
     /// Asked the desktop to fly there; waiting for its answer.
@@ -178,24 +178,17 @@ pub struct Peek {
     /// How this desktop lets Wake look, once the core has said.
     pub kind: Option<LookKind>,
     target: Option<String>,
-    mode: Mode,
+    pub mode: Mode,
     /// Bumped whenever a peek starts or ends, so late answers for an old peek are dropped.
     epoch: u64,
     view: Option<PreviewW>,
     text: String,
     /// Screenshots: read the screen only this many more times.
     reads_left: Option<u32>,
-    /// Test hook (`--show look:PID`, `--show hold:look=PID`): every peek flies to the window
-    /// holding this process, through a desktop link of the hook's own, instead of a session's tab.
-    pub fake_pid: Option<u32>,
     /// Space is down and its press went on to what has the keyboard (not a session row): its
     /// repeats are dropped until it is let go, so holding Space never presses a button again and
     /// again. Typing (a text box) keeps its repeats.
     through: bool,
-}
-
-fn hook_look() -> Option<std::sync::Arc<wake_core::look::Look>> {
-    HOOK_ARC.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Log a peek step to stderr when `WAKE_PEEK_LOG` is set (the hold test reads it).
@@ -205,7 +198,7 @@ fn log(what: impl FnOnce() -> String) {
     }
 }
 
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     glib::monotonic_time() / 1000
 }
 
@@ -483,10 +476,7 @@ pub fn start(ui: &Ui, id: &str, preview_only: bool) {
         p.target = Some(id.to_string());
         p.epoch
     };
-    let (kind, fake) = {
-        let p = ui.peek.borrow();
-        (p.kind, p.fake_pid)
-    };
+    let kind = ui.peek.borrow().kind;
     let can_fly = matches!(kind, Some(LookKind::Slipstream | LookKind::Kwin));
     // Always the agent's own window first, whatever terminal it is in and however busy it is;
     // the core says when there is none (a background session nothing is attached to), and then
@@ -498,8 +488,8 @@ pub fn start(ui: &Ui, id: &str, preview_only: bool) {
     }
     ui.peek.borrow_mut().mode = Mode::Asking;
     let sid = id.to_string();
-    let hook = fake.and_then(|pid| hook_look().map(|l| (l, pid)));
-    log(|| format!("asking the desktop to fly to {}", fake.map_or(format!("session {id}'s window"), |p| format!("the window holding pid {p}"))));
+    let hook = crate::hooks::look();
+    log(|| format!("asking the desktop to fly to {}", hook.as_ref().map_or(format!("session {id}'s window"), |(_, p)| format!("the window holding pid {p}"))));
     app::bg(
         ui,
         move |src| match hook {
@@ -541,7 +531,7 @@ fn watch_ended(ui: &Ui, epoch: u64) {
         if ui.peek.borrow().epoch != epoch || ui.peek.borrow().mode != Mode::Flying {
             return glib::ControlFlow::Break;
         }
-        let hook = hook_look().filter(|_| ui.peek.borrow().fake_pid.is_some());
+        let hook = crate::hooks::look().map(|(l, _)| l);
         app::bg(
             &ui,
             move |src| hook.map_or_else(|| src.look_ended(), |l| l.ended()),
@@ -559,14 +549,11 @@ fn watch_ended(ui: &Ui, epoch: u64) {
 
 /// The desktop's End, through the test hook's link when it is in use.
 fn look_end(src: &dyn Source, stay: bool) -> ActionResult {
-    match hook_look() {
-        Some(l) => l.end(stay, false),
+    match crate::hooks::look() {
+        Some((l, _)) => l.end(stay, false),
         None => src.look_end(stay, false),
     }
 }
-
-/// The desktop link the `look:` test hook uses: the real one.
-static HOOK_ARC: std::sync::Mutex<Option<std::sync::Arc<wake_core::look::Look>>> = std::sync::Mutex::new(None);
 
 /// End the peek: back to Wake as it was, or (`stay`) over to the agent.
 pub fn end(ui: &Ui, stay: bool) {
@@ -846,147 +833,6 @@ pub fn show_for_shot(ui: &Ui, arg: Option<String>) {
     };
     ui.peek.borrow_mut().reads_left = Some(3);
     start(ui, &id, true);
-}
-
-/// Test hook `--show look:PID`: every peek flies to the window holding process PID (a stand-in
-/// for an agent's terminal), through the real desktop link, and the keyboard is put on the first
-/// Monitor row so real Space/Tab presses (from the compositor) can drive it.
-pub fn hook_look_at(ui: &Ui, pid: u32) {
-    let link = wake_core::look::Look::new(
-        wake_core::desktop::default_runner(),
-        &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
-        wake_core::store::Paths::from_env().data.join("kwin"),
-        std::process::id(),
-        true,
-    );
-    let kind = link.kind();
-    *HOOK_ARC.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(link));
-    {
-        let mut p = ui.peek.borrow_mut();
-        p.fake_pid = Some(pid);
-        p.kind = Some(kind);
-    }
-    // The rows and details say what holding Space does, which this changes.
-    app::render_all(ui);
-    eprintln!("wake: look hook: peeks fly to pid {pid}'s window ({kind:?})");
-    focus_first_row(ui);
-}
-
-/// The keyboard on the first row of the current table (Monitor if no table is showing).
-fn focus_first_row(ui: &Ui) -> Option<String> {
-    let view = ui.st.borrow().view;
-    let view = if matches!(view, View::Monitor | View::Agents) { view } else { View::Monitor };
-    app::set_view(ui, view);
-    let list = ui.w.views[&view].list.clone();
-    let mut c = list.first_child();
-    while let Some(x) = c {
-        if let Some(row) = x.downcast_ref::<gtk::ListBoxRow>()
-            && row.is_focusable()
-            && !row.widget_name().is_empty()
-        {
-            let name = row.widget_name().to_string();
-            ui.st.borrow_mut().sel = Some(name.clone());
-            list.select_row(Some(row));
-            row.grab_focus();
-            eprintln!("wake: hold hook: the keyboard is on row {name}");
-            return Some(name);
-        }
-        c = x.next_sibling();
-    }
-    eprintln!("wake: hold hook: no row to put the keyboard on");
-    None
-}
-
-/// Test hook `--show hold[:SESSION][,stay]` or `--show hold:look=PID[,stay]`: a real hold, fed
-/// through the same path as key events (`on_press`/`on_release`): Space down, GTK-style key
-/// repeats from 400 ms, then a release at 2.4 s (or Enter at 2.4 s and the release after it).
-/// With `WAKE_HOLD_SHOT=<png>` the window is saved while the peek is on. Quits when done.
-pub fn hook_hold(ui: &Ui, arg: Option<String>) {
-    let arg = arg.unwrap_or_default();
-    if std::env::var_os("WAKE_HOLD_SHOT").is_some() {
-        ui.window.set_size_request(1300, 900);
-    }
-    let stay = arg.split(',').any(|a| a == "stay");
-    let first = arg.split(',').next().unwrap_or("").to_string();
-    if let Some(pid) = first.strip_prefix("look=").and_then(|p| p.parse().ok()) {
-        hook_look_at(ui, pid);
-    }
-    let session = (!first.is_empty() && !first.starts_with("look=") && first != "stay").then_some(first);
-    // The row: the session asked for (Monitor), else the first row.
-    let row = match &session {
-        Some(id) => {
-            app::set_view(ui, View::Monitor);
-            let list = ui.w.views[&View::Monitor].list.clone();
-            let mut c = list.first_child();
-            let mut found = None;
-            while let Some(x) = c {
-                if let Some(r) = x.downcast_ref::<gtk::ListBoxRow>()
-                    && (r.widget_name() == id.as_str() || r.widget_name().starts_with(id.as_str()))
-                {
-                    found = Some(r.clone());
-                }
-                c = x.next_sibling();
-            }
-            found.map(|r| {
-                let name = r.widget_name().to_string();
-                ui.st.borrow_mut().sel = Some(name.clone());
-                list.select_row(Some(&r));
-                r.grab_focus();
-                name
-            })
-        }
-        None => focus_first_row(ui),
-    };
-    let Some(row) = row else {
-        eprintln!("wake: hold hook: no row for {session:?}");
-        return;
-    };
-    let bg = app::find_session(ui, &row).map(|s| s.location.is_none());
-    eprintln!("wake: hold hook: holding Space on {row} (background, no tab: {bg:?}), {}", if stay { "Enter to stay" } else { "then letting go" });
-    let ui = ui.clone();
-    let t0 = now_ms();
-    let mut sent_enter = false;
-    let mut shot = false;
-    let r = on_press(&ui, gdk::Key::space, gdk::ModifierType::empty());
-    eprintln!("wake: hold hook: first press {}", if r.is_some() { "taken by the peek" } else { "NOT taken by the peek" });
-    glib::timeout_add_local(Duration::from_millis(33), move || {
-        let t = now_ms() - t0;
-        if (400..2400).contains(&t) {
-            // GTK's key repeat: more presses of the same key while it is held.
-            let _ = on_press(&ui, gdk::Key::space, gdk::ModifierType::empty());
-        }
-        if !shot && t >= 1600 {
-            shot = true;
-            let mode = ui.peek.borrow().mode;
-            eprintln!("wake: hold hook: at {t} ms the peek is {:?} / {mode:?}", ui.peek.borrow().phase);
-            if let Ok(path) = std::env::var("WAKE_HOLD_SHOT") {
-                match app::save_png(&ui, std::path::Path::new(&path)) {
-                    Ok(()) => eprintln!("wake: hold hook: saved {path}"),
-                    Err(e) => eprintln!("wake: hold hook: shot failed: {e}"),
-                }
-            }
-        }
-        if stay && !sent_enter && t >= 2400 {
-            sent_enter = true;
-            let _ = on_press(&ui, gdk::Key::Return, gdk::ModifierType::empty());
-        }
-        if t >= if stay { 2600 } else { 2400 } {
-            on_release(&ui, gdk::Key::space);
-            let ui = ui.clone();
-            glib::timeout_add_local_once(Duration::from_millis(1500), move || {
-                let p = ui.peek.borrow();
-                eprintln!("wake: hold hook: done; phase {:?}, mode {:?}", p.phase, p.mode);
-                drop(p);
-                if std::env::var_os("WAKE_HOLD_STAY_OPEN").is_none()
-                    && let Some(app) = ui.window.application()
-                {
-                    app.quit();
-                }
-            });
-            return glib::ControlFlow::Break;
-        }
-        glib::ControlFlow::Continue
-    });
 }
 
 /// For screenshots: the open preview (when it is a popover, its own surface) and where it sits.

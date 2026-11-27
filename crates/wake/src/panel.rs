@@ -1071,9 +1071,9 @@ pub fn tick_procs(ui: &Ui) {
     }
 }
 
-/// The way to a session, saying where it goes (the same key, o): "Go to tab 3" for one in a tab,
-/// "Open in a new window" for one running in the background, "Resume in a new window" for one
-/// that has ended and can be reopened.
+/// The way to a session, saying where it goes (`go_words`): "Go to <its terminal app>" for one in
+/// a window, "Open in a new window" for one running in the background, "Resume in a new window"
+/// for one that has ended and can be reopened.
 pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Button> {
     if !(s.location.is_some() || app::can_reopen(s) || app::is_live(s.state) || s.pid.is_some()) {
         return None;

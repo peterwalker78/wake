@@ -437,7 +437,7 @@ fn cells(all: Vec<gtk::Widget>, full_cols: &[Col], hide: u8) -> Vec<(gtk::Widget
 }
 
 fn where_words(a: &AgentProc) -> Option<String> {
-    a.location.as_ref().map(app::tab_label)
+    a.location.as_ref().map(app::window_name)
 }
 
 fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols: &[Col], hide: u8) -> gtk::ListBoxRow {

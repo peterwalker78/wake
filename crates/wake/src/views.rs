@@ -292,7 +292,6 @@ pub fn render_top(ui: &Ui) {
     if busy {
         ui.w.indexing.set_text(&format!("indexing {}/{}", ix.done, ix.total));
     }
-    ui.w.clock.set_text(&fmt::clock());
     ui.w.banner.set_visible(err.is_some());
     if let Some(e) = &err {
         ui.w.banner.set_text(&format!("Wake couldn't read everything: {e}"));

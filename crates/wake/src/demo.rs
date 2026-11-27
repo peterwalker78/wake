@@ -118,9 +118,9 @@ fn session(s: S) -> SessionSummary {
     }
 }
 
-/// A made-up terminal window (`window` tells them apart; the title is only for reading the demo).
-fn tab(window: u32, _tab_index: u32, _title: &str) -> Option<Location> {
-    Some(Location { pid: 3120 + window, app: Some("Terminal".into()) })
+/// A made-up terminal window (`n` tells them apart).
+fn window(n: u32) -> Option<Location> {
+    Some(Location { pid: 3120 + n, app: Some("Terminal".into()) })
 }
 
 /// Tasks for the demo's long tail of finished subagents.
@@ -220,7 +220,7 @@ impl DemoSource {
             last_prompt: "okay, send a brief write up of this stuff to priya for her awareness too",
         });
         s.question = Some("Should I send the write-up to Priya now, or keep it as a draft for you to check first?".into());
-        s.location = tab(1, 2, "Gradebook: reports");
+        s.location = window(1);
         s.pid = Some(41022);
         s.away_summary = Some("The PDF export is built and a sample report is drafted, both merged to develop, and Priya has the sample. Next, you pick the font for the printed reports.".into());
         s.subagents = SubagentCounts { total: 3, running: 0 };
@@ -238,7 +238,7 @@ impl DemoSource {
             prompts: 5,
             last_prompt: "the helper rows overlap the PID when there are more than four, fix that",
         });
-        s.location = tab(1, 0, "tideline: scope");
+        s.location = window(1);
         s.pid = Some(43310);
         s.subagents = SubagentCounts { total: 30, running: 2 };
         sessions.push(s);
@@ -306,7 +306,7 @@ impl DemoSource {
         });
         s.away_summary = Some("Sketched the board in three layouts. Next, say whether you want me to build the dense one or the two-pane one. (turn off recaps in /config)".into());
         s.question = Some("Next, say whether you want me to build the dense one or the two-pane one.".into());
-        s.location = tab(2, 0, "~: dashboard");
+        s.location = window(2);
         s.pid = Some(39977);
         sessions.push(s);
 
@@ -817,7 +817,7 @@ impl Source for DemoSource {
         ProcOverview { generated_at: ago(0), total_rss_bytes, stale_rss_bytes: stale.iter().map(|p| p.rss_bytes).sum(), stale_count: stale.len() as u32, dead_notes: vec![48213], procs }
     }
 
-    /// Made-up terminals: a working agent in a tab, a background one, and a quiet prompt for the
+    /// Made-up terminals: a working agent in a window, a background one, and a quiet prompt for the
     /// other live sessions. The working ones grow a line every second so the preview looks live.
     fn screen(&self, session: &str) -> Option<Screen> {
         let s = self.state.lock().unwrap().sessions.iter().find(|s| s.id == session).cloned()?;

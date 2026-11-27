@@ -222,8 +222,9 @@ fn on_path(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
+/// "1 session", "3 sessions": `word` with an s for any number but one.
 fn plural(n: usize, word: &str) -> String {
-    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+    crate::fmt::pl(n as u64, word, &format!("{word}s"))
 }
 
 fn tilde_path(p: &std::path::Path) -> String {

@@ -312,7 +312,6 @@ pub struct Widgets {
     /// The view switcher: `View::TABS` in the top bar.
     pub tabs: gtk::Box,
     pub indexing: gtk::Label,
-    pub clock: gtk::Label,
     /// The view switcher's bottom form, in a phone-narrow window.
     pub tabs_bottom: gtk::Box,
     /// New idea (+) and the main menu in the title bar.
@@ -574,9 +573,6 @@ fn build(app: &gtk::Application, opts: Opts) {
     controls.set_valign(gtk::Align::Center);
     end.append(&controls);
     top.append(&end);
-    // The clock isn't in the bar (the desktop has one); it is kept for the code that ticks it.
-    let clock = w::label(&crate::fmt::clock(), &["clock"]);
-    clock.set_visible(false);
     let handle = gtk::WindowHandle::new();
     handle.set_child(Some(&top));
     // An empty title bar: GTK still gives the window its shadow and resize edges.
@@ -651,7 +647,7 @@ fn build(app: &gtk::Application, opts: Opts) {
     body.set_vexpand(true);
     body.set_hexpand(true);
 
-    // A banner under the title bar for what you should know (demo data, Wake falling behind, tabs it
+    // A banner under the title bar for what you should know (demo data, Wake falling behind, windows it
     // can't see); hidden while all is well.
     let status = w::hbox(10, &["statusbar"]);
     // In a phone-narrow window the view switcher moves to the bottom, as GTK apps do.
@@ -709,7 +705,6 @@ fn build(app: &gtk::Application, opts: Opts) {
             back_btn: back_btn.clone(),
             menu: menu.clone(),
             indexing,
-            clock,
             nav,
             plist,
             peek_rail,
@@ -982,13 +977,6 @@ fn build(app: &gtk::Application, opts: Opts) {
             if ui.st.borrow().view == View::Agents && awake(&ui) {
                 refresh_procs(&ui);
             }
-            glib::ControlFlow::Continue
-        });
-    }
-    {
-        let ui = ui.clone();
-        glib::timeout_add_local(Duration::from_secs(15), move || {
-            ui.w.clock.set_text(&crate::fmt::clock());
             glib::ControlFlow::Continue
         });
     }
@@ -1653,7 +1641,7 @@ pub fn is_live(s: State) -> bool {
 
 /// A session's window as a person names it: its terminal app's own name, or "its window" when
 /// Wake can't tell the app's name.
-pub fn tab_label(l: &Location) -> String {
+pub fn window_name(l: &Location) -> String {
     l.app.clone().unwrap_or_else(|| "its window".into())
 }
 
@@ -1667,7 +1655,7 @@ pub fn unsure(ui: &Ui) -> bool {
 /// wrong) "background", and can't be gone to: that might attach a second time.
 pub fn loc_of(s: &SessionSummary, unsure: bool) -> (String, &'static str, bool, String) {
     if let Some(l) = &s.location {
-        return (tab_label(l), "", true, format!("Bring {} forward", l.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"))));
+        return (window_name(l), "", true, format!("Bring {} forward", l.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"))));
     }
     if unsure && (s.pid.is_some() || is_live(s.state) && s.state != State::Unknown) {
         return ("checking…".into(), "none", false, "Wake is still finding which window this is in.".into());
@@ -1872,17 +1860,15 @@ pub enum Cmd {
     Escape,
 }
 
-/// The command for `key` in `view`, with no Ctrl or Alt held and no text field focused.
-/// `on_control`: a button or dropdown has the focus, so Enter and Space are its own.
-/// Letters ignore Caps Lock; "Stop all stale" needs a real Shift because it stops several agents.
-pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> Option<Cmd> {
+/// The command for `key` in `view`, with no Ctrl or Alt held and no text field focused (Shift
+/// changes nothing). `on_control`: a button or dropdown has the focus, so Enter and Space are its own.
+pub fn command_for(key: gdk::Key, view: View, on_control: bool) -> Option<Cmd> {
     use gdk::Key as K;
 
     if on_control && matches!(key, K::Return | K::KP_Enter | K::space) {
         return None;
     }
     // Only the keys every desktop list has: no letters, so typing never does anything by surprise.
-    let _ = shift;
     let agents = view == View::Agents;
     let settings = view == View::Settings;
     let cards = matches!(view, View::Projects | View::Ideas);
@@ -2000,8 +1986,7 @@ fn on_key_inner(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propag
     }
     let on_control = focus.as_ref().is_some_and(|f| f.is::<gtk::Button>() || f.is::<gtk::CheckButton>() || f.is::<gtk::DropDown>() || f.ancestor(gtk::DropDown::static_type()).is_some());
     let view = ui.st.borrow().view;
-    let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
-    match command_for(key, shift, view, on_control) {
+    match command_for(key, view, on_control) {
         Some(cmd) if run_cmd(ui, cmd) => Stop,
         _ => Proceed,
     }
@@ -2233,19 +2218,18 @@ mod tests {
 
     #[test]
     fn letters_do_nothing_so_typing_never_surprises() {
-        assert_eq!(command_for(K::Down, false, View::Monitor, false), Some(Cmd::Down));
-        assert_eq!(command_for(K::Up, false, View::Monitor, false), Some(Cmd::Up));
+        assert_eq!(command_for(K::Down, View::Monitor, false), Some(Cmd::Down));
+        assert_eq!(command_for(K::Up, View::Monitor, false), Some(Cmd::Up));
         for k in [K::j, K::k, K::h, K::l, K::g, K::c, K::o, K::p, K::s, K::S, K::x, K::d, K::a, K::_1, K::_2, K::comma, K::slash, K::question] {
             for v in View::ALL {
-                assert_eq!(command_for(k, false, v, false), None, "{k:?} in {v:?}");
-                assert_eq!(command_for(k, true, v, false), None, "Shift+{k:?} in {v:?}");
+                assert_eq!(command_for(k, v, false), None, "{k:?} in {v:?}");
             }
         }
     }
 
     #[test]
     fn settings_arrows_change_the_selected_setting_and_free_keys_stay_free() {
-        assert_eq!(command_for(K::Right, false, View::Settings, false), Some(Cmd::Expand));
+        assert_eq!(command_for(K::Right, View::Settings, false), Some(Cmd::Expand));
     }
 
     #[test]
@@ -2265,10 +2249,10 @@ mod tests {
             let (t, bt) = stretch(a, b, f64::from(i) / 20.0);
             assert!(bt - t >= 2.0);
         }
-        assert_eq!(command_for(K::Left, false, View::Settings, false), Some(Cmd::Collapse));
-        assert_eq!(command_for(K::space, false, View::Settings, false), Some(Cmd::Open), "Space flips a switch");
-        assert_eq!(command_for(K::space, false, View::Monitor, false), None);
-        assert_eq!(command_for(K::Right, false, View::Monitor, false), None, "arrows elsewhere are GTK's");
+        assert_eq!(command_for(K::Left, View::Settings, false), Some(Cmd::Collapse));
+        assert_eq!(command_for(K::space, View::Settings, false), Some(Cmd::Open), "Space flips a switch");
+        assert_eq!(command_for(K::space, View::Monitor, false), None);
+        assert_eq!(command_for(K::Right, View::Monitor, false), None, "arrows elsewhere are GTK's");
     }
 
     #[test]
@@ -2282,18 +2266,18 @@ mod tests {
 
     #[test]
     fn delete_stops_an_agent_only_in_agents_and_lists_keep_their_usual_keys() {
-        assert_eq!(command_for(K::Delete, false, View::Agents, false), Some(Cmd::Stop));
-        assert_eq!(command_for(K::Delete, false, View::Monitor, false), None);
-        assert_eq!(command_for(K::Delete, false, View::Ideas, false), None, "Delete never starts anything");
-        assert_eq!(command_for(K::Right, false, View::Agents, false), Some(Cmd::Expand));
+        assert_eq!(command_for(K::Delete, View::Agents, false), Some(Cmd::Stop));
+        assert_eq!(command_for(K::Delete, View::Monitor, false), None);
+        assert_eq!(command_for(K::Delete, View::Ideas, false), None, "Delete never starts anything");
+        assert_eq!(command_for(K::Right, View::Agents, false), Some(Cmd::Expand));
         // As in any list on Windows or Linux: Home and End, Page Up and Page Down; and ← → among cards.
-        assert_eq!(command_for(K::Home, false, View::Monitor, false), Some(Cmd::Edge(true)));
-        assert_eq!(command_for(K::End, false, View::History, false), Some(Cmd::Edge(false)));
-        assert_eq!(command_for(K::Page_Down, false, View::Agents, false), Some(Cmd::Page(1)));
-        assert_eq!(command_for(K::Page_Up, false, View::Projects, false), Some(Cmd::Page(-1)));
-        assert_eq!(command_for(K::Right, false, View::Projects, false), Some(Cmd::Across(1)));
-        assert_eq!(command_for(K::Left, false, View::Ideas, false), Some(Cmd::Across(-1)));
-        assert_eq!(command_for(K::Right, false, View::Monitor, false), None, "a list has no across");
+        assert_eq!(command_for(K::Home, View::Monitor, false), Some(Cmd::Edge(true)));
+        assert_eq!(command_for(K::End, View::History, false), Some(Cmd::Edge(false)));
+        assert_eq!(command_for(K::Page_Down, View::Agents, false), Some(Cmd::Page(1)));
+        assert_eq!(command_for(K::Page_Up, View::Projects, false), Some(Cmd::Page(-1)));
+        assert_eq!(command_for(K::Right, View::Projects, false), Some(Cmd::Across(1)));
+        assert_eq!(command_for(K::Left, View::Ideas, false), Some(Cmd::Across(-1)));
+        assert_eq!(command_for(K::Right, View::Monitor, false), None, "a list has no across");
     }
 
     #[test]
@@ -2352,8 +2336,8 @@ mod tests {
 
     #[test]
     fn enter_on_a_button_is_the_button_s() {
-        assert_eq!(command_for(K::Return, false, View::Agents, true), None);
-        assert_eq!(command_for(K::space, false, View::Agents, true), None);
-        assert_eq!(command_for(K::Return, false, View::Monitor, false), Some(Cmd::Open));
+        assert_eq!(command_for(K::Return, View::Agents, true), None);
+        assert_eq!(command_for(K::space, View::Agents, true), None);
+        assert_eq!(command_for(K::Return, View::Monitor, false), Some(Cmd::Open));
     }
 }

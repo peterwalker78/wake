@@ -442,7 +442,10 @@ fn claude_user(acc: &mut Acc, d: &Value) {
     if let Some(b) = s(d, "gitBranch").filter(|b| !b.is_empty()) {
         acc.git_branch = Some(b.into());
     }
-    if d.get("isMeta").is_some_and(|m| m.as_bool() == Some(true)) || d.get("toolUseResult").is_some() {
+    // Not something the person asked: Claude's own notes, tool results, and the summary it writes
+    // when a conversation is compacted or resumed.
+    let flag = |k: &str| d.get(k).is_some_and(|m| m.as_bool() == Some(true));
+    if flag("isMeta") || flag("isCompactSummary") || d.get("toolUseResult").is_some() {
         return;
     }
     let content = d.get("message").and_then(|m| m.get("content")).unwrap_or(&Value::Null);
@@ -1251,9 +1254,20 @@ pub fn base_summary(acc: &Acc, projects: &[ProjectRec], home: &Path) -> SessionS
     }
 }
 
+/// What the person asked, in the order they asked it. A transcript is not always in time order (a
+/// resumed conversation writes its summary and the messages after it out of step), so they are
+/// sorted by when each was sent. A compaction summary indexed before Wake skipped them is left out
+/// by its fixed opening words.
 pub fn prompts_out(acc: &Acc) -> Vec<Prompt> {
-    acc.prompts_list.iter().map(|p| Prompt { at: p.at.clone(), text: p.text.clone() }).collect()
+    let mut out: Vec<Prompt> = acc.prompts_list.iter().filter(|p| !p.text.starts_with(COMPACT_SUMMARY)).map(|p| Prompt { at: p.at.clone(), text: p.text.clone() }).collect();
+    // Every time is the same ISO form, so text order is time order (a stable sort: one without a
+    // time goes first, the rest keep their order among equals).
+    out.sort_by(|a, b| a.at.cmp(&b.at));
+    out
 }
+
+/// How Claude Code's summary of a compacted or resumed conversation begins.
+const COMPACT_SUMMARY: &str = "This session is being continued from a previous conversation";
 
 pub fn files_out(acc: &Acc) -> Vec<FileTouch> {
     let mut files = acc.files.0.clone();
@@ -1734,6 +1748,26 @@ mod tests {
         assert_eq!(s.started_at.as_deref(), Some("2026-11-19T10:00:00.000Z"));
         assert_eq!(s.last_at.as_deref(), Some("2026-11-19T10:04:00.000Z"));
         assert_eq!(s.minutes, 4);
+    }
+
+    #[test]
+    fn what_was_asked_is_in_time_order_without_claudes_summary() {
+        let mut acc = Acc::default();
+        let user = |at: &str, text: &str, summary: bool| {
+            let mut d = serde_json::json!({"type": "user", "timestamp": at, "message": {"role": "user", "content": text}});
+            if summary {
+                d["isCompactSummary"] = true.into();
+            }
+            d
+        };
+        claude_user(&mut acc, &user("2026-11-27T19:34:00.000Z", "yes fix them all", false));
+        claude_user(&mut acc, &user("2026-11-27T19:42:00.000Z", "I can't collapse the task", false));
+        claude_user(&mut acc, &user("2026-11-27T19:28:00.000Z", "This session is being continued from a previous conversation that ran out of context.", true));
+        claude_user(&mut acc, &user("2026-11-27T19:40:00.000Z", "sent while it worked", false));
+        // One indexed before the summary was skipped: left out by its words.
+        acc.prompts_list.push(PromptRec { at: Some("2026-11-27T19:28:00.000Z".into()), text: "This session is being continued from a previous conversation.".into() });
+        let texts: Vec<String> = prompts_out(&acc).into_iter().map(|p| p.text).collect();
+        assert_eq!(texts, ["yes fix them all", "sent while it worked", "I can't collapse the task"]);
     }
 
     #[test]

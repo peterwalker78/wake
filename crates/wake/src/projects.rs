@@ -123,7 +123,12 @@ pub fn render(ui: &Ui) {
         entry.grab_focus();
     }
     if list.is_empty() {
-        vw.empty.append(&w::empty("No projects yet.", "Wake finds git folders under ~/Projects and the folders your sessions ran in. Track any other folder with the button above."));
+        let e = w::empty("No projects yet.", "Wake finds git folders under ~/Projects and the folders your sessions ran in. Track any other folder with the button above, or start a new project.");
+        let b = crate::newproject::button(ui);
+        b.set_halign(gtk::Align::Center);
+        b.set_margin_top(10);
+        e.append(&b);
+        vw.empty.append(&e);
         return;
     }
     // A grid of cards, one per project, in its colour: the next step first, then what is open and

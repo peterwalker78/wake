@@ -48,8 +48,8 @@ pub enum View {
 
 impl View {
     pub const ALL: [View; 7] = [View::Monitor, View::Agents, View::Projects, View::Ideas, View::History, View::Questions, View::Settings];
-    /// The view switcher's tabs, in their order: the tab bar, Ctrl+Tab, and Ctrl+1 to Ctrl+5.
-    pub const TABS: [View; 5] = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents];
+    /// The view switcher's tabs, in their order: the tab bar, Ctrl+Tab, and Ctrl+1 to Ctrl+6.
+    pub const TABS: [View; 6] = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents, View::Questions];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -188,6 +188,10 @@ pub struct AppState {
     /// to when it closes.
     pub modal_submit: Option<Rc<dyn Fn()>>,
     pub modal_return: Option<gtk::Widget>,
+    /// The open dialog's own Esc: true when it handled the key (asked first) and stays open.
+    pub modal_esc: Option<Rc<dyn Fn() -> bool>>,
+    /// Run once when the open dialog closes, however it closes.
+    pub modal_closed: Option<Rc<dyn Fn()>>,
     /// Projects: a project is being dragged; the view waits to draw again until it is dropped.
     pub dragging: bool,
     pub busy_ov: bool,
@@ -266,6 +270,8 @@ impl Default for AppState {
             modal_open: false,
             modal_submit: None,
             modal_return: None,
+            modal_esc: None,
+            modal_closed: None,
             dragging: false,
             busy_ov: false,
             busy_procs: false,
@@ -326,7 +332,6 @@ pub struct Widgets {
     pub pair: gtk::Box,
     /// Back, at the start of the title bar, while the details are a page of their own.
     pub back_btn: gtk::Button,
-    pub counts: crate::layout::Squeeze,
     /// The view switcher: `View::TABS` in the top bar.
     pub tabs: gtk::Box,
     pub indexing: gtk::Label,
@@ -632,10 +637,6 @@ fn build(app: &gtk::Application, opts: &Opts) {
     let indexing = w::label("", &["indexing"]);
     indexing.set_visible(false);
     end.append(&indexing);
-    // Ask, with its answers' badge (views.rs fills it).
-    let counts = crate::layout::Squeeze::new(6, &["counts"]);
-    counts.set_valign(gtk::Align::Center);
-    end.append(&counts);
     let menu = gtk::MenuButton::new();
     menu.set_icon_name("open-menu-symbolic");
     menu.add_css_class("flat");
@@ -773,7 +774,6 @@ fn build(app: &gtk::Application, opts: &Opts) {
             body: body.clone(),
             rail: rail.clone(),
             pair: pair.clone(),
-            counts,
             tabs,
             tabs_bottom,
             add_btn: add_btn.clone(),
@@ -802,7 +802,9 @@ fn build(app: &gtk::Application, opts: &Opts) {
             toast,
             toast_hover,
         },
-        st: RefCell::new(AppState::default()),
+        // Laid out for the width the window opens at, so its first frame doesn't ask for the
+        // full layout's width (six labelled tabs) in a window opened narrower than that.
+        st: RefCell::new(AppState { lay: crate::layout::decide(None, shot_width.unwrap_or(1480)), ..AppState::default() }),
         scope: scope::Model::new(scope::Look::from_settings()),
         readouts: RefCell::new(Vec::new()),
         tick: RefCell::new(None),
@@ -2076,8 +2078,8 @@ fn on_key_inner(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propag
     }
 }
 
-/// Wake's shortcuts, as in other desktop apps: Ctrl+F finds, Ctrl+N is a new idea, Ctrl+1 to Ctrl+5
-/// go to each view in the tabs' order, Ctrl+6 to Ask, Ctrl+, to Settings, Ctrl+Tab steps through
+/// Wake's shortcuts, as in other desktop apps: Ctrl+F finds, Ctrl+N is a new idea, Ctrl+1 to Ctrl+6
+/// go to each view in the tabs' order (Ask is the sixth), Ctrl+, to Settings, Ctrl+Tab steps through
 /// the views, F1 shows the keys, Ctrl+Q quits, and Shift+F10 or the Menu key opens the selected
 /// item's ⋯ menu.
 fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
@@ -2092,8 +2094,7 @@ fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib:
         K::f | K::F if ctrl => switcher::open(ui),
         K::n | K::N if ctrl => open_capture(ui),
         K::q | K::Q if ctrl => ui.window.close(),
-        K::_1 | K::_2 | K::_3 | K::_4 | K::_5 if ctrl && !shift => set_view(ui, View::TABS[key.to_unicode().and_then(|c| c.to_digit(10)).map_or(0, |n| n as usize - 1)]),
-        K::_6 if ctrl && !shift => set_view(ui, View::Questions),
+        K::_1 | K::_2 | K::_3 | K::_4 | K::_5 | K::_6 if ctrl && !shift => set_view(ui, View::TABS[key.to_unicode().and_then(|c| c.to_digit(10)).map_or(0, |n| n as usize - 1)]),
         K::comma if ctrl && !shift => set_view(ui, View::Settings),
         K::F1 => dialogs::keys(ui),
         K::F10 if shift => context_menu(ui),

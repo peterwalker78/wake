@@ -417,6 +417,9 @@ list.qlist > row:selected .qrow .qt { color: @ink; }
 .qerr { font-size: 12.5px; color: @err; }
 .qbarwrap { border-top: 1px solid @line; background-color: @panel; padding: 10px 24px 8px; }
 window.wake textview.qinput { font-size: 14px; }
+/* New project: the description the agent reads first, as code text. */
+window.wake textview.area.code { font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
+.nptalk { padding: 4px 2px 8px; }
 .qfoot { padding: 0 2px; }
 .qmark { color: @dim; }
 /* questions: Markdown tables */
@@ -672,13 +675,12 @@ window.wake button.menuitem.on { color: @accent; font-weight: 700; }
 .dim { color: @muted; }
 .count { font-family: "JetBrains Mono", monospace; font-size: 12.5px; padding-top: 1px; }
 
-/* the title bar: Find and New idea, the view switcher, Ask and the menu */
+/* the title bar: Find and New idea, the view switcher (Ask is its last tab) and the menu */
 .top { min-height: 50px; padding: 0 8px 0 10px; background-color: @panel; border-bottom: 1px solid @line; }
 .hstart, .hend { margin: 0 4px; }
 window.wake button.flat { padding: 7px; border-radius: 8px; color: @muted; }
 window.wake button.flat:hover { background-color: @row; color: @ink; }
-window.wake button.flat.on, window.wake button.askbtn.on { background-color: @rowhi; color: @ink; }
-window.wake button.askbtn.live { color: @cyan; }
+window.wake button.flat.on { background-color: @rowhi; color: @ink; }
 window.wake button.tab { padding: 7px 14px; border-radius: 8px; color: @muted; }
 window.wake button.tab:hover { background-color: @row; color: @ink; }
 window.wake button.tab.on { background-color: @rowhi; color: @ink; }

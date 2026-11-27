@@ -37,6 +37,8 @@ pub struct DemoSource {
     state: Mutex<Pretend>,
     /// Made-up question threads (questions.rs); nothing is ever sent to Claude.
     questions: crate::questions::Demo,
+    /// The New project interview, scripted (newproject.rs); nothing is ever made.
+    newproject: crate::newproject::Demo,
 }
 
 impl Default for DemoSource {
@@ -462,6 +464,7 @@ impl DemoSource {
         Self {
             state: Mutex::new(Pretend { behind: demo_behind(&projects), projects, sessions, ideas, procs, pauses: Vec::new(), next_idea: 8, groups: Vec::new() }),
             questions: crate::questions::Demo::new(),
+            newproject: crate::newproject::Demo::default(),
         }
     }
 }
@@ -897,12 +900,40 @@ impl Source for DemoSource {
     }
 
     fn cancel_question(&self, thread: &str) -> bool {
-        self.questions.cancel(thread)
+        self.newproject.stop(thread, false) || self.questions.cancel(thread)
     }
 
     fn delete_thread(&self, thread: &str) -> Result<(), String> {
-        self.questions.delete(thread);
+        if !self.newproject.stop(thread, true) {
+            self.questions.delete(thread);
+        }
         Ok(())
+    }
+
+    fn retry_question(&self, thread: &str) -> Result<(), String> {
+        if self.newproject.retry(thread) { Ok(()) } else { Err("Demo data: Wake doesn't send questions to Claude here.".into()) }
+    }
+
+    fn interview_ai(&self) -> Agent {
+        Agent::Claude
+    }
+
+    fn interview(&self, thread: Option<&str>, answer: &str) -> Result<String, String> {
+        self.newproject.interview(thread, answer)
+    }
+
+    fn interview_state(&self, thread: &str, since: u64) -> Option<QOverview> {
+        self.newproject.state(thread, since)
+    }
+
+    fn new_project_folder(&self, folder: &str) -> Result<String, String> {
+        let taken: Vec<String> = self.st().projects.iter().map(|p| p.name.clone()).collect();
+        crate::newproject::demo_folder(folder, &taken)
+    }
+
+    fn create_project(&self, plan: &wake_core::newproject::Plan, agent: Agent, _dry_run: bool) -> ActionResult {
+        let taken: Vec<String> = self.st().projects.iter().map(|p| p.name.clone()).collect();
+        crate::newproject::demo_create(plan, agent, &taken)
     }
 
     fn mark_read(&self, thread: &str) {

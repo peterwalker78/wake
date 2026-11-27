@@ -511,6 +511,10 @@ pub struct QThread {
     /// before 2026-11-20). `claude_session` holds that AI's own session id.
     #[serde(default)]
     pub ai: Option<String>,
+    /// What the thread is for: None for a question in Ask; `"newproject"` for a New project
+    /// interview, which Ask never lists (added 2026-11-27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// Every question thread and what is happening to them now.

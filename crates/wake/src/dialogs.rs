@@ -55,6 +55,8 @@ pub fn show(ui: &Ui, card: &gtk::Box, submit: Option<Rc<dyn Fn()>>) {
         st.modal_open = true;
         st.modal_return = back;
         st.modal_submit = submit;
+        st.modal_esc = None;
+        st.modal_closed = None;
     }
     ui.w.column.set_sensitive(false);
 }
@@ -65,6 +67,11 @@ pub fn close(ui: &Ui) {
     ui.st.borrow_mut().modal_open = false;
     ui.w.column.set_sensitive(true);
     ui.st.borrow_mut().modal_submit = None;
+    ui.st.borrow_mut().modal_esc = None;
+    let on_closed = ui.st.borrow_mut().modal_closed.take();
+    if let Some(f) = on_closed {
+        f();
+    }
     let back = ui.st.borrow_mut().modal_return.take();
     match back {
         Some(b) if b.is_mapped() => {
@@ -76,7 +83,11 @@ pub fn close(ui: &Ui) {
 
 pub fn on_key(ui: &Ui, key: gdk::Key, ctrl: bool) -> glib::Propagation {
     if key == gdk::Key::Escape {
-        close(ui);
+        // A dialog may ask first (New project, with an answer typed).
+        let esc = ui.st.borrow().modal_esc.clone();
+        if !esc.is_some_and(|f| f()) {
+            close(ui);
+        }
         return glib::Propagation::Stop;
     }
     if ctrl && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
@@ -258,8 +269,7 @@ pub fn keys(ui: &Ui) {
             vec![
                 ("Ctrl+F", "find a session".into()),
                 ("Ctrl+N", "a new idea".into()),
-                ("Ctrl+1 to 5", View::TABS.map(View::name).join(", ")),
-                ("Ctrl+6", "Ask".into()),
+                ("Ctrl+1 to 6", View::TABS.map(View::name).join(", ")),
                 ("Ctrl+,", "Settings".into()),
                 ("Ctrl+Tab", "the next view (Shift: back)".into()),
                 ("Menu  Shift+F10", "the selected item's menu".into()),

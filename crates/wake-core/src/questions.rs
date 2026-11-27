@@ -28,6 +28,13 @@
 //!   its questions folder that denies every tool except reading, searching and fetching (admin
 //!   rules outrank any user or project rule). Not offered when `/etc/gemini-cli/policies` holds a
 //!   policy, because then gemini ignores `--admin-policy`. Follow-ups `--resume <session id>`.
+//!
+//! New project interviews (added 2026-11-27, newproject.rs) are threads of their own kind
+//! (`QThread::kind`), run by the same queue and worker: with no tools at all (Claude `--tools ""`;
+//! Gemini under a policy that denies every tool), in an empty folder of Wake's
+//! (`<data>/questions/new-project`, so the Hider leaves their sessions out like any question's),
+//! and never in Ask's list. Codex can't be run with no tools, so an interview asked while Codex
+//! answers questions goes to Claude.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -88,6 +95,11 @@ pub const GEMINI_POLICY: &str = "# Written by Wake for its Questions view: Gemin
 # Wake rewrites this file before every Gemini question.\n\
 [[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 100\n\n\
 [[rule]]\ntoolName = [\"read_file\", \"read_many_files\", \"list_directory\", \"glob\", \"grep_search\", \"google_web_search\", \"web_fetch\"]\ndecision = \"allow\"\npriority = 900\n";
+
+/// Gemini's rules for a New project interview: no tool at all.
+pub const GEMINI_INTERVIEW_POLICY: &str = "# Written by Wake for its New project interview: Gemini may use no tool at all.\n\
+# Wake rewrites this file before every interview message.\n\
+[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 100\n";
 
 const MAX_QUESTION: usize = 20_000;
 const MAX_ANSWER: usize = 200_000;
@@ -358,18 +370,45 @@ pub fn claude_args(session: &str, resume: bool, project: bool) -> Vec<String> {
     a
 }
 
+/// The arguments for one message of a New project interview: like a question's, but with no tool
+/// at all (`--tools ""`), every tool that changes anything denied besides, and the interviewer's
+/// instructions as the whole system prompt.
+pub fn interview_args(session: &str, resume: bool) -> Vec<String> {
+    let mut a: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].map(String::from).to_vec();
+    a.push(if resume { "--resume".into() } else { "--session-id".into() });
+    a.push(session.into());
+    a.extend(["--tools", "", "--disallowedTools", DENIED_TOOLS].map(String::from));
+    a.extend(
+        ["--permission-prompts", "none", "--strict-mcp-config", "--setting-sources", "user", "--settings", QUESTION_SETTINGS, "--system-prompt", crate::newproject::INTERVIEWER].map(String::from),
+    );
+    a
+}
+
+/// Wake's note to the AI: the question note, or the interviewer's instructions.
+fn note(interview: bool) -> &'static str {
+    if interview { crate::newproject::INTERVIEWER } else { SYSTEM_NOTE }
+}
+
 /// The first question as sent: Codex takes no system prompt, so Wake's note goes before it
 /// (Claude gets it as `--append-system-prompt`, Gemini after the question with `-p`).
 pub fn first_prompt(ai: Agent, question: &str) -> String {
+    first_prompt_for(ai, question, false)
+}
+
+fn first_prompt_for(ai: Agent, question: &str, interview: bool) -> String {
     match ai {
-        Agent::Codex => format!("{SYSTEM_NOTE}\n\n{question}"),
+        Agent::Codex => format!("{}\n\n{question}", note(interview)),
         _ => question.to_string(),
     }
 }
 
 /// A follow-up for an AI whose session can't be resumed: the thread so far, then the question.
 pub fn thread_so_far(turns: &[QTurn], question: &str) -> String {
-    let mut out = format!("{SYSTEM_NOTE}\n\nThe conversation so far:\n");
+    thread_so_far_for(turns, question, false)
+}
+
+fn thread_so_far_for(turns: &[QTurn], question: &str, interview: bool) -> String {
+    let mut out = format!("{}\n\nThe conversation so far:\n", note(interview));
     for t in turns.iter().filter(|t| t.answered_at.is_some()) {
         out.push_str(&format!("\nQuestion: {}\nAnswer: {}\n", t.question, t.answer));
     }
@@ -395,13 +434,17 @@ pub fn codex_args(resume: Option<&str>) -> Vec<String> {
 /// The arguments for one question to Gemini: headless, streaming JSON, plan (read-only) mode and
 /// Wake's admin policy; the question comes on stdin and `-p` adds Wake's note after it.
 pub fn gemini_args(session: &str, resume: bool, policy: &Path) -> Vec<String> {
+    gemini_args_with(session, resume, policy, SYSTEM_NOTE)
+}
+
+fn gemini_args_with(session: &str, resume: bool, policy: &Path, note: &str) -> Vec<String> {
     // No MCP server and no extension starts: a project's own config could name any command.
     let mut a: Vec<String> = ["--output-format", "stream-json", "--approval-mode", "plan", "--allowed-mcp-server-names", "none", "--extensions", "none", "--admin-policy"].map(String::from).to_vec();
     a.push(policy.to_string_lossy().into_owned());
     a.push(if resume { "--resume".into() } else { "--session-id".into() });
     a.push(session.into());
     a.push("-p".into());
-    a.push(SYSTEM_NOTE.into());
+    a.push(note.into());
     a
 }
 
@@ -586,6 +629,11 @@ impl QStore {
     }
 }
 
+/// True for a New project interview's thread.
+fn is_interview(t: &QThread) -> bool {
+    t.kind.as_deref() == Some(crate::newproject::KIND)
+}
+
 fn last_asked(t: &QThread) -> &str {
     t.turns.last().map_or(t.created.as_str(), |x| x.asked_at.as_str())
 }
@@ -608,6 +656,8 @@ struct Job {
 /// How one question is sent: to which AI, in which session, and the words that go on stdin.
 struct Plan {
     ai: Agent,
+    /// A New project interview: no tools, the interviewer's instructions.
+    interview: bool,
     /// None for a new Codex thread (Codex picks its own id).
     session: Option<String>,
     resume: bool,
@@ -772,6 +822,14 @@ impl Questions {
         if !st.loaded {
             st.loaded = true;
             let (mut threads, problem) = self.sh.store.load_all();
+            // An interview left from before can't be picked up again: its dialog is gone.
+            threads.retain(|t| {
+                let old = is_interview(t);
+                if old {
+                    let _ = self.sh.store.delete(&t.id);
+                }
+                !old
+            });
             st.known = self.sh.store.known_sessions();
             for t in threads.iter_mut() {
                 if let Some(s) = &t.claude_session {
@@ -799,18 +857,21 @@ impl Questions {
         if since != 0 && since == st.seq {
             return None;
         }
+        // Ask's threads only: interviews belong to the New project dialog.
+        let hidden: HashSet<&str> = st.threads.iter().filter(|t| is_interview(t)).map(|t| t.id.as_str()).collect();
         let mut waiting: Vec<String> = Vec::new();
-        for j in &st.queue {
+        for j in st.queue.iter().filter(|j| !hidden.contains(j.thread.as_str())) {
             if !waiting.contains(&j.thread) {
                 waiting.push(j.thread.clone());
             }
         }
+        let running = st.running.as_ref().filter(|r| !hidden.contains(r.thread.as_str()));
         Some(QOverview {
-            threads: st.threads.clone(),
-            answering: st.running.as_ref().map(|r| r.thread.clone()),
-            activity: st.running.as_ref().and_then(|r| r.activity).map(String::from),
+            threads: st.threads.iter().filter(|t| !is_interview(t)).cloned().collect(),
+            answering: running.map(|r| r.thread.clone()),
+            activity: running.and_then(|r| r.activity).map(String::from),
             waiting,
-            unread: st.unread.clone(),
+            unread: st.unread.iter().filter(|u| !hidden.contains(u.as_str())).cloned().collect(),
             seq: st.seq,
             problem: st.problem.clone(),
         })
@@ -833,6 +894,71 @@ impl Questions {
 
     /// Ask: a follow-up in `thread`, or a new thread with `ctx`. Returns the thread id at once.
     pub fn ask(&self, thread: Option<&str>, question: &str, ctx: Context) -> Result<String, String> {
+        self.ask_as(thread, question, ctx, None)
+    }
+
+    /// Where interviews run: an empty folder of Wake's, inside the questions folder.
+    pub fn interview_dir(&self) -> PathBuf {
+        self.sh.store.dir().join("new-project")
+    }
+
+    /// The AI that runs a New project interview: the one answering questions, except Codex, which
+    /// can't be run with no tools at all (Claude then).
+    pub fn interview_ai(&self) -> Agent {
+        match self.current_ai() {
+            Agent::Codex => Agent::Claude,
+            ai => ai,
+        }
+    }
+
+    /// A New project interview: the person's answer in `thread`, or (None) a new interview that
+    /// starts with `answer`. Same queue as questions; returns the thread id at once.
+    pub fn interview(&self, thread: Option<&str>, answer: &str) -> Result<String, String> {
+        if let Some(id) = thread
+            && !self.is_interview(id)
+        {
+            return Err("That interview is gone.".into());
+        }
+        let dir = self.interview_dir();
+        self.sh.store.ensure()?;
+        self.sh.store.writer.ensure_dir(&dir).map_err(|e| e.0)?;
+        self.ask_as(thread, answer, Context { project: None, cwd: dir }, Some(crate::newproject::KIND))
+    }
+
+    /// True for a New project interview's thread.
+    pub fn is_interview(&self, id: &str) -> bool {
+        self.loaded().threads.iter().any(|t| t.id == id && is_interview(t))
+    }
+
+    /// One interview as an overview holding just its thread, or None when there is no such
+    /// interview or (`since`) nothing changed.
+    pub fn interview_state(&self, id: &str, since: u64) -> Option<QOverview> {
+        let st = self.loaded();
+        if since != 0 && since == st.seq {
+            return None;
+        }
+        let t = st.threads.iter().find(|t| t.id == id && is_interview(t))?.clone();
+        let running = st.running.as_ref().filter(|r| r.thread == id);
+        Some(QOverview {
+            answering: running.map(|r| r.thread.clone()),
+            activity: running.and_then(|r| r.activity).map(String::from),
+            waiting: if st.queue.iter().any(|j| j.thread == id) { vec![id.to_string()] } else { Vec::new() },
+            unread: Vec::new(),
+            seq: st.seq,
+            problem: None,
+            threads: vec![t],
+        })
+    }
+
+    /// Send an interview's last answer again after it failed or was stopped.
+    pub fn retry_interview(&self, id: &str) -> Result<(), String> {
+        if !self.is_interview(id) {
+            return Err("That interview is gone.".into());
+        }
+        self.retry(id, Context { project: None, cwd: self.interview_dir() })
+    }
+
+    fn ask_as(&self, thread: Option<&str>, question: &str, ctx: Context, kind: Option<&str>) -> Result<String, String> {
         let question = question.trim();
         if question.is_empty() {
             return Err("Type a question first.".into());
@@ -854,15 +980,16 @@ impl Questions {
                 (id.to_string(), idx)
             }
             None => {
-                let ai = self.current_ai();
+                let ai = if kind.is_some() { self.interview_ai() } else { self.current_ai() };
                 let t = QThread {
                     id: new_thread_id(),
-                    title: title_of(question),
+                    title: if kind.is_some() { crate::newproject::TITLE.to_string() } else { title_of(question) },
                     project: ctx.project.clone(),
                     claude_session: None,
                     created: util::now_iso(),
                     turns: vec![turn],
                     ai: Some(ai.id().into()),
+                    kind: kind.map(String::from),
                 };
                 self.sh.store.save(&t)?;
                 let id = t.id.clone();
@@ -1003,6 +1130,7 @@ impl Questions {
                 return;
             };
             let ai = thread_ai(t);
+            let interview = is_interview(t);
             let answered_before = t.turns[..job.turn].iter().any(|x| x.answered_at.is_some());
             let (session, resume) = match (&t.claude_session, answered_before) {
                 (Some(s), true) => (Some(s.clone()), true),
@@ -1013,9 +1141,9 @@ impl Questions {
                 question
             } else if answered_before {
                 // Its session is lost: send the thread so far instead.
-                thread_so_far(&t.turns[..job.turn], &question)
+                thread_so_far_for(&t.turns[..job.turn], &question, interview)
             } else {
-                first_prompt(ai, &question)
+                first_prompt_for(ai, &question, interview)
             };
             if !resume && let Some(sid) = &session {
                 t.claude_session = Some(sid.clone());
@@ -1024,7 +1152,7 @@ impl Questions {
                 st.known.insert(sid.clone());
                 self.sh.store.remember_session(sid);
             }
-            Plan { ai, session, resume, prompt }
+            Plan { ai, interview, session, resume, prompt }
         };
         let outcome = self.run_ai(job, &plan);
         let mut st = lock(&self.sh.st);
@@ -1062,8 +1190,11 @@ impl Questions {
         match plan.ai {
             Agent::Claude => {
                 let prog = self.tool(Agent::Claude).ok_or_else(|| missing(Agent::Claude))?;
-                Ok((prog, claude_args(plan.session.as_deref().unwrap_or_default(), plan.resume, job.ctx.project.is_some())))
+                let session = plan.session.as_deref().unwrap_or_default();
+                Ok((prog, if plan.interview { interview_args(session, plan.resume) } else { claude_args(session, plan.resume, job.ctx.project.is_some()) }))
             }
+            // Codex can't be run with no tools: an interview is never sent to it.
+            Agent::Codex if plan.interview => Err("Codex can't run the New project interview. Pick Claude or Gemini in Settings.".into()),
             Agent::Codex => {
                 let prog = self.tool(Agent::Codex).ok_or_else(|| missing(Agent::Codex))?;
                 Ok((prog, codex_args(plan.session.as_deref().filter(|_| plan.resume))))
@@ -1075,9 +1206,10 @@ impl Questions {
                 }
                 // Wake's own rules, written fresh each time so nothing else can loosen them.
                 self.sh.store.ensure()?;
-                let policy = self.sh.store.dir().join("gemini-readonly.toml");
-                self.sh.store.writer.write_atomic(&policy, GEMINI_POLICY.as_bytes()).map_err(|e| e.0)?;
-                Ok((prog, gemini_args(plan.session.as_deref().unwrap_or_default(), plan.resume, &policy)))
+                let (name, rules) = if plan.interview { ("gemini-interview.toml", GEMINI_INTERVIEW_POLICY) } else { ("gemini-readonly.toml", GEMINI_POLICY) };
+                let policy = self.sh.store.dir().join(name);
+                self.sh.store.writer.write_atomic(&policy, rules.as_bytes()).map_err(|e| e.0)?;
+                Ok((prog, gemini_args_with(plan.session.as_deref().unwrap_or_default(), plan.resume, &policy, note(plan.interview))))
             }
         }
     }
@@ -1406,6 +1538,7 @@ mod tests {
                 error: None,
             }],
             ai: None,
+            kind: None,
         };
         s.save(&t).unwrap();
         let mode = fs::metadata(env.paths.data.join("questions/threads/qabc.json")).unwrap().permissions().mode() & 0o777;
@@ -1892,6 +2025,82 @@ echo '{GM_OK}'"#,
     }
 
     #[test]
+    fn interview_arguments_allow_no_tools_at_all() {
+        let a = interview_args("sid", false);
+        assert!(a.join(" ").starts_with("-p --output-format stream-json --verbose --include-partial-messages --session-id sid"));
+        let after = |f: &str| a.iter().position(|x| x == f).map(|i| a[i + 1].clone()).unwrap();
+        assert_eq!(after("--tools"), "", "the CLI's way to allow none");
+        assert!(!a.iter().any(|x| x == "--allowedTools"));
+        assert_eq!(after("--disallowedTools"), DENIED_TOOLS);
+        assert_eq!(after("--permission-prompts"), "none");
+        assert_eq!(after("--setting-sources"), "user");
+        assert_eq!(serde_json::from_str::<Value>(&after("--settings")).unwrap()["disableAllHooks"], true);
+        assert!(a.contains(&"--strict-mcp-config".to_string()));
+        assert_eq!(after("--system-prompt"), crate::newproject::INTERVIEWER);
+        assert_eq!(interview_args("sid", true)[5..7], ["--resume".to_string(), "sid".to_string()]);
+        assert!(GEMINI_INTERVIEW_POLICY.contains("toolName = \"*\"\ndecision = \"deny\"") && !GEMINI_INTERVIEW_POLICY.contains("allow"));
+    }
+
+    #[test]
+    fn an_interview_runs_with_no_tools_and_stays_out_of_ask() {
+        let env = Env::new();
+        let log = env.root.join("interview.log");
+        let script = format!(
+            r#"for a in "$@"; do printf '[%s]' "$a"; done >> '{log}'; echo >> '{log}'; echo "cwd=$(pwd) q=$(cat)" >> '{log}'
+echo '{START}'
+echo '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"What would you like to make?"}}}},"parent_tool_use_id":null}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"What would you like to make?","session_id":"iv-1"}}'"#,
+            log = log.display()
+        );
+        let q = Questions::new(&env.paths, fake_claude(&env, &script));
+        // Codex answers questions, but can't be run with no tools: the interview goes to Claude.
+        q.set_tool(Agent::Codex, Some(PathBuf::from("/bin/true")));
+        q.set_ai(Agent::Codex);
+        assert_eq!(q.interview_ai(), Agent::Claude);
+        let ask_id = q.ask(None, "A real question", just(&q)).unwrap();
+        let _ = q.cancel(&ask_id);
+        let id = q.interview(None, crate::newproject::OPENER).unwrap();
+        let done = |id: &str| {
+            let end = Instant::now() + Duration::from_secs(20);
+            loop {
+                let s = q.interview_state(id, 0).unwrap();
+                if s.answering.is_none() && s.waiting.is_empty() {
+                    return s.threads[0].clone();
+                }
+                assert!(Instant::now() < end);
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        };
+        let t = done(&id);
+        assert_eq!(t.turns[0].answer, "What would you like to make?");
+        assert_eq!((t.ai.as_deref(), t.kind.as_deref(), t.title.as_str()), (Some("claude"), Some("newproject"), crate::newproject::TITLE));
+        let ask = q.snapshot(0).unwrap();
+        assert!(ask.threads.iter().all(|x| x.id != id) && !ask.unread.contains(&id), "never in Ask's list");
+        assert!(ask.threads.iter().any(|x| x.id == ask_id));
+        assert!(q.interview_state(&ask_id, 0).is_none(), "a question is not an interview");
+        assert!(q.interview(Some(&ask_id), "hi").is_err());
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(text.contains("[--tools][][--disallowedTools]"), "{text}");
+        assert!(text.contains("[--setting-sources][user]") && text.contains("[--system-prompt][You are helping someone start a new project"), "{text}");
+        assert!(text.contains(&format!("cwd={} q={}", store::realpath(&q.interview_dir()).display(), crate::newproject::OPENER)), "{text}");
+        // Its sessions stay out of Wake's lists, by id and by folder.
+        let h = q.hider();
+        assert!(h.hides("iv-1", None) && h.hides("other", Some(&q.interview_dir().to_string_lossy())));
+        // A follow-up resumes it; ending it deletes it.
+        q.interview(Some(&id), "A website").unwrap();
+        done(&id);
+        assert!(fs::read_to_string(&log).unwrap().contains("[--resume][iv-1]"));
+        q.delete(&id).unwrap();
+        assert!(q.interview_state(&id, 0).is_none());
+        // One left on disk from before is dropped when Wake starts again.
+        let left = q.interview(None, crate::newproject::OPENER).unwrap();
+        done(&left);
+        let again = Questions::new(&env.paths, PathBuf::from("/nonexistent"));
+        assert!(again.interview_state(&left, 0).is_none());
+        assert!(!q.dir().join("threads").join(format!("{left}.json")).exists());
+    }
+
+    #[test]
     fn a_lost_session_sends_the_thread_so_far() {
         let turns = vec![QTurn { question: "Q1".into(), answer: "A1".into(), asked_at: "t".into(), answered_at: Some("t".into()), error: None }];
         let p = thread_so_far(&turns, "Q2");
@@ -1927,6 +2136,47 @@ echo '{GM_OK}'"#,
         assert!(t.turns[0].error.is_none(), "{:?}", t.turns[0].error);
         assert!(t.turns[0].answer.to_lowercase().contains("four") || t.turns[0].answer.contains('4'));
         check_real_lists(&t.claude_session.clone().unwrap());
+    }
+
+    /// One real New project interview with the real claude, answered from a script (real requests,
+    /// so ignored): `cargo test -p wake-core real_claude_interview -- --ignored --nocapture`.
+    /// Prints each message, checks the plan parses, then deletes the thread; makes no project.
+    #[test]
+    #[ignore = "runs the real claude several times"]
+    fn real_claude_interview_plans_a_project() {
+        let paths = Paths::from_env();
+        let q = Questions::new(&paths, find_claude(&paths));
+        let answers =
+            ["A website with our family's recipes, for my parents and my kids.", "A website, so technical I think.", "You decide.", "Yes please.", "Family Recipes", "You decide.", "You decide."];
+        let id = q.interview(None, crate::newproject::OPENER).unwrap();
+        let mut plan = None;
+        for turn in 0..=answers.len() {
+            let end = Instant::now() + Duration::from_secs(180);
+            let t = loop {
+                let s = q.interview_state(&id, 0).unwrap();
+                if s.answering.is_none() && s.waiting.is_empty() {
+                    break s.threads[0].clone();
+                }
+                assert!(Instant::now() < end, "no answer in 3 minutes");
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let last = t.turns.last().unwrap();
+            assert!(last.error.is_none(), "{:?}", last.error);
+            println!("--- AI ({}):\n{}\n", t.ai.as_deref().unwrap_or("claude"), last.answer);
+            plan = crate::newproject::parse_plan(&last.answer);
+            if plan.is_some() || turn == answers.len() {
+                break;
+            }
+            println!("--- You: {}\n", answers[turn]);
+            q.interview(Some(&id), answers[turn]).unwrap();
+        }
+        let sid = q.interview_state(&id, 0).and_then(|s| s.threads[0].claude_session.clone());
+        q.delete(&id).unwrap();
+        println!("plan: {plan:#?}");
+        assert!(plan.is_some(), "no plan after {} answers", answers.len());
+        if let Some(sid) = sid {
+            check_real_lists(&sid);
+        }
     }
 
     /// One real run each for Codex and Gemini (a real request each, so ignored):

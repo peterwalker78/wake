@@ -312,62 +312,6 @@ pub fn compact(model: &Shared, pid: u32, rows: usize, label: &str) -> gtk::Drawi
     area
 }
 
-/// The small wave Wake shows by default: the same trace, colours and motion as the readout, with no
-/// backing, name, PID or helper rows (the row says those in words).
-pub const MINI_W: i32 = 120;
-pub const MINI_H: i32 = 28;
-
-pub fn mini(model: &Shared, pid: u32, label: &str) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::builder().content_width(MINI_W).content_height(MINI_H).accessible_role(gtk::AccessibleRole::Img).build();
-    // In the light theme the small wave sits on a strip of the screensaver's dark backing (style.css).
-    area.add_css_class("miniwave");
-    area.update_property(&[gtk::accessible::Property::Label(label)]);
-    area.set_valign(gtk::Align::Center);
-    area.add_css_class("readout");
-    let model = model.clone();
-    area.set_draw_func(move |area, cr, w, h| {
-        let scale = area.native().and_then(|n| n.surface()).map_or(area.scale_factor() as f64, |s| s.scale());
-        let Ok(model) = model.try_borrow() else { return };
-        if let Some(trace) = model.traces.get(&pid) {
-            let _ = draw_mini(cr, &model, trace, (w, h), scale);
-        }
-    });
-    area
-}
-
-fn draw_mini(cr: &cairo::Context, model: &Model, trace: &Trace, (w, h): (i32, i32), scale: f64) -> Result<(), cairo::Error> {
-    let shown = model.shown as f64;
-    if shown <= 0.0 {
-        return Ok(());
-    }
-    cr.push_group();
-    cr.save()?;
-    cr.scale(1.0 / scale, 1.0 / scale);
-    cr.set_operator(cairo::Operator::Source);
-    let px = |logical: i32| (logical as f64 * scale).round() as i32;
-    let pitch = (PITCH * scale).round().max(2.0) as i32;
-    let dot = (DOT * scale).round().max(1.0) as i32;
-    let (l, r) = (0, px(w) - dot);
-    let t = (!model.look.reduced_motion).then_some(model.now);
-    let time = t.unwrap_or(0.0);
-    let (working, stopped) = (model.look.working, model.look.stopped);
-    let rgb: [f32; 3] = std::array::from_fn(|c| stopped[c] + (working[c] - stopped[c]) * trace.colour);
-    let spot = (time * SWEEP + trace.pid as f64 * 0.37).fract() as f32;
-    let pen = Pen { pitch, dot, rgb };
-    pen.line(cr, (l, r), (px(h) / 2, px(h)), |across| {
-        let lift = trace.wave(across, time as f32) * trace.amp;
-        let lit = match t {
-            Some(_) => DIMMEST + (1.0 - DIMMEST) * (-(spot - across).rem_euclid(1.0) * 3.5).exp(),
-            None => 0.85,
-        };
-        (lift, FLAT + (lit - FLAT) * trace.amp)
-    });
-    cr.restore()?;
-    cr.pop_group_to_source()?;
-    cr.paint_with_alpha(shown)?;
-    Ok(())
-}
-
 /// The colour task rows' waves are drawn in: the tertiary colour, made to stand out 3:1 from the
 /// backing as it shows over a row of the theme now showing.
 fn task_colour() -> String {

@@ -435,6 +435,18 @@ pub fn icon(names: &[&str]) -> gtk::Image {
     gtk::Image::from_gicon(&gicon)
 }
 
+/// The chevron of something that opens: pointing right while closed, down while open.
+pub fn chevron(open: bool) -> gtk::Image {
+    let i = icon(if open { icons::UNFOLDED } else { icons::FOLDED });
+    i.add_css_class("chev");
+    i
+}
+
+/// Turns a `chevron` to say open or closed.
+pub fn set_chevron(i: &gtk::Image, open: bool) {
+    i.set_from_gicon(&gtk::gio::ThemedIcon::from_names(if open { icons::UNFOLDED } else { icons::FOLDED }));
+}
+
 /// The icons Wake uses, each with the names to try.
 pub mod icons {
     pub const MONITOR: &[&str] = &["notifications-symbolic", "preferences-system-notifications-symbolic", "alarm-symbolic"];
@@ -442,6 +454,9 @@ pub mod icons {
     pub const IDEAS: &[&str] = &["document-edit-symbolic", "edit-comment-symbolic"];
     pub const HISTORY: &[&str] = &["document-open-recent-symbolic", "appointment-soon-symbolic"];
     pub const AGENTS: &[&str] = &["utilities-terminal-symbolic", "system-run-symbolic"];
+    /// A fold that opens (its rows hidden) and one that is open.
+    pub const FOLDED: &[&str] = &["pan-end-symbolic", "go-next-symbolic"];
+    pub const UNFOLDED: &[&str] = &["pan-down-symbolic", "go-down-symbolic"];
     pub const ASK: &[&str] = &["view-conversation-balloon-symbolic", "chat-message-new-symbolic", "dialog-messages-symbolic", "dialog-question-symbolic"];
     pub const FIND: &[&str] = &["system-search-symbolic", "edit-find-symbolic"];
     pub const ADD: &[&str] = &["list-add-symbolic"];

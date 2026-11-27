@@ -41,7 +41,6 @@ const DARK: &[(&str, &str)] = &[
     ("shadow", "#000000"),
     ("hl", "#1A3A4A"),
     ("codespan", "#18212C"),
-    ("wavebg", "transparent"),
     ("knob", "#E7ECF3"),
 ];
 
@@ -77,7 +76,6 @@ const LIGHT: &[(&str, &str)] = &[
     ("shadow", "rgba(20,28,40,.35)"),
     ("hl", "#FFE7A8"),
     ("codespan", "#E1E7EF"),
-    ("wavebg", "#0B0E13"),
     ("knob", "#FFFFFF"),
 ];
 

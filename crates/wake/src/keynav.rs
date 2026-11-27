@@ -709,7 +709,9 @@ pub fn on_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::P
     {
         let inner: Vec<gtk::Widget> = controls(&item).into_iter().filter(|c| c != &item).collect();
         let v = ui.st.borrow().view;
-        let rows_across = !matches!(v, app::View::Projects | app::View::Ideas | app::View::Agents | app::View::Settings);
+        // A row whose subagents open (Monitor's, as Agents'): ← → open and close them, as a tree's do.
+        let opens = inner.iter().any(|b| b.has_css_class("subcount"));
+        let rows_across = !opens && !matches!(v, app::View::Projects | app::View::Ideas | app::View::Agents | app::View::Settings);
         match key {
             // On one of the item's buttons: ← → among the item and its buttons.
             K::Left | K::Right if f != item => {

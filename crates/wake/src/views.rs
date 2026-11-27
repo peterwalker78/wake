@@ -1025,11 +1025,12 @@ fn row_reason(words: &str) -> Option<&str> {
 }
 
 /// The "Now" cell: the question when it is asking (amber, up to two lines), else what you last
-/// asked or Claude's recap, with running subagents as a small pill.
-pub fn now_cell(s: &SessionSummary) -> gtk::Widget {
+/// asked or Claude's recap, with running subagents as a small pill (`pill`; Monitor's rows have the
+/// button that opens them instead).
+pub fn now_cell(s: &SessionSummary, pill: bool) -> gtk::Widget {
     let (m, tip, question) = now_text(s);
     let cell = w::hbox(8, &[]);
-    if s.state == State::Working && s.subagents.running > 0 {
+    if pill && s.state == State::Working && s.subagents.running > 0 {
         let pill = w::label(&crate::why::sub_count(&s.subagents), &["pill"]);
         pill.set_tooltip_text(Some("Its subagents: the running ones first in its details (Enter)"));
         pill.set_valign(gtk::Align::Center);
@@ -1076,8 +1077,15 @@ fn monitor(ui: &Ui) {
     let stable: Vec<String> = rows.iter().map(stable_key).collect();
     let colours: Vec<String> = ui.st.borrow().ov.as_ref().map(|o| o.projects.iter().map(crate::setview::colour_of).collect()).unwrap_or_default();
     let tally = monitor_tally(ui);
-    let waves: Vec<u32> = rows.iter().filter_map(|s| wave_pid(ui, s)).collect();
-    let sig = format!("{filter:?}{pf:?}{compact}{stable:?}{}{colours:?}{}{tally:?}{waves:?}", crate::behind::sig(ui), loc_sig(ui));
+    let waves: Vec<(u32, usize)> = rows.iter().filter_map(|s| readout_of(ui, s)).collect();
+    // Open sessions, and what their subagent rows show.
+    let trees: Vec<(String, String)> = {
+        let st = ui.st.borrow();
+        let mut open: Vec<&String> = st.board_open.iter().filter(|id| rows.iter().any(|s| &s.id == *id)).collect();
+        open.sort();
+        open.into_iter().map(|id| (id.clone(), agents::board_tree_sig(&st, id))).collect()
+    };
+    let sig = format!("{filter:?}{pf:?}{compact}{stable:?}{}{colours:?}{}{tally:?}{waves:?}{trees:?}", crate::behind::sig(ui), loc_sig(ui));
     let Some(had_focus) = begin(ui, View::Monitor, &sig) else { return };
     let vw = &ui.w.views[&View::Monitor];
     w::clear(&vw.top);
@@ -1206,22 +1214,46 @@ fn board(ui: &Ui, rows: &[SessionSummary], compact: bool) {
             vw.list.append(&ask_card(ui, s));
         }
     }
-    if !working.is_empty() {
-        vw.list.append(&section_row("Working", working.len()));
-        let n = working.len();
-        for (i, s) in working.into_iter().enumerate() {
-            let wave = (!narrow).then(|| wave_cell(ui, s)).flatten();
-            vw.list.append(&session_item(ui, s, &now_cell(s), wave, (i == 0, i + 1 == n), !narrow, true));
+    for (title, group) in [("Working", working), ("Earlier", rest)] {
+        if group.is_empty() {
+            continue;
         }
-    }
-    if !rest.is_empty() {
-        vw.list.append(&section_row("Earlier", rest.len()));
-        let n = rest.len();
-        for (i, s) in rest.into_iter().enumerate() {
-            vw.list.append(&session_item(ui, s, &now_cell(s), None, (i == 0, i + 1 == n), !narrow, true));
+        vw.list.append(&section_row(title, group.len()));
+        let n = group.len();
+        for (i, s) in group.into_iter().enumerate() {
+            board_item(ui, s, (i == 0, i + 1 == n), narrow);
         }
     }
 }
+
+/// One session on the board: its row (with the agent's readout, as Agents shows it, and the
+/// button that opens its subagents), then, when open, its subagents' rows under it.
+fn board_item(ui: &Ui, s: &SessionSummary, (first, last): (bool, bool), narrow: bool) {
+    let vw = &ui.w.views[&View::Monitor];
+    let wave = (!narrow).then(|| proc_of(ui, s).and_then(|a| agents::readout(ui, &a))).flatten();
+    let lead = if wave.is_some() { crate::scope::COMPACT_W } else { TREE_LEAD };
+    let open = ui.st.borrow().board_open.contains(&s.id) && s.subagents.total > 0;
+    let toggle = (s.subagents.total > 0).then(|| {
+        let (ui2, id) = (ui.clone(), s.id.clone());
+        agents::sub_toggle(&format!("subcount-{}", s.id), &s.subagents, open, narrow, move || {
+            let open = ui2.st.borrow().board_open.contains(&id);
+            agents::set_board_open(&ui2, &id, !open);
+        })
+    });
+    let tree = if open { agents::board_tree(ui, s, lead) } else { Vec::new() };
+    let row = session_item(ui, s, &now_cell(s, toggle.is_none()), wave.map(|w| w.upcast()), (first, last && tree.is_empty()), !narrow, true, toggle);
+    vw.list.append(&row);
+    let n = tree.len();
+    for (i, r) in tree.into_iter().enumerate() {
+        if last && i + 1 == n {
+            r.add_css_class("last");
+        }
+        vw.list.append(&r);
+    }
+}
+
+/// How far in a session's subagent rows sit under a row with no readout.
+const TREE_LEAD: i32 = 28;
 
 /// A section's heading and how many are in it, never selected.
 pub fn section_row(title: &str, n: usize) -> gtk::ListBoxRow {
@@ -1329,34 +1361,38 @@ fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
 }
 
 /// The process whose note draws a working session's wave, once the processes are read.
-fn wave_pid(ui: &Ui, s: &SessionSummary) -> Option<u32> {
-    if s.state != State::Working {
-        return None;
-    }
+/// The agent process behind a session, while it runs.
+fn proc_of(ui: &Ui, s: &SessionSummary) -> Option<AgentProc> {
     let st = ui.st.borrow();
-    st.procs.as_ref()?.procs.iter().find(|a| a.session_id.as_deref() == Some(&s.id) && a.note.is_some()).map(|a| a.pid)
+    st.procs.as_ref()?.procs.iter().find(|a| a.session_id.as_deref() == Some(&s.id)).cloned()
 }
 
-/// A working session's live wave, from agent-notify's note, when it has one.
-fn wave_cell(ui: &Ui, s: &SessionSummary) -> Option<gtk::Widget> {
-    let pid = wave_pid(ui, s)?;
-    let area = crate::scope::mini(&ui.scope, pid, &format!("{}, working", s.title));
-    ui.readouts.borrow_mut().push(area.clone());
-    area.set_valign(gtk::Align::Center);
-    Some(area.upcast())
+/// Whether a session's row has a readout (by the rule `agents::readout` keeps), and how many rows
+/// it lists: when either changes, the board is redrawn.
+fn readout_of(ui: &Ui, s: &SessionSummary) -> Option<(u32, usize)> {
+    let a = proc_of(ui, s)?;
+    let n = a.note.as_ref().filter(|n| a.state == State::Working || !n.tasks.is_empty())?;
+    Some((a.pid, crate::scope::rows(&n.helpers, &n.tasks).len()))
 }
 
 /// One session as a row of a boxed list, the same on Monitor and History: an optional lead (the
-/// wave), who, a second line, and at the end its status and age. `edge` is (first, last) in its list.
+/// readout), who (with `toggle`, the button that opens its subagents, after the title as Agents has
+/// it), a second line, and at the end its status and age. `edge` is (first, last) in its list.
 /// `peek`: the row says what holding Space does when it is selected (Monitor; History can't peek).
-pub fn session_item(ui: &Ui, s: &SessionSummary, second: &gtk::Widget, lead: Option<gtk::Widget>, edge: (bool, bool), wide: bool, peek: bool) -> gtk::ListBoxRow {
+#[expect(clippy::too_many_arguments, reason = "one row shared by Monitor and History, each part optional")]
+pub fn session_item(ui: &Ui, s: &SessionSummary, second: &gtk::Widget, lead: Option<gtk::Widget>, edge: (bool, bool), wide: bool, peek: bool, toggle: Option<gtk::Button>) -> gtk::ListBoxRow {
     let row = w::hbox(14, &["item"]);
     if let Some(l) = lead {
+        l.set_valign(gtk::Align::Center);
         row.append(&l);
     }
     let mid = w::vbox(4, &[]);
     mid.set_hexpand(true);
-    mid.append(&who_line(ui, s));
+    let who = who_line(ui, s);
+    if let Some(t) = toggle {
+        who.append(&t);
+    }
+    mid.append(&who);
     w::shrinkable(second);
     mid.append(second);
     row.append(&mid);
@@ -1776,7 +1812,7 @@ fn history(ui: &Ui) {
             vw.list.append(&section_row(&day, 0));
             let n = ss.len();
             for (i, s) in ss.into_iter().enumerate() {
-                vw.list.append(&session_item(ui, s, &now_cell(s), None, (i == 0, i + 1 == n), !compact, false));
+                vw.list.append(&session_item(ui, s, &now_cell(s, true), None, (i == 0, i + 1 == n), !compact, false, None));
             }
         }
     } else {
@@ -1793,7 +1829,7 @@ fn history(ui: &Ui) {
         for (i, (s, m)) in results.iter().enumerate() {
             let l = w::clip("", &["snip"]);
             l.set_markup(&highlight(m, &q));
-            vw.list.append(&session_item(ui, s, l.upcast_ref(), None, (i == 0, i + 1 == n), !compact, false));
+            vw.list.append(&session_item(ui, s, l.upcast_ref(), None, (i == 0, i + 1 == n), !compact, false, None));
         }
     }
     finish(ui, View::History, had_focus);

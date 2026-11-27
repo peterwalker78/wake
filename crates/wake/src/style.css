@@ -312,7 +312,12 @@ window.wake .agentrow button.btn.stop.ghost, window.wake .agentrow button.btn.st
 window.wake list.table > row:hover .agentrow button.btn.stop.ghost, window.wake list.table > row:selected .agentrow button.btn.stop.ghost, window.wake .agentrow button.btn.stop.ghost:focus-visible { opacity: 1; }
 window.wake button.subcount { font-family: "JetBrains Mono", monospace; font-size: 10px; color: @muted; padding: 1px 6px; border: 1px solid @line2; border-radius: 4px; }
 window.wake button.subcount.running { color: @mint; border-color: alpha(@mint, .35); }
-window.wake button.subcount:hover { border-color: @accent; }
+window.wake button.subcount:hover { border-color: @accent; background-color: @row; }
+/* The chevron of anything that opens (a row's subagents, the finished fold): an icon, so it reads
+   at any size. */
+image.chev { -gtk-icon-size: 12px; color: @dim; }
+window.wake button.subcount image.chev { color: inherit; }
+window.wake button.subcount.slim { padding: 1px 2px; }
 list.table > row.subrow { border-bottom: none; }
 list.table > row.subrow:hover { background-color: transparent; }
 .subpad { margin: 0 14px 4px 230px; }
@@ -389,9 +394,6 @@ window.wake button.foldbtn:hover { background-color: @row; }
 .keyname { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: @accent; padding-top: 1px; }
 .pill.paused { border: none; padding: 0; }
 .foldbtn .chev { font-size: 13px; color: @dim; }
-window.wake button.subcount { border-color: transparent; padding: 1px 2px; }
-window.wake button.subcount.running { border-color: transparent; }
-window.wake button.subcount:hover { border-color: @line2; }
 
 /* ---- Questions (view 6; crates/wake/src/questions.rs). Added by the Questions builder: one block, keep it last. ---- */
 .qside { border-right: 1px solid @line; background-color: @float; }
@@ -523,7 +525,6 @@ window.wake dropdown.setdrop > button { background-color: @bg; color: @ink; bord
 window.wake dropdown.setdrop > button:hover { border-color: @line3; }
 
 /* Agents' small waves: on the screensaver's dark backing in the light theme (bright dots need it). */
-drawingarea.miniwave { background-color: @wavebg; border-radius: 5px; }
 window.wake .swatches button.swatch { min-width: 16px; min-height: 16px; border-width: 0; }
 
 /* ---- Motion (2026-11-20): quick and quiet, 150–220 ms, easing out. GTK switches all of it off
@@ -590,6 +591,11 @@ list.table > row.treerow { border-bottom: none; }
 .treebtn .chev { color: @dim; font-size: 11px; }
 .treebtn .d { min-width: 7px; min-height: 7px; }
 .tsteps { margin: 2px 9px 8px 26px; }
+/* Monitor: an open session's subagents under its row, in the same parts as Agents' tree. The
+   connector runs the row's full height, so only the cells have padding. */
+list.table > row.itemrow .item.treeitem { padding-top: 0; padding-bottom: 0; }
+.item.treeitem > .treecell { padding: 7px 0; }
+.item.treeitem .state.quiet { font-size: 12.5px; color: @muted; }
 
 /* ---- Keyboard. One focus indicator at a time: ---- */
 /* An entry shows focus with its own border; the text node inside it is the widget that has the

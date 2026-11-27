@@ -393,7 +393,7 @@ pub fn render(ui: &Ui) {
         vw.list.append(&row);
         // Its open subagents, each a row of its own under it.
         for want in wanted(ui, a) {
-            vw.list.append(&build(ui, a, &want, &cols, hide));
+            vw.list.append(&build(ui, a, &want, Grid::Table(&cols, hide)));
         }
         if a.kind != ProcKind::Subagent {
             tasks_of = Some((group, a));
@@ -454,19 +454,62 @@ fn group_words(group: &str) -> Option<&'static str> {
     }
 }
 
-fn wave_cell(ui: &Ui, a: &AgentProc) -> gtk::Widget {
-    // A readout only while it works, or has a task running: an idle agent's flat line says nothing its
-    // state doesn't, but its tasks' waves do.
-    match a.note.as_ref().filter(|n| a.state == State::Working || !n.tasks.is_empty()) {
-        Some(n) => {
-            let what = format!("PID {}, {}", a.pid, if n.idle { "idle" } else { "working" });
-            let area = scope::compact(&ui.scope, a.pid, scope::rows(&n.helpers, &n.tasks).len(), &what);
-            ui.readouts.borrow_mut().push(area.clone());
-            area.upcast()
-        }
-        // No note, no wave: the cell stays empty rather than explaining why.
-        None => w::label("", &[]).upcast(),
+/// The button that opens and closes a session's subagents, the same on Agents and Monitor: a
+/// chevron, then how many there are and how many run (what they are doing is on the line below).
+/// `name` finds it again, to turn its chevron. `slim` (a narrow window): the chevron alone, the
+/// count in its tooltip, so the row keeps its room for the title.
+pub fn sub_toggle(name: &str, sc: &SubagentCounts, open: bool, slim: bool, act: impl Fn() + 'static) -> gtk::Button {
+    let b = gtk::Button::new();
+    b.add_css_class("subcount");
+    b.set_widget_name(name);
+    let inner = w::hbox(5, &[]);
+    inner.append(&w::chevron(open));
+    let words = crate::why::sub_count(sc);
+    if slim {
+        b.add_css_class("slim");
+    } else {
+        let l = w::label(&words, &[]);
+        // As the window narrows the count gives way before the title does.
+        l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        inner.append(&l);
     }
+    b.set_child(Some(&inner));
+    // The tooltip's first line is the count (set_toggle keeps it).
+    b.set_tooltip_text(Some(&words));
+    if sc.running > 0 {
+        b.add_css_class("running");
+    }
+    b.update_property(&[gtk::accessible::Property::Label(&format!("Subagents: {words}"))]);
+    b.set_valign(gtk::Align::Center);
+    set_toggle(&b, open);
+    b.connect_clicked(move |_| act());
+    b
+}
+
+/// Turns a `sub_toggle` to say open or closed.
+pub fn set_toggle(b: &gtk::Button, open: bool) {
+    if let Some(i) = b.child().and_then(|c| c.first_child()).and_downcast::<gtk::Image>() {
+        w::set_chevron(&i, open);
+    }
+    let words = b.tooltip_text().map(|t| t.lines().next().unwrap_or("").to_string()).unwrap_or_default();
+    b.set_tooltip_text(Some(&format!("{words}\n{}", if open { "Hide them (←)" } else { "Show them, running first (→)" })));
+    b.update_state(&[gtk::accessible::State::Expanded(Some(open))]);
+}
+
+/// An agent's readout, the same wherever Wake shows one (Agents and Monitor): only while it works,
+/// or has a task running. An idle agent's flat line says nothing its state doesn't, but its tasks'
+/// waves do.
+pub fn readout(ui: &Ui, a: &AgentProc) -> Option<gtk::DrawingArea> {
+    let n = a.note.as_ref().filter(|n| a.state == State::Working || !n.tasks.is_empty())?;
+    let what = format!("PID {}, {}", a.pid, if n.idle { "idle" } else { "working" });
+    let area = scope::compact(&ui.scope, a.pid, scope::rows(&n.helpers, &n.tasks).len(), &what);
+    ui.readouts.borrow_mut().push(area.clone());
+    Some(area)
+}
+
+fn wave_cell(ui: &Ui, a: &AgentProc) -> gtk::Widget {
+    // No note, no wave: the cell stays empty rather than explaining why.
+    readout(ui, a).map_or_else(|| w::label("", &[]).upcast(), |r| r.upcast())
 }
 
 /// Builds a row from the cells for every column, leaving out the ones `cols` dropped.
@@ -503,27 +546,13 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     let subs = session_of(&ui.st.borrow(), a).map(|s| s.subagents.clone()).filter(|s| s.total > 0);
     if let Some(sc) = &subs {
         let open = ui.st.borrow().agent_open.contains(&a.pid);
-        // Short: what they are doing is on the line below; how many run is in the tooltip.
-        let words = format!("{} {}", if open { "▾" } else { "▸" }, crate::why::sub_count(sc));
-        let b = gtk::Button::with_label(&words);
-        b.add_css_class("subcount");
-        b.set_widget_name(&format!("subcount-{}", a.pid));
-        if let Some(l) = b.child().and_downcast::<gtk::Label>() {
-            // In a narrow window the count gives way before the title does.
-            l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        }
-        if sc.running > 0 {
-            b.add_css_class("running");
-        }
-        b.set_tooltip_text(Some(if open { "Hide them (←)" } else { "Show them, running first (→)" }));
-        b.set_valign(gtk::Align::Center);
         let ui2 = ui.clone();
         let pid = a.pid;
-        b.connect_clicked(move |_| {
+        // Slim when the table is narrow (the PID column has made way).
+        top.append(&sub_toggle(&format!("subcount-{pid}"), sc, open, hide & 0b11 != 0, move || {
             let open = ui2.st.borrow().agent_open.contains(&pid);
             set_open(&ui2, pid, !open);
-        });
-        top.append(&b);
+        }));
     }
     task.append(&top);
     // Never the raw command line (that is in the tooltip): the project, else where it started and when.
@@ -957,10 +986,24 @@ fn draw_link(da: &gtk::DrawingArea, link: Link, tick_at: Option<f64>) {
     });
 }
 
+/// Where tree rows are drawn: in this table's columns (and the hidden-column mask), or under a row
+/// of Monitor's board, with the connector in a column this wide (the readout's, when the session's
+/// row has one).
+#[derive(Clone, Copy)]
+pub enum Grid<'a> {
+    Table(&'a [Col], u8),
+    Board(i32),
+}
+
 /// A tree row in the table's columns: `conn` in the wave column, then the PID, task and state
 /// cells, the rest blank. With the wave column hidden (a narrow window) the connector takes the
-/// PID column's place.
-fn tree_row(conn: &gtk::DrawingArea, pid: gtk::Widget, task: gtk::Widget, state: gtk::Widget, cols: &[Col], hide: u8) -> gtk::Box {
+/// PID column's place. On the board: the connector, the task, and the state at the end, as the
+/// board's own rows have it (no PID).
+fn tree_row(conn: &gtk::DrawingArea, pid: gtk::Widget, task: gtk::Widget, state: gtk::Widget, grid: Grid) -> gtk::Box {
+    let (cols, hide) = match grid {
+        Grid::Table(cols, hide) => (cols, hide),
+        Grid::Board(lead) => return board_row(conn, lead, &task, Some(&state)),
+    };
     let blank = || w::label("", &[]).upcast::<gtk::Widget>();
     let wave_hidden = hide & 1 != 0;
     let all: Vec<gtk::Widget> = if wave_hidden {
@@ -977,8 +1020,56 @@ fn tree_row(conn: &gtk::DrawingArea, pid: gtk::Widget, task: gtk::Widget, state:
     row
 }
 
+/// A tree row on Monitor's board: the connector in its own column, `lead` wide, then the task
+/// (or anything spanning) and, at the end, the state.
+fn board_row(conn: &gtk::DrawingArea, lead: i32, task: &gtk::Widget, state: Option<&gtk::Widget>) -> gtk::Box {
+    let row = w::hbox(14, &["item", "subtr", "treeitem"]);
+    conn.set_hexpand(false);
+    conn.set_size_request(lead, -1);
+    conn.set_valign(gtk::Align::Fill);
+    row.append(conn);
+    task.set_hexpand(true);
+    task.add_css_class("treecell");
+    row.append(task);
+    if let Some(state) = state {
+        state.set_halign(gtk::Align::End);
+        state.set_valign(gtk::Align::Center);
+        state.add_css_class("treecell");
+        // Each line of the state ends at the row's right edge, as the board's state and age do, at
+        // its own width (the table's cells clip to their column; the board has no columns).
+        state.set_hexpand(false);
+        let lines: Vec<gtk::Widget> = if state.is::<gtk::Label>() { vec![state.clone()] } else { w::children(state).collect() };
+        for x in lines {
+            x.set_halign(gtk::Align::End);
+            unclip(&x);
+        }
+        row.append(state);
+    }
+    row
+}
+
+/// Every label in `x` (and `x` itself) at its full width, with nothing expanding.
+fn unclip(x: &gtk::Widget) {
+    x.set_hexpand(false);
+    if let Some(l) = x.downcast_ref::<gtk::Label>() {
+        l.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        l.set_max_width_chars(-1);
+    }
+    for c in w::children(x) {
+        unclip(&c);
+    }
+}
+
 /// A row spanning from the task column to the end (messages, a subagent's steps).
-fn tree_span(conn: &gtk::DrawingArea, child: &impl IsA<gtk::Widget>, cols: &[Col], hide: u8) -> gtk::Box {
+fn tree_span(conn: &gtk::DrawingArea, child: &impl IsA<gtk::Widget>, grid: Grid) -> gtk::Box {
+    let (cols, hide) = match grid {
+        Grid::Table(cols, hide) => (cols, hide),
+        Grid::Board(lead) => {
+            let b = board_row(conn, lead, child.upcast_ref(), None);
+            b.add_css_class("span");
+            return b;
+        }
+    };
     let line = w::hbox(0, &["subtr", "span"]);
     let n_lead = if hide & 1 == 0 { 2 } else { 1 };
     for (i, c) in cols.iter().take(n_lead).enumerate() {
@@ -1055,7 +1146,7 @@ fn wanted(ui: &Ui, a: &AgentProc) -> Vec<Want> {
 }
 
 /// Builds one tree row: a list row of its own, selected and walked like a session's row.
-fn build(ui: &Ui, a: &AgentProc, want: &Want, cols: &[Col], hide: u8) -> gtk::ListBoxRow {
+fn build(ui: &Ui, a: &AgentProc, want: &Want, grid: Grid) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     // A row inside its group's box (style.css: boxed lists).
     row.add_css_class("boxed");
@@ -1069,18 +1160,18 @@ fn build(ui: &Ui, a: &AgentProc, want: &Want, cols: &[Col], hide: u8) -> gtk::Li
             row.set_activatable(false);
             row.set_focusable(false);
             let class = if t.starts_with("reading") { "loading" } else { "desc" };
-            row.set_child(Some(&tree_span(&connector(Link::Last, None), &w::label(t, &[class]), cols, hide)));
+            row.set_child(Some(&tree_span(&connector(Link::Last, None), &w::label(t, &[class]), grid)));
         }
         What::Sub(s, link) => {
             let open = ui.st.borrow().agent_sub_open.contains(&s.agent_id);
-            row.set_child(Some(&tree_line(ui, &sid, s, *link, open, cols, hide)));
+            row.set_child(Some(&tree_line(ui, &sid, s, *link, open, grid)));
             let kind = if s.kind.is_empty() || s.kind == "general-purpose" { String::new() } else { format!(" ({})", s.kind) };
             row.set_tooltip_text(Some(&format!("{}{kind}\nClick for its steps · Enter", s.task)));
             on_click(ui, &row);
         }
         What::Fold(line, link) => {
             let open = ui.st.borrow().agent_done_open.contains(&a.pid);
-            row.set_child(Some(&fold_line(a.pid, line, if open { Link::FoldOpen } else { *link }, open, cols, hide)));
+            row.set_child(Some(&fold_line(&a.pid.to_string(), line, if open { Link::FoldOpen } else { *link }, open, grid)));
             row.set_tooltip_text(Some(fold_tip(open)));
             on_click(ui, &row);
         }
@@ -1112,24 +1203,24 @@ fn on_click(ui: &Ui, row: &gtk::ListBoxRow) {
 
 /// The fold's row: "▸ 28 finished" in the task column, when the last one finished in the state
 /// column.
-fn fold_line(pid: u32, line: &str, link: Link, open: bool, cols: &[Col], hide: u8) -> gtk::Box {
+fn fold_line(key: &str, line: &str, link: Link, open: bool, grid: Grid) -> gtk::Box {
     let task = w::hbox(8, &["pj"]);
-    let chev = w::label(if open { "▾" } else { "▸" }, &["chev"]);
-    chev.set_widget_name(&format!("subchev-{pid}"));
+    let chev = w::chevron(open);
+    chev.set_widget_name(&format!("subchev-{key}"));
     task.append(&chev);
     let (count, when) = line.split_once(" · ").unwrap_or((line, ""));
     task.append(&w::clip(count, &["desc"]));
     let state = w::clip(when, &["ev"]);
-    state.set_widget_name(&format!("subwhen-{pid}"));
+    state.set_widget_name(&format!("subwhen-{key}"));
     let conn = connector(link, None);
-    conn.set_widget_name(&format!("subconn-{pid}"));
-    tree_row(&conn, w::label("", &[]).upcast(), task.upcast(), state.upcast(), cols, hide)
+    conn.set_widget_name(&format!("subconn-{key}"));
+    tree_row(&conn, w::label("", &[]).upcast(), task.upcast(), state.upcast(), grid)
 }
 
 /// One subagent as a table row: its task where a session's title goes, what it is doing now (or
 /// what it handed back) under it, and running or when it finished in the state column. Its steps
 /// open under it, inside the same row.
-fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, cols: &[Col], hide: u8) -> gtk::Box {
+fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, grid: Grid) -> gtk::Box {
     let outer = w::vbox(0, &["tline"]);
     outer.set_widget_name(&format!("subw-{}", s.agent_id));
     let running = s.state == State::Working;
@@ -1160,7 +1251,7 @@ fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, co
         state.append(&ago);
     }
     let pid_cell = w::clip("subagent", &["tree"]);
-    let line = tree_row(&connector(link, Some(18.0)), pid_cell.upcast(), task.upcast(), state.upcast(), cols, hide);
+    let line = tree_row(&connector(link, Some(18.0)), pid_cell.upcast(), task.upcast(), state.upcast(), grid);
     line.set_widget_name(&format!("sub-{}", s.agent_id));
     if matches!(link, Link::InnerMid | Link::InnerLast) {
         line.add_css_class("inner");
@@ -1175,7 +1266,7 @@ fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, co
         Link::InnerMid => Link::InnerPass,
         _ => Link::None,
     };
-    let span = tree_span(&connector(pass, None), &rev, cols, hide);
+    let span = tree_span(&connector(pass, None), &rev, grid);
     // Closed, the steps take no room at all (a hidden revealer's line would still be a line high).
     span.set_visible(open);
     {
@@ -1232,7 +1323,7 @@ fn task_rows(ui: &Ui, a: &AgentProc, cols: &[Col], hide: u8) -> Vec<gtk::ListBox
             let started = t.started_at.clone();
             live_text(ui, View::Agents, &age, move |_| Some(crate::why::task_age(started.as_deref())));
             let link = if i + 1 == n { Link::Last } else { Link::Mid };
-            row.set_child(Some(&tree_row(&connector(link, None), w::clip(kind, &["tree"]).upcast(), task.upcast(), age.upcast(), cols, hide)));
+            row.set_child(Some(&tree_row(&connector(link, None), w::clip(kind, &["tree"]).upcast(), task.upcast(), age.upcast(), Grid::Table(cols, hide))));
             let what = if t.kind == "monitor" { "Something this session is watching in the background" } else { "A command this session is running in the background" };
             let pid = t.pid.map(|p| format!("\nProcess {p}")).unwrap_or_default();
             row.set_tooltip_text(Some(&format!("{what}:\n{}{pid}", t.label)));
@@ -1333,7 +1424,7 @@ fn sync_tree(ui: &Ui, pid: u32) -> Vec<gtk::ListBoxRow> {
                 r
             }
             None => {
-                let r = build(ui, &a, w, &cols, hide);
+                let r = build(ui, &a, w, Grid::Table(&cols, hide));
                 list.insert(&r, prev.downcast_ref::<gtk::ListBoxRow>().map_or(0, |p| p.index()) + 1);
                 fresh.push(r.clone());
                 r
@@ -1447,15 +1538,8 @@ pub fn set_open(ui: &Ui, pid: u32, open: bool) {
             st.agent_open.remove(&pid);
         }
     }
-    if let Some(b) = w::named(&ui.w.views[&View::Agents].list, &format!("subcount-{pid}")).and_downcast::<gtk::Button>()
-        && let Some(label) = b.label()
-    {
-        let rest = label.trim_start_matches(['▸', '▾', ' ']).to_string();
-        b.set_label(&format!("{} {rest}", if open { "▾" } else { "▸" }));
-        b.set_tooltip_text(Some(if open { "Hide them (←)" } else { "Show them, running first (→)" }));
-        if let Some(l) = b.child().and_downcast::<gtk::Label>() {
-            l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        }
+    if let Some(b) = w::named(&ui.w.views[&View::Agents].list, &format!("subcount-{pid}")).and_downcast::<gtk::Button>() {
+        set_toggle(&b, open);
     }
     let fresh = sync_tree(ui, pid);
     if open && let Some((row, _)) = find_row(ui, pid) {
@@ -1480,8 +1564,8 @@ fn set_fold(ui: &Ui, pid: u32, open: bool) {
         }
     }
     let Some(fold) = find_named_row(ui, &fold_name(pid)) else { return };
-    if let Some(c) = w::named(&fold, &format!("subchev-{pid}")).and_downcast::<gtk::Label>() {
-        c.set_text(if open { "▾" } else { "▸" });
+    if let Some(c) = w::named(&fold, &format!("subchev-{pid}")).and_downcast::<gtk::Image>() {
+        w::set_chevron(&c, open);
     }
     // The inner line drops from the fold's branch only while the finished list is open.
     if let Some(da) = w::named(&fold, &format!("subconn-{pid}")).and_downcast::<gtk::DrawingArea>() {
@@ -1532,18 +1616,119 @@ pub fn show_row(ui: &Ui, pid: u32) {
     }
 }
 
-/// After each process refresh: the open rows' subagents again, so their live lines stay current.
+/// After each process refresh: the open rows' subagents again (Agents' and Monitor's), so their
+/// live lines stay current.
 pub fn refresh_open(ui: &Ui) {
     let sids: Vec<String> = {
         let st = ui.st.borrow();
         if st.busy_agents_open {
             return;
         }
-        st.procs.as_ref().map(|p| p.procs.iter().filter(|a| st.agent_open.contains(&a.pid)).filter_map(|a| a.session_id.clone()).collect()).unwrap_or_default()
+        let mut sids: Vec<String> = st.procs.as_ref().map(|p| p.procs.iter().filter(|a| st.agent_open.contains(&a.pid)).filter_map(|a| a.session_id.clone()).collect()).unwrap_or_default();
+        if st.view == View::Monitor {
+            sids.extend(st.board_open.iter().filter(|id| !sids.contains(id)).cloned().collect::<Vec<_>>());
+        }
+        sids
     };
     if !sids.is_empty() {
         ui.st.borrow_mut().busy_agents_open = true;
         load(ui, sids, true);
+    }
+}
+
+// ---------- the same subagents under a row of Monitor's board ----------
+
+/// A session's subagents as Monitor shows them once its row is open: the same rows as Agents',
+/// under its board row, with the connector in the readout's column (`lead` wide): running first,
+/// then the fold over the finished ones, which opens on a click. The keyboard walks the sessions,
+/// so these are never selected.
+pub fn board_tree(ui: &Ui, s: &SessionSummary, lead: i32) -> Vec<gtk::ListBoxRow> {
+    let grid = Grid::Board(lead);
+    let (detail, done_open, helpers) = {
+        let st = ui.st.borrow();
+        let helpers = st.procs.as_ref().and_then(|p| p.procs.iter().find(|a| a.session_id.as_deref() == Some(&s.id))).map(live_helpers).unwrap_or_default();
+        (st.sessions.get(&s.id).cloned(), st.board_done_open.contains(&s.id), helpers)
+    };
+    let row = |child: &gtk::Box| {
+        let r = gtk::ListBoxRow::new();
+        r.add_css_class("itemrow");
+        r.add_css_class("treerow");
+        r.set_selectable(false);
+        r.set_activatable(false);
+        r.set_focusable(false);
+        r.set_child(Some(child));
+        r
+    };
+    let note = |t: &str, class: &str| vec![row(&tree_span(&connector(Link::Last, None), &w::label(t, &[class]), grid))];
+    let Some(d) = detail else { return note("reading its subagents…", "loading") };
+    if d.subagents.is_empty() {
+        return note("No subagents. This session did its work itself.", "desc");
+    }
+    let (running, done) = crate::why::split_subs(&d.subagents);
+    plan(running.len(), done.len(), done_open)
+        .into_iter()
+        .map(|(item, link)| match item {
+            Item::Run(i) => {
+                let mut sub = running[i].clone();
+                if sub.live.is_none() {
+                    sub.live = helpers.iter().find(|h| h.contains(&sub.task) || sub.task.contains(h.as_str())).cloned();
+                }
+                let r = row(&tree_line(ui, &s.id, &sub, link, false, grid));
+                r.set_tooltip_text(Some(&format!("{}\nIts steps are in Agents and in its details (Enter)", sub.task)));
+                r
+            }
+            Item::Done(i) => {
+                let r = row(&tree_line(ui, &s.id, done[i], link, false, grid));
+                r.set_tooltip_text(Some(&done[i].task));
+                r
+            }
+            Item::Fold => {
+                let r = row(&fold_line(&s.id, &crate::why::finished_line(&done), link, done_open, grid));
+                r.set_tooltip_text(Some(if done_open { "Hide the finished ones · click" } else { "Show the finished ones, newest first · click" }));
+                let g = gtk::GestureClick::new();
+                g.set_button(gtk::gdk::BUTTON_PRIMARY);
+                let (ui2, sid) = (ui.clone(), s.id.clone());
+                g.connect_released(move |_, n, _, _| {
+                    if n == 1 {
+                        let mut st = ui2.st.borrow_mut();
+                        if !st.board_done_open.remove(&sid) {
+                            st.board_done_open.insert(sid.clone());
+                        }
+                        drop(st);
+                        views::render_view(&ui2);
+                    }
+                });
+                r.add_controller(g);
+                r
+            }
+        })
+        .collect()
+}
+
+/// What an open session's subagent rows on the board show, so the board is redrawn when it changes.
+pub fn board_tree_sig(st: &app::AppState, sid: &str) -> String {
+    let Some(d) = st.sessions.get(sid) else { return "reading".into() };
+    let subs: Vec<_> = d.subagents.iter().map(|s| (&s.agent_id, s.state, &s.task, &s.live, &s.handed_back, fmt::ago(s.last_at.as_deref()))).collect();
+    format!("{}{subs:?}", st.board_done_open.contains(sid))
+}
+
+/// Opens or closes a board row's subagents (its count, → and ←); opening reads them first.
+pub fn set_board_open(ui: &Ui, sid: &str, open: bool) {
+    let has = ui.st.borrow().ov.as_ref().is_some_and(|ov| ov.sessions.iter().any(|s| s.id == sid && s.subagents.total > 0));
+    if open && !has {
+        return;
+    }
+    {
+        let mut st = ui.st.borrow_mut();
+        if open {
+            st.board_open.insert(sid.to_string());
+        } else {
+            st.board_open.remove(sid);
+        }
+    }
+    views::render_view(ui);
+    if open {
+        load(ui, vec![sid.to_string()], false);
     }
 }
 
@@ -1576,9 +1761,15 @@ fn load(ui: &Ui, sids: Vec<String>, periodic: bool) {
                     st.sessions.insert(id, d);
                 }
             }
-            if ui.st.borrow().view == View::Agents {
-                render(ui);
-                patch_trees(ui);
+            let view = ui.st.borrow().view;
+            match view {
+                View::Agents => {
+                    render(ui);
+                    patch_trees(ui);
+                }
+                // Monitor draws its open sessions' subagents with the rest of the board.
+                View::Monitor => views::render_view(ui),
+                _ => {}
             }
         },
         move |ui| {

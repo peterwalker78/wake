@@ -205,12 +205,14 @@ pub struct AppState {
     /// Where each view was scrolled when it was last rebuilt, so restoring focus can't move it.
     pub kept_scroll: HashMap<View, f64>,
     pub toast_gen: u64,
-    /// Agents: the screensaver's full readouts instead of the small waves (`v`).
     /// Agents: rows opened to show their subagents, and subagents opened to show their steps.
     pub agent_open: HashSet<u32>,
     pub agent_sub_open: HashSet<String>,
     /// Agents: open rows whose finished subagents are unfolded too.
     pub agent_done_open: HashSet<u32>,
+    /// Monitor: sessions opened to show their subagents, and those whose finished ones are unfolded.
+    pub board_open: HashSet<String>,
+    pub board_done_open: HashSet<String>,
     /// The session panel: its finished subagents unfolded.
     pub subs_done_open: bool,
     /// What the side panel, top bar, rail and chips last drew, so a refresh that changes nothing
@@ -283,6 +285,8 @@ impl Default for AppState {
             agent_open: HashSet::new(),
             agent_sub_open: HashSet::new(),
             agent_done_open: HashSet::new(),
+            board_open: HashSet::new(),
+            board_done_open: HashSet::new(),
             subs_done_open: false,
             panel_drawn: None,
             top_drawn: String::new(),
@@ -1196,7 +1200,7 @@ fn finding_windows(st: &AppState) -> bool {
 }
 
 /// The sessions whose details are on screen: the side panel's, the Find pop-up's, and those of
-/// rows opened in Agents.
+/// rows opened in Agents and Monitor.
 fn shown_sessions(st: &AppState) -> HashSet<String> {
     let mut keep: HashSet<String> = st.sw.sel_id.iter().cloned().collect();
     if let Some(Drawer::Session(id)) = &st.drawer {
@@ -1205,6 +1209,7 @@ fn shown_sessions(st: &AppState) -> HashSet<String> {
     if let Some(p) = &st.procs {
         keep.extend(p.procs.iter().filter(|a| st.agent_open.contains(&a.pid)).filter_map(|a| a.session_id.clone()));
     }
+    keep.extend(st.board_open.iter().cloned());
     keep
 }
 
@@ -1964,6 +1969,8 @@ pub fn command_for(key: gdk::Key, view: View, on_control: bool) -> Option<Cmd> {
     // Only the keys every desktop list has: no letters, so typing never does anything by surprise.
     let agents = view == View::Agents;
     let settings = view == View::Settings;
+    // → and ← open and close a row's subagents, in Agents and on Monitor alike.
+    let trees = agents || view == View::Monitor;
     let cards = matches!(view, View::Projects | View::Ideas);
     Some(match key {
         K::Down | K::KP_Down => Cmd::Down,
@@ -1975,8 +1982,8 @@ pub fn command_for(key: gdk::Key, view: View, on_control: bool) -> Option<Cmd> {
         K::Return | K::KP_Enter => Cmd::Open,
         K::space if settings => Cmd::Open,
         K::Delete | K::KP_Delete if agents => Cmd::Stop,
-        K::Right | K::KP_Right if agents || settings => Cmd::Expand,
-        K::Left | K::KP_Left if agents || settings => Cmd::Collapse,
+        K::Right | K::KP_Right if trees || settings => Cmd::Expand,
+        K::Left | K::KP_Left if trees || settings => Cmd::Collapse,
         K::Right | K::KP_Right if cards => Cmd::Across(1),
         K::Left | K::KP_Left if cards => Cmd::Across(-1),
         K::Escape => Cmd::Escape,
@@ -2226,6 +2233,15 @@ fn run_cmd(ui: &Ui, cmd: Cmd) -> bool {
         }
         Cmd::Expand | Cmd::Collapse if view == View::Settings => return setview::step(ui, if cmd == Cmd::Expand { 1 } else { -1 }),
         Cmd::Expand | Cmd::Collapse if view == View::Agents => return agents::key(ui, if cmd == Cmd::Expand { agents::TreeKey::Right } else { agents::TreeKey::Left }),
+        Cmd::Expand | Cmd::Collapse if view == View::Monitor => {
+            // A session row's own id; its subagents' rows are never selected.
+            let Some(id) = sel else { return false };
+            let has = ui.st.borrow().ov.as_ref().is_some_and(|ov| ov.sessions.iter().any(|s| s.id == id && s.subagents.total > 0));
+            if !has {
+                return false;
+            }
+            agents::set_board_open(ui, &id, cmd == Cmd::Expand);
+        }
         Cmd::Expand | Cmd::Collapse => return false,
         Cmd::Across(d) => return grid_across(ui, d),
         Cmd::Escape => {
@@ -2343,7 +2359,7 @@ mod tests {
         assert_eq!(command_for(K::Left, View::Settings, false), Some(Cmd::Collapse));
         assert_eq!(command_for(K::space, View::Settings, false), Some(Cmd::Open), "Space flips a switch");
         assert_eq!(command_for(K::space, View::Monitor, false), None);
-        assert_eq!(command_for(K::Right, View::Monitor, false), None, "arrows elsewhere are GTK's");
+        assert_eq!(command_for(K::Right, View::History, false), None, "arrows elsewhere are GTK's");
     }
 
     #[test]
@@ -2361,6 +2377,7 @@ mod tests {
         assert_eq!(command_for(K::Delete, View::Monitor, false), None);
         assert_eq!(command_for(K::Delete, View::Ideas, false), None, "Delete never starts anything");
         assert_eq!(command_for(K::Right, View::Agents, false), Some(Cmd::Expand));
+        assert_eq!(command_for(K::Left, View::Monitor, false), Some(Cmd::Collapse), "Monitor opens subagents as Agents does");
         // As in any list on Windows or Linux: Home and End, Page Up and Page Down; and ← → among cards.
         assert_eq!(command_for(K::Home, View::Monitor, false), Some(Cmd::Edge(true)));
         assert_eq!(command_for(K::End, View::History, false), Some(Cmd::Edge(false)));
@@ -2368,7 +2385,7 @@ mod tests {
         assert_eq!(command_for(K::Page_Up, View::Projects, false), Some(Cmd::Page(-1)));
         assert_eq!(command_for(K::Right, View::Projects, false), Some(Cmd::Across(1)));
         assert_eq!(command_for(K::Left, View::Ideas, false), Some(Cmd::Across(-1)));
-        assert_eq!(command_for(K::Right, View::Monitor, false), None, "a list has no across");
+        assert_eq!(command_for(K::Right, View::History, false), None, "a list has no across");
     }
 
     #[test]

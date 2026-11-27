@@ -81,6 +81,16 @@ pub fn apply_show(ui: &Ui, show: &str) {
                 agents::set_open(ui, pid, true);
             }
         }
+        // Monitor: every session with subagents opened (`board-open:done` unfolds the finished too).
+        "board-open" => {
+            let ids: Vec<String> = ui.st.borrow().ov.as_ref().map(|ov| ov.sessions.iter().filter(|s| s.subagents.total > 0).map(|s| s.id.clone()).collect()).unwrap_or_default();
+            if arg.as_deref() == Some("done") {
+                ui.st.borrow_mut().board_done_open.extend(ids.iter().cloned());
+            }
+            for id in ids {
+                agents::set_board_open(ui, &id, true);
+            }
+        }
         // Check: opening the side panel must not change the window's minimum width (a tiling
         // compositor scales a window whose minimum outgrows its tile). Prints both, and whether the
         // content fits the window at its current width.
@@ -316,7 +326,7 @@ pub fn apply_show(ui: &Ui, show: &str) {
             }
         }
         _ => eprintln!(
-            "wake: --show takes scroll[:px], panel-scroll[:px], agents-open, switcher, switcher-subs, session[:id], project[:id], pause, crash, menu, stale, stop[:pid], toast[:text] or track"
+            "wake: --show takes scroll[:px], panel-scroll[:px], agents-open, board-open[:done], switcher, switcher-subs, session[:id], project[:id], pause, crash, menu, stale, stop[:pid], toast[:text] or track"
         ),
     }
 }
@@ -402,10 +412,23 @@ pub fn screenshot(ui: &Ui, path: PathBuf, show: Option<String>) {
             }
             return glib::ControlFlow::Continue;
         }
+        // A shot further down a long view (WAKE_SHOT_SCROLL, in pixels): held each pass, since a
+        // rebuild puts the list back where it was.
+        if let Some(px) = std::env::var("WAKE_SHOT_SCROLL").ok().and_then(|p| p.parse::<f64>().ok()) {
+            let view = ui.st.borrow().view;
+            let a = ui.w.views[&view].scroll.vadjustment();
+            a.set_value(px.min(a.upper() - a.page_size()));
+        }
         // One more overview just before the shot, so it shows the settled state (git included).
         // A scroll test needs longer: the hook waits for the list to load, then rebuilds it.
         let long = show.as_deref().is_some_and(|s| {
-            s.starts_with("measure") || s.starts_with("newproject") || s.starts_with("peek") || s.starts_with("scroll") || s.starts_with("panel-scroll") || s.starts_with("agents-open")
+            s.starts_with("measure")
+                || s.starts_with("newproject")
+                || s.starts_with("peek")
+                || s.starts_with("scroll")
+                || s.starts_with("panel-scroll")
+                || s.starts_with("agents-open")
+                || s.starts_with("board-open")
         });
         // Behind-the-remote shots of real data wait for the first ls-remote pass.
         let slow = show.as_deref().is_some_and(|s| s.starts_with("behind"));

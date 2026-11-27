@@ -521,7 +521,7 @@ fn render_inside_rows(ui: &Ui) {
         el.append(&w::wrap(&format!("You last asked: {}", fmt::clip(p, 200)), &["none", "pad4"]));
     }
     if s.deleted_by_claude {
-        el.append(&w::wrap("Kept by Wake — Claude deleted its copy.", &["none", "violet", "pad4"]));
+        el.append(&w::wrap("Kept by Wake: Claude deleted its copy.", &["none", "violet", "pad4"]));
     }
     if total == 0 {
         el.append(&w::label("This session did its work itself.", &["none"]));

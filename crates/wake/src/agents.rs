@@ -495,6 +495,11 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
             let when = a.started_at.as_deref().map(|t| format!(" · started {}", fmt::short_when(Some(t)))).unwrap_or_default();
             format!("{}{when}", views::project_label(None))
         }
+        // A spare's title already says what it is: under it, which agent and when it started.
+        _ if a.kind == ProcKind::Spare => {
+            let when = a.started_at.as_deref().map(|t| format!(" · started {}", fmt::short_when(Some(t)))).unwrap_or_default();
+            format!("{}{when}", a.agent.unwrap_or(Agent::Claude).label())
+        }
         _ => kind_words(a.kind).to_string(),
     };
     let helpers = live_helpers(a);
@@ -579,8 +584,8 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
         let pid = a.pid;
         // One verb. Quiet until the row is hovered or selected; red only when the row looks stale.
         let b = w::button("Stop", None, &["sm", "stop", if is_stale(a) { "danger" } else { "ghost" }], move || stop_one(&ui2, pid));
-        b.set_tooltip_text(Some("Stop it (s). Wake asks first."));
-        b.update_property(&[gtk::accessible::Property::Label(&format!("Stop {title}, PID {pid}"))]);
+        b.set_tooltip_text(Some("Stop it (Delete). Wake asks first."));
+        b.update_property(&[gtk::accessible::Property::Label(&format!("Stop {title}, process {pid}"))]);
         b.set_halign(gtk::Align::Start);
         b.upcast()
     };

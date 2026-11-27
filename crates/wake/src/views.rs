@@ -1294,12 +1294,18 @@ fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
     top.append(&age_cell(ui, s, true));
     card.append(&top);
     let q = s.question.clone().or_else(|| s.away_summary.as_deref().map(fmt::recap)).unwrap_or_else(|| "It is waiting for you.".into());
+    // What it wants, as the details' card says it ("It is asking you"), over the question itself.
+    let qb = w::vbox(0, &[]);
+    let h = w::sec(panel::ask_heading(s));
+    h.add_css_class("amber");
+    qb.append(&h);
     let ql = w::wrap(&fmt::clip(&q, 600), &["title-3"]);
     ql.set_xalign(0.0);
     ql.set_lines(4);
     ql.set_ellipsize(gtk::pango::EllipsizeMode::End);
     ql.set_tooltip_text(Some(&q));
-    card.append(&ql);
+    qb.append(&ql);
+    card.append(&qb);
     let acts = w::hbox(8, &[]);
     if let Some(go) = panel::go_button(ui, s, true) {
         acts.append(&go);
@@ -1310,8 +1316,7 @@ fn ask_card(ui: &Ui, s: &SessionSummary) -> gtk::ListBoxRow {
     details.update_property(&[gtk::accessible::Property::Label(&format!("Details, {}", s.title))]);
     acts.append(&details);
     acts.append(&w::spacer());
-    let asks = crate::why::asks_question(s);
-    acts.append(&w::state_tag(if asks { "Asks you" } else { "Wants a decision" }, "waiting"));
+    acts.append(&w::state_badge(s.state));
     card.append(&acts);
     let r = list_row(&s.id, &card);
     r.add_css_class("cardrow");

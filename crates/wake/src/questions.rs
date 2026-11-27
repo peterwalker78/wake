@@ -443,8 +443,7 @@ fn render_list(ui: &Ui) {
 }
 
 fn restore_list_sel(wd: &W, sel: Option<&str>) {
-    let mut c = wd.list.first_child();
-    while let Some(x) = c {
+    for x in w::children(&wd.list) {
         if let Ok(row) = x.clone().downcast::<gtk::ListBoxRow>()
             && sel.is_some_and(|s| row.widget_name() == s)
         {
@@ -453,7 +452,6 @@ fn restore_list_sel(wd: &W, sel: Option<&str>) {
             }
             return;
         }
-        c = x.next_sibling();
     }
     wd.list.unselect_all();
 }
@@ -929,14 +927,12 @@ fn delete(ui: &Ui) {
 fn move_sel(ui: &Ui, d: i32) {
     let Some(wd) = ws() else { return };
     let mut rows = Vec::new();
-    let mut c = wd.list.first_child();
-    while let Some(x) = c {
+    for x in w::children(&wd.list) {
         if let Ok(r) = x.clone().downcast::<gtk::ListBoxRow>()
             && r.is_selectable()
         {
             rows.push(r);
         }
-        c = x.next_sibling();
     }
     if rows.is_empty() {
         return;

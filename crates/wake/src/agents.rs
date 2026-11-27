@@ -195,10 +195,9 @@ fn group_of(a: &AgentProc) -> &'static str {
     }
 }
 
-/// The session behind a row, from the overview: its subagent counts.
+/// The session behind a row (`AppState::session`): its subagent counts.
 fn session_of<'a>(st: &'a app::AppState, a: &AgentProc) -> Option<&'a SessionSummary> {
-    let id = a.session_id.as_deref()?;
-    st.ov.as_ref()?.sessions.iter().find(|s| s.id == id)
+    st.session(a.session_id.as_deref()?)
 }
 
 /// What, when it changes, is worth drawing the rows again for: never memory, CPU or idle time.
@@ -437,7 +436,7 @@ fn cells(all: Vec<gtk::Widget>, full_cols: &[Col], hide: u8) -> Vec<(gtk::Widget
 }
 
 fn where_words(a: &AgentProc) -> Option<String> {
-    a.location.as_ref().map(app::tab_label)
+    a.location.as_ref().map(app::window_name)
 }
 
 fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols: &[Col], hide: u8) -> gtk::ListBoxRow {
@@ -1134,12 +1133,10 @@ fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, co
 /// The row named `name` in the list (rows on their way out have no name).
 fn find_named_row(ui: &Ui, name: &str) -> Option<gtk::ListBoxRow> {
     let list = &ui.w.views[&View::Agents].list;
-    let mut c = list.first_child();
-    while let Some(x) = c {
+    for x in w::children(&list) {
         if x.widget_name() == name {
             return x.downcast().ok();
         }
-        c = x.next_sibling();
     }
     None
 }
@@ -1157,9 +1154,7 @@ fn tree_rows(ui: &Ui, pid: u32) -> Vec<gtk::ListBoxRow> {
     let list = &ui.w.views[&View::Agents].list;
     let class = tree_class(pid);
     let mut out = Vec::new();
-    let mut c = list.first_child();
-    while let Some(x) = c {
-        c = x.next_sibling();
+    for x in w::children(&list) {
         if x.has_css_class(&class)
             && !x.widget_name().is_empty()
             && let Ok(r) = x.downcast::<gtk::ListBoxRow>()
@@ -1299,7 +1294,7 @@ fn patch_trees(ui: &Ui) {
         }
         let subs = sid.and_then(|sid| ui.st.borrow().sessions.get(&sid).map(|d| d.subagents.clone())).unwrap_or_default();
         let set = |root: &gtk::ListBoxRow, name: &str, t: &str| {
-            if let Some(l) = panel::find_named(root.upcast_ref(), name).and_downcast::<gtk::Label>()
+            if let Some(l) = w::named(root, name).and_downcast::<gtk::Label>()
                 && l.text() != t
             {
                 l.set_text(t);
@@ -1341,7 +1336,7 @@ pub fn set_open(ui: &Ui, pid: u32, open: bool) {
             st.agent_open.remove(&pid);
         }
     }
-    if let Some(b) = panel::find_named(ui.w.views[&View::Agents].list.upcast_ref(), &format!("subcount-{pid}")).and_downcast::<gtk::Button>()
+    if let Some(b) = w::named(&ui.w.views[&View::Agents].list, &format!("subcount-{pid}")).and_downcast::<gtk::Button>()
         && let Some(label) = b.label()
     {
         let rest = label.trim_start_matches(['▸', '▾', ' ']).to_string();
@@ -1374,11 +1369,11 @@ fn set_fold(ui: &Ui, pid: u32, open: bool) {
         }
     }
     let Some(fold) = find_named_row(ui, &fold_name(pid)) else { return };
-    if let Some(c) = panel::find_named(fold.upcast_ref(), &format!("subchev-{pid}")).and_downcast::<gtk::Label>() {
+    if let Some(c) = w::named(&fold, &format!("subchev-{pid}")).and_downcast::<gtk::Label>() {
         c.set_text(if open { "▾" } else { "▸" });
     }
     // The inner line drops from the fold's branch only while the finished list is open.
-    if let Some(da) = panel::find_named(fold.upcast_ref(), &format!("subconn-{pid}")).and_downcast::<gtk::DrawingArea>() {
+    if let Some(da) = w::named(&fold, &format!("subconn-{pid}")).and_downcast::<gtk::DrawingArea>() {
         draw_link(&da, if open { Link::FoldOpen } else { Link::Last }, None);
         da.queue_draw();
     }
@@ -1740,9 +1735,7 @@ fn fold_away(ui: &Ui, gone: &[u32]) -> bool {
             rows.extend(tree_rows(ui, pid));
             if let Some(grp) = grp {
                 let mut members = Vec::new();
-                let mut c = list.first_child();
-                while let Some(x) = c {
-                    c = x.next_sibling();
+                for x in w::children(&list) {
                     if x.has_css_class(&grp) {
                         members.push(x);
                     }

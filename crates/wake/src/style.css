@@ -49,7 +49,6 @@ window.wake button.stat { font-family: "JetBrains Mono", monospace; font-size: 1
 .stat.stalec .n, .stat.stalec { color: @amber; } .stat.stalec .d { background-color: @amber; }
 .stat.ideac .n { color: @violet; } .stat.ideac .d { background-color: @violet; }
 .stat.zero .n { color: @dim; } .stat.zero .d { background-color: @dim; }
-.clock { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 13px; padding-top: 1px; }
 
 .indexing { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @accent; padding-top: 1px; }
 

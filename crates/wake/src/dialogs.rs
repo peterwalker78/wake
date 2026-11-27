@@ -1,20 +1,14 @@
 //! In-window dialogs: pausing a project, and confirming before stopping an agent.
 
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
 use gtk4::{self as gtk, gdk, glib, prelude::*};
 use wake_core::*;
 
 use crate::{
-    app::{self, Ui},
+    app::{self, Ui, View},
     w,
 };
-
-thread_local! {
-    /// What Ctrl+Enter (pause) or the confirm button does, and where focus goes back to.
-    static SUBMIT: RefCell<Option<Rc<dyn Fn()>>> = RefCell::new(None);
-    static RETURN_TO: RefCell<Option<gtk::Widget>> = const { RefCell::new(None) };
-}
 
 /// A dialog card: screen readers are told it is a dialog.
 pub fn card(width: i32) -> gtk::Box {
@@ -55,9 +49,13 @@ pub fn show(ui: &Ui, card: &gtk::Box, submit: Option<Rc<dyn Fn()>>) {
     modal.set_visible(true);
     crate::motion::pop(modal);
     crate::motion::pop(card);
-    ui.st.borrow_mut().modal_open = true;
-    RETURN_TO.with(|r| *r.borrow_mut() = gtk::prelude::GtkWindowExt::focus(&ui.window));
-    SUBMIT.with(|s| *s.borrow_mut() = submit);
+    let back = gtk::prelude::GtkWindowExt::focus(&ui.window);
+    {
+        let mut st = ui.st.borrow_mut();
+        st.modal_open = true;
+        st.modal_return = back;
+        st.modal_submit = submit;
+    }
     ui.w.column.set_sensitive(false);
 }
 
@@ -66,8 +64,8 @@ pub fn close(ui: &Ui) {
     w::clear(&ui.w.modal);
     ui.st.borrow_mut().modal_open = false;
     ui.w.column.set_sensitive(true);
-    SUBMIT.with(|s| *s.borrow_mut() = None);
-    let back = RETURN_TO.with(|r| r.borrow_mut().take());
+    ui.st.borrow_mut().modal_submit = None;
+    let back = ui.st.borrow_mut().modal_return.take();
     match back {
         Some(b) if b.is_mapped() => {
             b.grab_focus();
@@ -82,7 +80,8 @@ pub fn on_key(ui: &Ui, key: gdk::Key, ctrl: bool) -> glib::Propagation {
         return glib::Propagation::Stop;
     }
     if ctrl && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
-        if let Some(f) = SUBMIT.with(|s| s.borrow().clone()) {
+        let submit = ui.st.borrow().modal_submit.clone();
+        if let Some(f) = submit {
             f();
         }
         return glib::Propagation::Stop;
@@ -259,7 +258,7 @@ pub fn keys(ui: &Ui) {
             vec![
                 ("Ctrl+F", "find a session".into()),
                 ("Ctrl+N", "a new idea".into()),
-                ("Ctrl+1 to 5", "Monitor, Projects, Ideas, History, Agents".into()),
+                ("Ctrl+1 to 5", View::TABS.map(View::name).join(", ")),
                 ("Ctrl+6", "Ask".into()),
                 ("Ctrl+,", "Settings".into()),
                 ("Ctrl+Tab", "the next view (Shift: back)".into()),

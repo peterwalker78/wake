@@ -83,8 +83,7 @@ fn widget(ui: &Ui, r: Region) -> Option<gtk::Widget> {
         Region::Tabs => Some(ui.w.tabs_bottom.clone().upcast()),
         Region::Top => {
             // The top bar (the behind banner may sit above it in the column).
-            let mut c = ui.w.column.first_child();
-            while let Some(x) = c {
+            for x in crate::w::children(&ui.w.column) {
                 if x.has_css_class("top") {
                     return Some(x);
                 }
@@ -92,7 +91,6 @@ fn widget(ui: &Ui, r: Region) -> Option<gtk::Widget> {
                 if let Some(inner) = x.first_child().filter(|i| x.is::<gtk::WindowHandle>() && i.has_css_class("top")) {
                     return Some(inner);
                 }
-                c = x.next_sibling();
             }
             None
         }
@@ -128,10 +126,8 @@ pub fn controls(w: &gtk::Widget) -> Vec<gtk::Widget> {
                 return;
             }
         }
-        let mut c = w.first_child();
-        while let Some(x) = c {
+        for x in crate::w::children(&w) {
             walk(&x, out);
-            c = x.next_sibling();
         }
     }
     let mut out = Vec::new();
@@ -489,12 +485,10 @@ fn label_of(w: &gtk::Widget) -> Option<String> {
         if let Some(l) = w.downcast_ref::<gtk::Label>() {
             return Some(l.text().to_string()).filter(|t| !t.trim().is_empty());
         }
-        let mut c = w.first_child();
-        while let Some(x) = c {
+        for x in crate::w::children(&w) {
             if let Some(t) = first_label(&x) {
                 return Some(t);
             }
-            c = x.next_sibling();
         }
         None
     }

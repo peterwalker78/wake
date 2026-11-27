@@ -118,9 +118,9 @@ fn session(s: S) -> SessionSummary {
     }
 }
 
-/// A made-up terminal window (`window` tells them apart; the title is only for reading the demo).
-fn tab(window: u32, _tab_index: u32, _title: &str) -> Option<Location> {
-    Some(Location { pid: 3120 + window, app: Some("Terminal".into()) })
+/// A made-up terminal window (`n` tells them apart).
+fn window(n: u32) -> Option<Location> {
+    Some(Location { pid: 3120 + n, app: Some("Terminal".into()) })
 }
 
 /// Tasks for the demo's long tail of finished subagents.
@@ -220,7 +220,7 @@ impl DemoSource {
             last_prompt: "okay, send a brief write up of this stuff to priya for her awareness too",
         });
         s.question = Some("Should I send the write-up to Priya now, or keep it as a draft for you to check first?".into());
-        s.location = tab(1, 2, "Gradebook: reports");
+        s.location = window(1);
         s.pid = Some(41022);
         s.away_summary = Some("The PDF export is built and a sample report is drafted, both merged to develop, and Priya has the sample. Next, you pick the font for the printed reports.".into());
         s.subagents = SubagentCounts { total: 3, running: 0 };
@@ -238,7 +238,7 @@ impl DemoSource {
             prompts: 5,
             last_prompt: "the helper rows overlap the PID when there are more than four, fix that",
         });
-        s.location = tab(1, 0, "tideline: scope");
+        s.location = window(1);
         s.pid = Some(43310);
         s.subagents = SubagentCounts { total: 30, running: 2 };
         sessions.push(s);
@@ -306,7 +306,7 @@ impl DemoSource {
         });
         s.away_summary = Some("Sketched the board in three layouts. Next, say whether you want me to build the dense one or the two-pane one. (turn off recaps in /config)".into());
         s.question = Some("Next, say whether you want me to build the dense one or the two-pane one.".into());
-        s.location = tab(2, 0, "~: dashboard");
+        s.location = window(2);
         s.pid = Some(39977);
         sessions.push(s);
 
@@ -565,9 +565,9 @@ impl Pretend {
             locations_unsure: None,
             behind: Some(self.behind.clone()),
             // Disk, resources, attribution (added 2026-11-20): see crate::disk's demo data.
-            resources: Some(crate::disk::demo_resources(&self.procs, &self.sessions)),
-            disk: Some(crate::disk::demo_report()),
-            attribution: Some(crate::disk::demo_attribution(&self.sessions)),
+            resources: Some(resources_of(&self.procs, &self.sessions)),
+            disk: Some(disk_report()),
+            attribution: Some(attribution_of(&self.sessions)),
             groups: self.all_groups(),
         }
     }
@@ -817,7 +817,7 @@ impl Source for DemoSource {
         ProcOverview { generated_at: ago(0), total_rss_bytes, stale_rss_bytes: stale.iter().map(|p| p.rss_bytes).sum(), stale_count: stale.len() as u32, dead_notes: vec![48213], procs }
     }
 
-    /// Made-up terminals: a working agent in a tab, a background one, and a quiet prompt for the
+    /// Made-up terminals: a working agent in a window, a background one, and a quiet prompt for the
     /// other live sessions. The working ones grow a line every second so the preview looks live.
     fn screen(&self, session: &str) -> Option<Screen> {
         let s = self.state.lock().unwrap().sessions.iter().find(|s| s.id == session).cloned()?;
@@ -1090,3 +1090,403 @@ const DEMO_SKYHOOK: &str = "\
 
 ● Loading now restores moving platforms, and old saves without the key
   still load. Writing a test level with three movers to check by hand.";
+
+// ---------- the disk report
+
+const H: f64 = 3600.0;
+const GB: u64 = 1 << 30;
+const MB: u64 = 1 << 20;
+
+fn ago_iso(secs: f64) -> Option<String> {
+    Some(wake_core::util::iso_from_epoch(wake_core::util::now() - secs))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn item(path: &str, kind: DiskKind, name: &str, bytes: u64, used: f64, safety: DiskSafety, cost: &str, action: Option<DiskAction>) -> DiskItem {
+    DiskItem {
+        path: path.into(),
+        kind,
+        name: name.into(),
+        bytes,
+        partial: false,
+        last_used: ago_iso(used),
+        safety,
+        cost: cost.into(),
+        action,
+        command: None,
+        command_note: None,
+        worktree: None,
+        within: None,
+        refused: None,
+    }
+}
+
+fn cmd(mut i: DiskItem, c: &str, note: &str) -> DiskItem {
+    i.command = Some(c.into());
+    i.command_note = Some(note.into());
+    i
+}
+
+const P: &str = "/home/sam/Projects";
+const CONV: &str = "Deleting one loses that session's history and resume; Wake keeps its summary. Claude deletes conversations older than its cleanup period (30 days unless cleanupPeriodDays in ~/.claude/settings.json says otherwise) by itself.";
+const REBUILD: &str = "Rebuilds on the next build (a few minutes).";
+
+/// Made-up measurements, shaped like a developer laptop with a few busy projects.
+fn disk_report() -> DiskReport {
+    use DiskAction::*;
+    use DiskKind::*;
+    use DiskSafety::*;
+    let mut slip = vec![
+        item(
+            &format!("{P}/tideline-desktop/target"),
+            BuildOutput,
+            "Rust build output",
+            15 * GB + 300 * MB,
+            2.0 * H,
+            Safe,
+            "Rebuilds on the next build: a long one on this computer (tens of minutes, memory-heavy).",
+            Some(Clear),
+        ),
+        {
+            let mut i = item(
+                &format!("{P}/tideline-desktop/.claude/worktrees/agent-ace0489"),
+                Worktree,
+                "Agent worktree for branch worktree-agent-ace0489 (not merged)",
+                3 * GB + 600 * MB,
+                3.0 * H,
+                Check,
+                "Its branch worktree-agent-ace0489 has commits main doesn't: removing it could lose work. 3.6 GB of it is build output, listed below.",
+                Some(OpenFolder),
+            );
+            i.worktree = Some(WorktreeInfo {
+                repo: format!("{P}/tideline-desktop"),
+                branch: Some("worktree-agent-ace0489".into()),
+                default_branch: Some("main".into()),
+                merged: Some(false),
+                dirty_files: Some(0),
+                in_use: None,
+                made_by: Some("2b8f0d11-slip-scope".into()),
+                made_by_title: Some("scope-helper-rows".into()),
+            });
+            i.refused = Some("Its branch isn't merged.".into());
+            i
+        },
+        {
+            let mut i = item(
+                &format!("{P}/tideline-desktop/.claude/worktrees/agent-ace0489/target"),
+                BuildOutput,
+                "Rust build output in worktree agent-ace0489",
+                3 * GB + 580 * MB,
+                3.0 * H,
+                Safe,
+                REBUILD,
+                Some(Clear),
+            );
+            i.within = Some(format!("{P}/tideline-desktop/.claude/worktrees/agent-ace0489"));
+            i
+        },
+        {
+            let mut i = item(
+                &format!("{P}/tideline-desktop/.claude/worktrees/focus-card-tidy"),
+                Worktree,
+                "Agent worktree for branch focus-card-tidy (merged)",
+                412 * MB,
+                26.0 * H,
+                Safe,
+                "Its branch focus-card-tidy is in main; removing it deletes only this copy (the branch stays). 380 MB of it is build output, listed below.",
+                Some(RemoveWorktree),
+            );
+            i.command = Some("git -C ~/Projects/tideline-desktop worktree remove .claude/worktrees/focus-card-tidy".into());
+            i.worktree = Some(WorktreeInfo {
+                repo: format!("{P}/tideline-desktop"),
+                branch: Some("focus-card-tidy".into()),
+                default_branch: Some("main".into()),
+                merged: Some(true),
+                dirty_files: Some(0),
+                in_use: None,
+                made_by: Some("0f9e8d7c-slip-unknown".into()),
+                made_by_title: Some("unfinished-work-check".into()),
+            });
+            i
+        },
+        {
+            let mut i = item(
+                &format!("{P}/tideline-desktop/.claude/worktrees/focus-card-tidy/target"),
+                BuildOutput,
+                "Rust build output in worktree focus-card-tidy",
+                380 * MB,
+                26.0 * H,
+                Safe,
+                REBUILD,
+                Some(Clear),
+            );
+            i.within = Some(format!("{P}/tideline-desktop/.claude/worktrees/focus-card-tidy"));
+            i
+        },
+        item(
+            "/home/sam/.cache/tideline-smoke",
+            Cache,
+            "Tideline's smoke-test clips and screens (~/.cache/tideline-smoke)",
+            954 * MB,
+            5.0 * H,
+            Safe,
+            "Test or tool output: the next run makes it again.",
+            Some(Clear),
+        ),
+        item("/home/sam/.claude/projects", Transcripts, "Claude conversations here (31 sessions)", 420 * MB, 60.0, Keep, CONV, None),
+        item(&format!("{P}/tideline-desktop/.git"), Git, "Git history (.git)", 310 * MB, 2.0 * H, Keep, "The project's history. Never delete it.", None),
+    ];
+    // The demo's scope-helper-rows session is working here.
+    for i in slip.iter_mut().filter(|i| i.action == Some(Clear) && !i.path.contains(".cache")) {
+        i.refused = Some("An agent in this project is working; it may be building into this. Try when it's idle.".into());
+    }
+    let phase = vec![
+        item(
+            &format!("{P}/Skyhook/archive"),
+            Archive,
+            "Archive or exported builds (archive)",
+            3 * GB + 100 * MB,
+            40.0 * 24.0 * H,
+            Keep,
+            "May be the only copy of an old version or a shipped build. Wake won't delete it.",
+            Some(OpenFolder),
+        ),
+        item(
+            "/home/sam/.cache/skyhook-probe",
+            Cache,
+            "Skyhook's probe recordings (~/.cache/skyhook-probe)",
+            2 * GB + 700 * MB,
+            2.0 * 24.0 * H,
+            Safe,
+            "Test or tool output: the next run makes it again.",
+            Some(Clear),
+        ),
+        item(
+            &format!("{P}/Skyhook/Builds"),
+            Archive,
+            "Archive or exported builds (Builds)",
+            2 * GB + 100 * MB,
+            9.0 * 24.0 * H,
+            Keep,
+            "May be the only copy of an old version or a shipped build. Wake won't delete it.",
+            Some(OpenFolder),
+        ),
+        item(
+            &format!("{P}/Skyhook/game/.godot"),
+            BuildOutput,
+            "Godot import cache in game",
+            640 * MB,
+            2.0 * 24.0 * H,
+            Safe,
+            "Godot imports the assets again next time the project opens.",
+            Some(Clear),
+        ),
+        item("/home/sam/.claude/projects", Transcripts, "Claude conversations here (12 sessions)", 180 * MB, 4.0 * 24.0 * H, Keep, CONV, None),
+    ];
+    let school = vec![
+        item("/home/sam/.claude/projects", Transcripts, "Claude conversations here (22 sessions)", 610 * MB, 40.0, Keep, CONV, None),
+        item(
+            &format!("{P}/Gradebook/node_modules"),
+            BuildOutput,
+            "JavaScript packages (node_modules)",
+            420 * MB,
+            6.0 * 24.0 * H,
+            Safe,
+            "Comes back with npm install (needs the network).",
+            Some(Clear),
+        ),
+        item(&format!("{P}/Gradebook/tmp"), BuildOutput, "Rails temporary files (tmp)", 181 * MB, 11.0 * H, Safe, "Rails makes it again; restart a running dev server afterwards.", Some(Clear)),
+        cmd(
+            item(
+                "/home/sam/.claude/jobs",
+                JobFiles,
+                "Background job folders here (4)",
+                96 * MB,
+                11.0 * H,
+                Check,
+                "Each job's tmp folder holds its work files, and hand-back files (briefs, reports) live there too: look before deleting.",
+                None,
+            ),
+            "du -sh ~/.claude/jobs/{7c1e9a40,3c3c1b2a,5e0d9c61,a83f27d0}",
+            "shows what's in them, biggest first; changes nothing",
+        ),
+    ];
+    let west = vec![item(
+        &format!("{P}/waypoint/.venv"),
+        BuildOutput,
+        "Python environment (.venv)",
+        380 * MB,
+        5.0 * 24.0 * H,
+        Safe,
+        "Comes back by installing the packages again (needs the network).",
+        Some(Clear),
+    )];
+    let glim = vec![item(
+        &format!("{P}/fernlight/node_modules"),
+        BuildOutput,
+        "JavaScript packages (node_modules)",
+        210 * MB,
+        3.0 * 24.0 * H,
+        Safe,
+        "Comes back with npm install (needs the network).",
+        Some(Clear),
+    )];
+    let pd = |id: &str, extra: u64, items: Vec<DiskItem>| {
+        let top: u64 = items.iter().filter(|i| i.within.is_none()).map(|i| i.bytes).sum();
+        let rebuildable = items.iter().filter(|i| matches!(i.kind, BuildOutput | Cache) && i.safety == Safe).map(|i| i.bytes).sum();
+        ProjectDisk { project: id.into(), bytes: top + extra, rebuildable, items, measured_at: ago_iso(12.0 * 60.0), partial: false }
+    };
+    let projects = vec![pd("tideline-desktop", 210 * MB, slip), pd("Skyhook", 380 * MB, phase), pd("Gradebook", 260 * MB, school), pd("waypoint", 40 * MB, west), pd("fernlight", 18 * MB, glim)];
+    let home = "/home/sam";
+    let machine_items = vec![
+        cmd(
+            item("/var/lib/flatpak", System, "Flatpak apps and runtimes (system)", 20 * GB, 9.0 * 24.0 * H, Keep, "Installed apps and what they run on.", None),
+            "flatpak uninstall --unused",
+            "removes runtimes no installed app uses; asks first",
+        ),
+        cmd(
+            item(&format!("{home}/.local/share/flatpak"), System, "Flatpak apps and runtimes (yours)", 11 * GB, 3.0 * 24.0 * H, Keep, "Installed apps and what they run on.", None),
+            "flatpak uninstall --unused",
+            "removes runtimes no installed app uses; asks first",
+        ),
+        cmd(
+            item(
+                &format!("{home}/.local/share/containers"),
+                System,
+                "Containers: devbox (running), gradebook-postgres (running), docs-preview (stopped 6 days), old-toolbox (stopped 2 days)",
+                6 * GB + 800 * MB,
+                0.0,
+                Keep,
+                "3.7 GB is in stopped containers. Wake never removes a container.",
+                None,
+            ),
+            "podman ps -a",
+            "lists them; a stopped distrobox still holds what you installed in it, so remove one only if you're sure (distrobox rm <name>)",
+        ),
+        cmd(
+            item(&format!("{home}/.local/share/containers"), System, "Container images", 6 * GB + 600 * MB, 0.0, Keep, "1.5 GB of it nothing uses.", None),
+            "podman image prune",
+            "removes images nothing uses and nothing names (dangling); asks first",
+        ),
+        cmd(
+            item(&format!("{home}/.local/share/containers"), System, "Container volumes", 2 * GB + 300 * MB, 0.0, Keep, "10 MB nothing uses.", None),
+            "podman volume ls",
+            "lists them; volumes hold data such as databases",
+        ),
+        item(&format!("{home}/.claude/projects"), Transcripts, "Claude conversations with no project (96 sessions)", 2 * GB + 100 * MB, 2.0 * H, Keep, CONV, None),
+        cmd(
+            item(&format!("{home}/.rustup"), System, "Rust toolchains (rustup)", GB + 600 * MB, 6.0 * 24.0 * H, Keep, "Every Rust project builds with these.", None),
+            "rustup toolchain list",
+            "lists them; rustup toolchain uninstall <name> removes one you no longer use",
+        ),
+        item(
+            &format!("{home}/.cargo/registry"),
+            Cache,
+            "Downloaded Rust crates (cargo registry)",
+            GB + 300 * MB,
+            3.0 * H,
+            Safe,
+            "Cargo downloads them again on the next build (needs the network).",
+            Some(Clear),
+        ),
+        cmd(
+            item(
+                &format!("{home}/.local/share/Trash"),
+                System,
+                "The Trash",
+                GB + 200 * MB,
+                20.0 * 24.0 * H,
+                Check,
+                "What you (or Wake's Clear) moved there: the space comes back only when it is emptied.",
+                None,
+            ),
+            "gio trash --empty",
+            "empties the Trash for good",
+        ),
+        item(&format!("{home}/.codex"), Transcripts, "Codex conversations (~/.codex)", 606 * MB, 8.0 * 24.0 * H, Keep, "Deleting loses those sessions' history.", None),
+        cmd(
+            item(
+                &format!("{home}/.claude/jobs"),
+                JobFiles,
+                "Background job folders with no project (38)",
+                512 * MB,
+                2.0 * H,
+                Check,
+                "Each job's tmp folder holds its work files, and hand-back files (briefs, reports) live there too: look before deleting.",
+                None,
+            ),
+            "du -sh ~/.claude/jobs/{4be1a7d2,9c03f5e8,d17a6b40,3f8e2c95,60b4d1aa,e2975c3f}",
+            "shows what's in them, biggest first; changes nothing",
+        ),
+        item(
+            &format!("{home}/.cache/supertuxkart"),
+            Cache,
+            "supertuxkart cache (~/.cache/supertuxkart)",
+            345 * MB,
+            30.0 * 24.0 * H,
+            Safe,
+            "A cache: the app fills it again when it needs it.",
+            Some(Clear),
+        ),
+        item(&format!("{home}/.cache/Homebrew"), Cache, "Homebrew's downloads (~/.cache/Homebrew)", 289 * MB, 12.0 * 24.0 * H, Safe, "A cache: the app fills it again when it needs it.", Some(Clear)),
+    ];
+    let mrebuild: u64 = machine_items.iter().filter(|i| matches!(i.kind, BuildOutput | Cache)).map(|i| i.bytes).sum();
+    let rebuildable = projects.iter().map(|p| p.rebuildable).sum::<u64>() + mrebuild;
+    DiskReport {
+        measured_at: ago_iso(12.0 * 60.0),
+        measuring: None,
+        projects,
+        machine: Some(MachineDisk {
+            home_mount: "/home".into(),
+            home_total: 244 * GB,
+            home_free: 86 * GB,
+            root_note: Some("/ shows as full: on an atomic system such as Bazzite, that is the read-only system image, always full by design. Nothing there needs cleaning.".into()),
+            items: machine_items,
+            rebuildable: mrebuild,
+        }),
+        rebuildable,
+    }
+}
+
+/// The demo's processes added up the way the real ones are.
+fn resources_of(procs: &[AgentProc], sessions: &[SessionSummary]) -> Resources {
+    let top: u64 = procs.iter().filter(|p| !procs.iter().any(|q| q.children.contains(&p.pid))).map(|p| p.rss_bytes).sum();
+    let ov = ProcOverview { procs: procs.to_vec(), total_rss_bytes: top, ..Default::default() };
+    let project_of = |sid: &str| sessions.iter().find(|s| s.id == sid).and_then(|s| s.project.clone());
+    wake_core::procs::resources(&ov, &project_of)
+}
+
+/// The demo's guesses: its background job started in ~ that changed files in Skyhook, and the
+/// home session with no project.
+fn attribution_of(sessions: &[SessionSummary]) -> Vec<Attribution> {
+    let mut out = Vec::new();
+    for s in sessions {
+        if s.id.starts_with("91aa4e7c") && s.project.as_deref() == Some("Skyhook") {
+            out.push(Attribution { session: s.id.clone(), project: s.project.clone(), how: "files".into(), words: "probably Skyhook (it changed files there)".into(), started_at_home: true });
+        } else if s.project.is_none() {
+            out.push(Attribution { session: s.id.clone(), project: None, how: "none".into(), words: "no project".into(), started_at_home: true });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_totals_add_up_and_nothing_risky_offers_a_delete() {
+        let r = disk_report();
+        for p in &r.projects {
+            for i in &p.items {
+                if matches!(i.kind, DiskKind::Archive | DiskKind::Folder | DiskKind::Git | DiskKind::Transcripts | DiskKind::JobFiles | DiskKind::System) {
+                    assert!(!matches!(i.action, Some(DiskAction::Clear) | Some(DiskAction::RemoveWorktree)), "{}", i.name);
+                }
+            }
+            assert!(p.bytes >= p.rebuildable, "{}", p.project);
+        }
+        let slip = r.project("tideline-desktop").unwrap();
+        assert_eq!(crate::disk::size(slip.bytes), "21 GB");
+        assert!(r.machine.as_ref().unwrap().items.iter().all(|i| i.kind != DiskKind::System || i.command.is_some()));
+    }
+}

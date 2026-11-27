@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use gtk4::{self as gtk, gdk, gio, glib, gsk, prelude::*};
+use gtk4::{self as gtk, gdk, gio, glib, prelude::*};
 use wake_core::*;
 
 use crate::{agents, dialogs, panel, peek, prefs, scope, setview, switcher, theme, views, w};
@@ -48,6 +48,8 @@ pub enum View {
 
 impl View {
     pub const ALL: [View; 7] = [View::Monitor, View::Agents, View::Projects, View::Ideas, View::History, View::Questions, View::Settings];
+    /// The view switcher's tabs, in their order: the tab bar, Ctrl+Tab, and Ctrl+1 to Ctrl+5.
+    pub const TABS: [View; 5] = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -135,6 +137,8 @@ pub struct Sw {
     pub in_subs: bool,
     pub sub_sel: usize,
     pub expanded: Option<String>,
+    /// Where the keyboard was when it opened, to go back to on Esc (the panel, the rail...).
+    pub return_to: Option<gtk::Widget>,
 }
 
 pub struct AppState {
@@ -180,6 +184,12 @@ pub struct AppState {
     pub cur: Option<String>,
     pub back: Option<String>,
     pub modal_open: bool,
+    /// The open dialog's Ctrl+Enter (pause) or confirm action, and where the keyboard goes back
+    /// to when it closes.
+    pub modal_submit: Option<Rc<dyn Fn()>>,
+    pub modal_return: Option<gtk::Widget>,
+    /// Projects: a project is being dragged; the view waits to draw again until it is dropped.
+    pub dragging: bool,
     pub busy_ov: bool,
     pub busy_procs: bool,
     /// The periodic re-reads of open details (Agents' open rows, the session panel) are running:
@@ -207,6 +217,13 @@ pub struct AppState {
     pub chips_drawn: String,
     /// The layout for the window's width (layout.rs), as last drawn.
     pub lay: crate::layout::Lay,
+}
+
+impl AppState {
+    /// A session by id: from the overview, else from its details when they have been read.
+    pub fn session(&self, id: &str) -> Option<&SessionSummary> {
+        self.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.id == id)).or_else(|| self.sessions.get(id).map(|d| &d.summary))
+    }
 }
 
 impl Default for AppState {
@@ -247,6 +264,9 @@ impl Default for AppState {
             cur: None,
             back: None,
             modal_open: false,
+            modal_submit: None,
+            modal_return: None,
+            dragging: false,
             busy_ov: false,
             busy_procs: false,
             busy_agents_open: false,
@@ -307,10 +327,9 @@ pub struct Widgets {
     /// Back, at the start of the title bar, while the details are a page of their own.
     pub back_btn: gtk::Button,
     pub counts: crate::layout::Squeeze,
-    /// The three places, as tabs in the top bar: Monitor, Projects, History.
+    /// The view switcher: `View::TABS` in the top bar.
     pub tabs: gtk::Box,
     pub indexing: gtk::Label,
-    pub clock: gtk::Label,
     /// The view switcher's bottom form, in a phone-narrow window.
     pub tabs_bottom: gtk::Box,
     /// New idea (+) and the main menu in the title bar.
@@ -548,7 +567,7 @@ fn build(app: &gtk::Application, opts: Opts) {
     top.append(&start);
     let gap_l = w::spacer();
     top.append(&gap_l);
-    // The view switcher: Monitor, Projects, Ideas, History, Agents.
+    // The view switcher: View::TABS.
     let tabs = w::hbox(4, &["tabs"]);
     tabs.update_property(&[gtk::accessible::Property::Label("Views")]);
     top.append(&tabs);
@@ -572,9 +591,6 @@ fn build(app: &gtk::Application, opts: Opts) {
     controls.set_valign(gtk::Align::Center);
     end.append(&controls);
     top.append(&end);
-    // The clock isn't in the bar (the desktop has one); it is kept for the code that ticks it.
-    let clock = w::label(&crate::fmt::clock(), &["clock"]);
-    clock.set_visible(false);
     let handle = gtk::WindowHandle::new();
     handle.set_child(Some(&top));
     // An empty title bar: GTK still gives the window its shadow and resize edges.
@@ -649,7 +665,7 @@ fn build(app: &gtk::Application, opts: Opts) {
     body.set_vexpand(true);
     body.set_hexpand(true);
 
-    // A banner under the title bar for what you should know (demo data, Wake falling behind, tabs it
+    // A banner under the title bar for what you should know (demo data, Wake falling behind, windows it
     // can't see); hidden while all is well.
     let status = w::hbox(10, &["statusbar"]);
     // In a phone-narrow window the view switcher moves to the bottom, as GTK apps do.
@@ -707,7 +723,6 @@ fn build(app: &gtk::Application, opts: Opts) {
             back_btn: back_btn.clone(),
             menu: menu.clone(),
             indexing,
-            clock,
             nav,
             plist,
             peek_rail,
@@ -831,7 +846,8 @@ fn build(app: &gtk::Application, opts: Opts) {
             if open {
                 let ui3 = ui2.clone();
                 glib::idle_add_local_once(move || {
-                    let on = first_on(&ui3.w.nav).or_else(|| ui3.w.nav.first_child());
+                    // The button marked "on" (the current view), else the first.
+                    let on = w::children(&ui3.w.nav).find(|x| x.has_css_class("on")).or_else(|| ui3.w.nav.first_child());
                     if let Some(b) = on {
                         b.grab_focus();
                     }
@@ -983,13 +999,6 @@ fn build(app: &gtk::Application, opts: Opts) {
         });
     }
     {
-        let ui = ui.clone();
-        glib::timeout_add_local(Duration::from_secs(15), move || {
-            ui.w.clock.set_text(&crate::fmt::clock());
-            glib::ControlFlow::Continue
-        });
-    }
-    {
         // Back from minimised: catch up at once rather than at the next tick.
         let ui = ui.clone();
         window.connect_suspended_notify(move |win| {
@@ -1029,552 +1038,11 @@ fn build(app: &gtk::Application, opts: Opts) {
         if std::env::var_os("WAKE_SHOT_FOCUS").is_some() {
             ui.window.set_focus_visible(true);
         }
-        screenshot(&ui, path, opts.show.clone());
+        crate::hooks::screenshot(&ui, path, opts.show.clone());
     } else if let Some(show) = opts.show.clone() {
         let ui = ui.clone();
-        glib::timeout_add_local_once(Duration::from_millis(600), move || apply_show(&ui, &show));
+        glib::timeout_add_local_once(Duration::from_millis(600), move || crate::hooks::apply_show(&ui, &show));
     }
-}
-
-/// Opens what `--show` asks for, once the data is in.
-fn apply_show(ui: &Ui, show: &str) {
-    let (what, arg) = show.split_once(':').map_or((show, None), |(a, b)| (a, Some(b.to_string())));
-    let first_session = |pred: &dyn Fn(&SessionSummary) -> bool| ui.st.borrow().ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| pred(s)).map(|s| s.id.clone()));
-    match what {
-        // Test hook: scroll the current view, then force a full rebuild, to prove refreshes keep the place.
-        "scroll" => {
-            // Wait until the view is long enough to scroll, scroll it, then force a full rebuild.
-            let px: f64 = arg.as_deref().and_then(|a| a.parse().ok()).unwrap_or(400.0);
-            let ui2 = ui.clone();
-            let mut n = 0;
-            glib::timeout_add_local(Duration::from_millis(300), move || {
-                n += 1;
-                let view = ui2.st.borrow().view;
-                let a = ui2.w.views[&view].scroll.vadjustment();
-                if a.upper() - a.page_size() < px && n < 40 {
-                    return glib::ControlFlow::Continue;
-                }
-                a.set_value(px);
-                eprintln!("scroll set to {:.0} (of {:.0}); forcing a rebuild", a.value(), a.upper() - a.page_size());
-                ui2.st.borrow_mut().drawn.clear();
-                refresh(&ui2);
-                glib::ControlFlow::Break
-            });
-        }
-        // Test hook: open the session panel with the most prompts, scroll it, force a full redraw
-        // and a focus restore, to prove the panel keeps the reader's place.
-        "panel-scroll" => {
-            let px: f64 = arg.as_deref().and_then(|a| a.parse().ok()).unwrap_or(500.0);
-            let id = ui.st.borrow().ov.as_ref().and_then(|ov| ov.sessions.iter().max_by_key(|s| s.prompts).map(|s| s.id.clone()));
-            let Some(id) = id else { return };
-            panel::open_session(ui, &id, true);
-            // Every prompt is on the "You asked" page: scroll that.
-            panel::open_page(ui, "asked");
-            let ui2 = ui.clone();
-            let mut n = 0;
-            glib::timeout_add_local(Duration::from_millis(300), move || {
-                n += 1;
-                if n == 1 {
-                    // "show all" was set after the first draw: draw once with every prompt.
-                    panel::render(&ui2);
-                }
-                let Some(a) = panel::scroll_adj(&ui2) else { return glib::ControlFlow::Continue };
-                if a.upper() - a.page_size() < px && n < 40 {
-                    return glib::ControlFlow::Continue;
-                }
-                a.set_value(px);
-                eprintln!("panel scroll set to {:.0} (of {:.0}); forcing a redraw with focus inside", a.value(), a.upper() - a.page_size());
-                panel::focus_primary(&ui2);
-                crate::w::keep_scroll(&a, px);
-                let ui3 = ui2.clone();
-                glib::timeout_add_local_once(Duration::from_millis(700), move || {
-                    ui3.st.borrow_mut().panel_drawn = None;
-                    panel::render(&ui3);
-                });
-                glib::ControlFlow::Break
-            });
-        }
-        "agents-open" => {
-            let pid = {
-                let st = ui.st.borrow();
-                let with_subs = |sid: &str| st.ov.as_ref().is_some_and(|ov| ov.sessions.iter().any(|s| s.id == sid && s.subagents.total > 0));
-                st.procs.as_ref().and_then(|p| p.procs.iter().find(|a| a.session_id.as_deref().is_some_and(with_subs)).map(|a| a.pid))
-            };
-            if let Some(pid) = pid {
-                ui.st.borrow_mut().sel = Some(pid.to_string());
-                agents::set_open(ui, pid, true);
-            }
-        }
-        // Check: opening the side panel must not change the window's minimum width (a tiling
-        // compositor scales a window whose minimum outgrows its tile). Prints both, and whether the
-        // content fits the window at its current width.
-        "measure" => {
-            let report = |ui: &Ui, when: &str| {
-                let child = ui.window.child().expect("window content");
-                let (min, nat, _, _) = child.measure(gtk::Orientation::Horizontal, -1);
-                let width = ui.window.width();
-                // The body's own content as laid out now (rail and main column; its minimum is its
-                // narrowest layout's).
-                let inner_min = ui.w.rail.measure(gtk::Orientation::Horizontal, -1).0 + ui.w.body.first_child().map_or(0, |m| m.measure(gtk::Orientation::Horizontal, -1).0);
-                if std::env::var("WAKE_MEASURE_TREE").is_ok_and(|v| !v.is_empty()) {
-                    fn walk(wd: &gtk::Widget, depth: usize) {
-                        if depth > 12 || !wd.is_visible() {
-                            return;
-                        }
-                        let m = wd.measure(gtk::Orientation::Horizontal, -1).0;
-                        if m >= 250 && depth > 4 {
-                            println!("{}{} {:?} min {m}", "  ".repeat(depth), wd.type_().name(), wd.css_classes());
-                        }
-                        let mut c = wd.first_child();
-                        while let Some(x) = c {
-                            walk(&x, depth + 1);
-                            c = x.next_sibling();
-                        }
-                    }
-                    walk(ui.w.column.upcast_ref(), 0);
-                }
-                println!(
-                    "measure {when}: window content min {min} natural {nat}; width {width}; body content min {inner_min} → {}",
-                    if inner_min <= width && min <= width { "fits" } else { "OVERFLOWS" }
-                );
-            };
-            report(ui, "panel closed");
-            let id = ui.st.borrow().ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| is_live(s.state)).or(ov.sessions.first()).map(|s| s.id.clone()));
-            if let Some(id) = id {
-                panel::open_session(ui, &id, false);
-            }
-            let ui2 = ui.clone();
-            glib::timeout_add_local_once(Duration::from_millis(900), move || report(&ui2, "panel open"));
-        }
-        "clips" => crate::layout::hook(ui),
-        "peek" => peek::show_for_shot(ui, arg),
-        "hold" => peek::hook_hold(ui, arg),
-        "look" => {
-            if let Some(pid) = arg.and_then(|a| a.parse().ok()) {
-                peek::hook_look_at(ui, pid);
-            }
-        }
-        "questions" => crate::questions::show(ui, arg),
-        "behind" | "behind-pull" | "behind-wait" => crate::behind::show(ui, what, arg),
-        "disk" | "disk-machine" | "disk-clear" | "disk-remove" | "set-project" => crate::disk::show(ui, what, arg), // disk.rs hook
-        // Projects with "Track a folder" open.
-        "track" => {
-            set_view(ui, View::Projects);
-            ui.st.borrow_mut().adding = true;
-            ui.st.borrow_mut().drawn.remove(&View::Projects);
-            views::render_view(ui);
-        }
-        // Ideas on one of its lists: ideas:sent, ideas:done.
-        "ideas" => {
-            set_view(ui, View::Ideas);
-            ui.st.borrow_mut().idea_tab = IdeaTab::of(arg.as_deref().unwrap_or("inbox"));
-            ui.st.borrow_mut().drawn.remove(&View::Ideas);
-            views::render_view(ui);
-        }
-        // An error toast (a long one unless given): how it wraps.
-        "toast" => toast(
-            ui,
-            arg.as_deref()
-                .unwrap_or("Couldn't stop 3 of 5: claude (PID 48211) belongs to another user, so Wake can't stop it; codex (PID 50122) had already ended; claude (PID 50310) didn't stop when asked."),
-            true,
-        ),
-        "switcher" => switcher::open(ui),
-        "switcher-subs" => {
-            switcher::open(ui);
-            let id = first_session(&|s| s.subagents.running > 0 && s.subagents.total > 1);
-            switcher::show_subs_of(ui, id);
-        }
-        "session" => {
-            if let Some(id) = arg.or_else(|| first_session(&|s| s.subagents.total > 0)) {
-                panel::open_session(ui, &id, true);
-                // Screenshots of the panel's sections opened: WAKE_PANEL_OPEN=subs,asked,files,details.
-                if let Ok(open) = std::env::var("WAKE_PANEL_OPEN") {
-                    // The first one named opens as its page.
-                    let k = ["subs", "asked", "recap", "files", "details", "sessions", "ideas", "git", "pdetails", "colour"].into_iter().find(|k| open.split(',').any(|x| x == *k));
-                    ui.st.borrow_mut().panel_page = k;
-                    panel::render(ui);
-                }
-            }
-        }
-        "project" => {
-            let id = arg.or_else(|| ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.first().map(|p| p.id.clone())));
-            if let Some(id) = id {
-                panel::open_project(ui, &id, true);
-                if let Ok(open) = std::env::var("WAKE_PANEL_OPEN") {
-                    let k = ["sessions", "ideas", "git", "pdetails", "colour"].into_iter().find(|k| open.split(',').any(|x| x == *k));
-                    ui.st.borrow_mut().panel_page = k;
-                    panel::render(ui);
-                }
-            }
-        }
-        "keys" => match arg {
-            // Replays keys through the window's own handler (focus screenshots).
-            Some(seq) => crate::keynav::replay(ui, &seq),
-            None => dialogs::keys(ui),
-        },
-        // Ideas: the ticked ideas of the project with the most to sort, and (start-agent) the dialog.
-        "ticked" | "start-agent" => {
-            let picked = {
-                let st = ui.st.borrow();
-                let ideas: Vec<&Idea> = st.ideas.iter().flatten().filter(|i| i.state == "inbox" && i.project.is_some()).collect();
-                let best = ideas.iter().map(|i| &i.project).max_by_key(|p| ideas.iter().filter(|i| &i.project == *p).count()).cloned().flatten();
-                ideas.iter().filter(|i| i.project == best).map(|i| i.id.clone()).collect::<Vec<_>>()
-            };
-            ui.st.borrow_mut().picked = picked;
-            views::render_chips(ui);
-            views::render_view(ui);
-            if what == "start-agent" {
-                crate::start::open(ui, None);
-            }
-        }
-        // Settings: the keyboard on one setting (setsel:theme), for a focus screenshot.
-        "setsel" => {
-            ui.st.borrow_mut().sel = arg.clone();
-            setview::keyboard(ui, true);
-            restore_sel(ui, View::Settings, true);
-            if std::env::var_os("WAKE_SHOT_DEBUG").is_some() {
-                eprintln!("setsel: focus on {:?}", gtk::prelude::GtkWindowExt::focus(&ui.window).map(|f| (f.type_(), f.widget_name())));
-            }
-        }
-        // Settings: Theme flipped through System and back a few times, quickly, to prove no
-        // change re-enters itself (theme-cycle, or theme-cycle:light to end on light).
-        "theme-cycle" => {
-            let end = arg.unwrap_or_else(|| prefs::get().theme);
-            let mut steps: Vec<String> = ["system", "dark", "system", "light", "system"].iter().map(|s| s.to_string()).collect();
-            steps.push(end);
-            for (i, t) in steps.into_iter().enumerate() {
-                let ui = ui.clone();
-                glib::timeout_add_local_once(Duration::from_millis(120 * i as u64), move || {
-                    setview::apply(&ui, "theme", &t);
-                    eprintln!("theme now {t} (light: {})", theme::is_light());
-                });
-            }
-        }
-        // A drop-down list opened, for screenshots: dropdown:capture (the capture bar's project
-        // picker) or dropdown:questions (the Questions context picker).
-        // Settings' drop-down once its column has its final place.
-        "dropdown" if arg.as_deref() == Some("settings") => {
-            let ui = ui.clone();
-            glib::timeout_add_local_once(Duration::from_millis(500), move || apply_show(&ui, "dropdown:settings-now"));
-        }
-        "dropdown" => {
-            let dd = match arg.as_deref() {
-                Some("questions") => find_dropdown(ui.w.views[&View::Questions].root.upcast_ref()),
-                Some("settings-now") => find_dropdown(ui.w.views[&View::Settings].root.upcast_ref()),
-                _ => None,
-            };
-            if let Some(dd) = dd.and_downcast::<gtk::DropDown>()
-                && let Some(overlay) = ui.window.child().and_downcast::<gtk::Overlay>()
-                && let Some(at) = dd.compute_point(&ui.window, &gtk::graphene::Point::new(0.0, 0.0))
-            {
-                // Inside the window (so `window.wake popover …` applies), where GTK would open it:
-                // below the drop-down, or above when there is no room.
-                let pop = shot_list(&dd);
-                let w = pop.measure(gtk::Orientation::Horizontal, -1).1;
-                let h = pop.measure(gtk::Orientation::Vertical, w).1;
-                let below = at.y() as i32 + dd.height();
-                let y = if below + h > ui.window.height() { at.y() as i32 - h } else { below };
-                pop.set_halign(gtk::Align::Start);
-                pop.set_valign(gtk::Align::Start);
-                pop.set_margin_start((at.x() as i32 + (dd.width() - w) / 2).max(0));
-                pop.set_margin_top(y.max(0));
-                if std::env::var_os("WAKE_SHOT_DEBUG").is_some() {
-                    eprintln!("dropdown list at {:?} size {w}x{h}", (at.x(), y));
-                }
-                overlay.add_overlay(&pop);
-            } else if std::env::var_os("WAKE_SHOT_DEBUG").is_some() {
-                eprintln!("dropdown list: nothing to open");
-            }
-        }
-        "pause" => {
-            let id = arg.or_else(|| ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.first().map(|p| p.id.clone())));
-            if let Some(id) = id {
-                dialogs::pause(ui, &id);
-            }
-        }
-        "stale" => agents::stop_all_stale(ui),
-        "stale-only" => {
-            ui.st.borrow_mut().stale_only = true;
-            views::render_chips(ui);
-            agents::render(ui);
-        }
-        "stop" => {
-            let pid = arg.and_then(|a| a.parse().ok()).or_else(|| ui.st.borrow().procs.as_ref().and_then(|p| p.procs.iter().find(|p| p.stale_reason.is_some()).map(|p| p.pid)));
-            if let Some(pid) = pid {
-                agents::stop_one(ui, pid);
-            }
-        }
-        _ => eprintln!(
-            "wake: --show takes scroll[:px], panel-scroll[:px], agents-open, readouts, switcher, switcher-subs, session[:id], project[:id], pause, stale, stop[:pid], toast[:text], tabs-unknown or track"
-        ),
-    }
-}
-
-fn find_dropdown(w: &gtk::Widget) -> Option<gtk::Widget> {
-    if w.is::<gtk::DropDown>() {
-        return Some(w.clone());
-    }
-    let mut c = w.first_child();
-    while let Some(x) = c {
-        if let Some(f) = find_dropdown(&x) {
-            return Some(f);
-        }
-        c = x.next_sibling();
-    }
-    None
-}
-
-/// A drop-down's open list as GTK draws it (popover > contents > listview of rows), built inside
-/// the window for a screenshot: same CSS nodes, so the same rules apply.
-fn shot_list(dd: &gtk::DropDown) -> gtk::Widget {
-    let pop = w::named_box("popover");
-    let contents = w::named_box("contents");
-    contents.set_parent(&pop);
-    // GTK's own nodes: popover > contents > scrolledwindow > listview > row, the chosen row selected.
-    let sw = w::named_box("scrolledwindow");
-    sw.set_parent(&contents);
-    let lv = w::named_box("listview");
-    lv.set_parent(&sw);
-    lv.set_size_request(dd.width().max(160), -1);
-    if let Some(model) = dd.model() {
-        for i in 0..model.n_items() {
-            let text = model.item(i).and_downcast::<gtk::StringObject>().map(|s| s.string().to_string()).unwrap_or_default();
-            let row = w::named_box("row");
-            let l = gtk::Label::new(Some(&text));
-            l.set_xalign(0.0);
-            l.set_parent(&row);
-            if i == dd.selected() {
-                row.set_state_flags(gtk::StateFlags::SELECTED, false);
-            }
-            row.set_parent(&lv);
-        }
-    }
-    pop
-}
-
-fn screenshot(ui: &Ui, path: PathBuf, show: Option<String>) {
-    let ui = ui.clone();
-    let mut tries = 0;
-    let mut shown = false;
-    let mut settled = false;
-    let mut failed = 0;
-    glib::timeout_add_local(Duration::from_millis(700), move || {
-        tries += 1;
-        // GTK clears focus-visible on its own (Broadway sends no keys to keep it on): draw focus as
-        // it looks after keyboard use. Set a tick ahead of the shot, so the styles have caught up.
-        if std::env::var_os("WAKE_SHOT_FOCUS").is_some() {
-            ui.window.set_focus_visible(true);
-        }
-        // Wait for the first full index (and a refresh after it), so a shot shows real data.
-        let ready = {
-            let st = ui.st.borrow();
-            st.procs.is_some() && st.ov.as_ref().is_some_and(|o| o.indexing.total > 0 && o.indexing.done >= o.indexing.total && !o.projects.iter().all(|p| p.last_at.is_none()))
-        };
-        if !ready {
-            if tries % 4 == 0 {
-                refresh(&ui);
-            }
-            if tries < 40 {
-                return glib::ControlFlow::Continue;
-            }
-        }
-        if !ready && tries < 14 {
-            return glib::ControlFlow::Continue;
-        }
-        if let Some(show) = &show
-            && !shown
-        {
-            shown = true;
-            apply_show(&ui, show);
-            // The clip check takes its own time and quits when it is done.
-            if show == "clips" {
-                return glib::ControlFlow::Break;
-            }
-            return glib::ControlFlow::Continue;
-        }
-        if tries < 3 {
-            return glib::ControlFlow::Continue;
-        }
-        // Broadway's frame clock may not tick with no browser attached; the readouts are drawn as
-        // they stand a moment after the view comes up.
-        if !settled {
-            settled = true;
-            ui.scope.borrow_mut().appeared(glib::monotonic_time() as f64 / 1e6);
-            for r in ui.readouts.borrow().iter() {
-                r.queue_draw();
-            }
-            return glib::ControlFlow::Continue;
-        }
-        // One more overview just before the shot, so it shows the settled state (git included).
-        // A scroll test needs longer: the hook waits for the list to load, then rebuilds it.
-        let long = show.as_deref().is_some_and(|s| s.starts_with("measure") || s.starts_with("peek") || s.starts_with("scroll") || s.starts_with("panel-scroll") || s.starts_with("agents-open"));
-        // Behind-the-remote shots of real data wait for the first ls-remote pass.
-        let slow = show.as_deref().is_some_and(|s| s.starts_with("behind"));
-        // A key replay: its keys (150 ms apart) and a beat for what they open.
-        let keyed = show.as_deref().is_some_and(|s| s.starts_with("keys:"));
-        // Long enough for every key of the replay (150 ms apart), then a beat.
-        let keys_for = show.as_deref().and_then(|s| s.strip_prefix("keys:")).map_or(0, |k| k.split(',').count() * 150 / 700 + 4);
-        if tries < 6 || (long && tries < 24) || (slow && tries < 45) || (keyed && tries < 10.max(keys_for)) {
-            refresh(&ui);
-            return glib::ControlFlow::Continue;
-        }
-        if show.as_deref().is_some_and(|s| s.starts_with("scroll")) {
-            let view = ui.st.borrow().view;
-            let a = ui.w.views[&view].scroll.vadjustment();
-            println!("scroll after rebuild: {:.0} (of {:.0})", a.value(), (a.upper() - a.page_size()).max(0.0));
-        }
-        if show.as_deref().is_some_and(|s| s.starts_with("panel-scroll"))
-            && let Some(a) = panel::scroll_adj(&ui)
-        {
-            println!("panel scroll after redraw: {:.0} (of {:.0})", a.value(), (a.upper() - a.page_size()).max(0.0));
-        }
-        if let Ok(frames) = std::env::var("WAKE_SHOT_FRAMES") {
-            motion_frames(&ui, &path, &frames, &std::env::var("WAKE_SHOT_MOTION").unwrap_or_default());
-            return glib::ControlFlow::Break;
-        }
-        if std::env::var_os("WAKE_SHOT_DEBUG").is_some() {
-            let f = gtk::prelude::GtkWindowExt::focus(&ui.window);
-            eprintln!("shot: focus {:?}, window focus-visible {}", f.map(|f| (f.type_().name(), f.state_flags())), ui.window.gets_focus_visible());
-        }
-        match save_png(&ui, &path) {
-            Ok(()) => println!("saved {}", path.display()),
-            // The window can be mid-layout (the caret, a pop): try again a few times.
-            Err(_) if tries < 16 || failed < 6 => {
-                failed += 1;
-                return glib::ControlFlow::Continue;
-            }
-            Err(err) => eprintln!("wake: screenshot failed: {err} (window {}x{}, mapped {})", ui.window.width(), ui.window.height(), ui.window.is_mapped()),
-        }
-        if let Some(app) = ui.window.application() {
-            app.quit();
-        }
-        glib::ControlFlow::Break
-    });
-}
-
-/// For checking motion: a frame before `action`, then one at each of `frames` (milliseconds after
-/// it, comma-separated), saved beside `path` as `<name>-f<ms>.png`, then quits. Actions: `panel`
-/// (open a session's panel), `close`, `fold:<key>`, `sub` (open a subagent's steps in the panel),
-/// `done` (unfold the finished subagents), `down` (selection down), `switcher`, `pause` (a
-/// dialog), `agents-open`, `toast`. Needs a backend whose frame clock runs (Broadway's doesn't
-/// without a browser attached; a headless Weston does).
-fn motion_frames(ui: &Ui, path: &std::path::Path, frames: &str, action: &str) {
-    let stem = path.with_extension("");
-    let name = move |tag: &str| std::path::PathBuf::from(format!("{}-{tag}.png", stem.display()));
-    if let Err(e) = save_png(ui, &name("before")) {
-        eprintln!("wake: frame failed: {e}");
-    }
-    let click = |root: &gtk::Widget, name: &str| {
-        let found = if name.ends_with('*') { find_prefixed(root, name.trim_end_matches('*')) } else { panel::find_named(root, name) };
-        match found.and_downcast::<gtk::Button>() {
-            Some(b) => b.emit_clicked(),
-            None => eprintln!("wake: nothing named {name} to click"),
-        }
-    };
-    let drawer = ui.w.drawer.clone().upcast::<gtk::Widget>();
-    let view = ui.st.borrow().view;
-    match action.split_once(':').map_or((action, ""), |(a, b)| (a, b)) {
-        ("panel", arg) => {
-            let id = if arg.is_empty() { ui.st.borrow().ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.subagents.total > 0).map(|s| s.id.clone())) } else { Some(arg.to_string()) };
-            if let Some(id) = id {
-                panel::open_session(ui, &id, false);
-            }
-        }
-        ("close", _) => panel::close(ui),
-        ("fold", key) => click(&drawer, &format!("fold-{key}")),
-        ("sub", _) => click(&drawer, "sub-*"),
-        ("done", _) => click(&drawer, "subs-done"),
-        ("down", _) => move_sel(ui, 1),
-        ("switcher", _) => switcher::open(ui),
-        ("pause", _) => {
-            let first = ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.first().map(|p| p.id.clone()));
-            if let Some(id) = first {
-                dialogs::pause(ui, &id);
-            }
-        }
-        ("agents-open", _) => {
-            let pid = {
-                let st = ui.st.borrow();
-                let with_subs = |sid: &str| st.ov.as_ref().is_some_and(|ov| ov.sessions.iter().any(|s| s.id == sid && s.subagents.total > 0));
-                st.procs.as_ref().and_then(|p| p.procs.iter().find(|a| a.session_id.as_deref().is_some_and(with_subs)).map(|a| a.pid))
-            };
-            if let Some(pid) = pid {
-                agents::set_open(ui, pid, true);
-            }
-        }
-        ("toast", _) => toast(ui, "Next step saved.", false),
-        (other, _) => eprintln!("wake: no motion action {other} (view {view:?})"),
-    }
-    let mut times: Vec<u64> = frames.split(',').filter_map(|t| t.trim().parse().ok()).collect();
-    times.sort_unstable();
-    times.reverse();
-    // Taken on the frame clock (each when its frame comes, by the frame's own time), so every
-    // saved frame is one GTK really drew, however long saving takes.
-    let t0: std::cell::Cell<Option<i64>> = Default::default();
-    let times = RefCell::new(times);
-    let ui2 = ui.clone();
-    ui.window.add_tick_callback(move |_, clock| {
-        let now = clock.frame_time() / 1000;
-        let start = *t0.get().get_or_insert(now);
-        t0.set(Some(start));
-        let elapsed = (now - start) as u64;
-        let mut times = times.borrow_mut();
-        // One frame per tick: the next is drawn before it is taken.
-        if let Some(&t) = times.last().filter(|t| **t <= elapsed) {
-            times.pop();
-            let p = name(&format!("f{t:03}"));
-            if std::env::var_os("WAKE_SHOT_DEBUG").is_some() {
-                eprintln!("frame {t} (at {elapsed} ms): panel opacity {:.2} revealed {}", ui2.w.drawer.opacity(), ui2.w.drawer_rev.is_child_revealed());
-            }
-            match save_png(&ui2, &p) {
-                Ok(()) => println!("saved {} at {elapsed} ms", p.display()),
-                Err(e) => eprintln!("wake: frame failed: {e}"),
-            }
-        }
-        if times.is_empty() {
-            if let Some(app) = ui2.window.application() {
-                app.quit();
-            }
-            return glib::ControlFlow::Break;
-        }
-        glib::ControlFlow::Continue
-    });
-}
-
-fn find_prefixed(w: &gtk::Widget, prefix: &str) -> Option<gtk::Widget> {
-    if w.widget_name().starts_with(prefix) && w.is::<gtk::Button>() && w.is_mapped() {
-        return Some(w.clone());
-    }
-    let mut c = w.first_child();
-    while let Some(x) = c {
-        if let Some(f) = find_prefixed(&x, prefix) {
-            return Some(f);
-        }
-        c = x.next_sibling();
-    }
-    None
-}
-
-/// As Slipstream Settings' `--screenshot`: the window drawn into a texture by the Cairo renderer.
-/// A floating peek preview (its own surface) is drawn over the window where it sits.
-pub fn save_png(ui: &Ui, path: &std::path::Path) -> Result<(), String> {
-    let window = &ui.window;
-    let paintable = gtk::WidgetPaintable::new(Some(window));
-    let snapshot = gtk::Snapshot::new();
-    paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
-    if let Some((layer, x, y)) = peek::shot_layer(ui) {
-        let p = gtk::WidgetPaintable::new(Some(&layer));
-        snapshot.save();
-        snapshot.translate(&gtk::graphene::Point::new(x as f32, y as f32));
-        p.snapshot(&snapshot, layer.width() as f64, layer.height() as f64);
-        snapshot.restore();
-    }
-    let node = snapshot.to_node().ok_or("the window drew nothing")?;
-    let renderer = gsk::CairoRenderer::new();
-    renderer.realize_for_display(&WidgetExt::display(window)).map_err(|e| e.to_string())?;
-    let texture = renderer.render_texture(node, None);
-    renderer.unrealize();
-    texture.save_to_png(path).map_err(|e| e.to_string())
 }
 
 // ---------- refresh ----------
@@ -1793,18 +1261,6 @@ pub fn set_rail_open(ui: &Ui, open: bool) {
     }
 }
 
-/// The button in `b` marked "on" (the current view in the rail).
-fn first_on(b: &gtk::Box) -> Option<gtk::Widget> {
-    let mut c = b.first_child();
-    while let Some(x) = c {
-        if x.has_css_class("on") {
-            return Some(x);
-        }
-        c = x.next_sibling();
-    }
-    None
-}
-
 /// The window's width crossed a breakpoint (layout.rs): the rail goes slim or full, and the
 /// tables, top bar and status bar redraw in their forms for the new width.
 fn relayout(ui: &Ui, lay: crate::layout::Lay) {
@@ -1833,24 +1289,20 @@ fn relayout(ui: &Ui, lay: crate::layout::Lay) {
     ui.w.rail.set_css_classes(&["rail", if slim { "slim" } else { "full" }]);
     ui.w.rail.set_size_request(if slim { crate::layout::SLIM_W } else { crate::layout::RAIL_W }, -1);
     // The VIEWS and PROJECTS headings make way for a line between the two.
-    let mut c = ui.w.rail.first_child();
-    while let Some(x) = c {
+    for x in w::children(&ui.w.rail) {
         if x.has_css_class("grp") {
             x.set_visible(!slim);
         }
-        c = x.next_sibling();
     }
     // Back shows while the details fill the window.
     ui.w.back_btn.set_visible(lay.push && ui.st.borrow().drawer.is_some());
     // Short of the full width, Find and New idea keep their icons and their names make way, so the
     // view switcher keeps its room.
     let short_top = lay.rail != Rail::Full;
-    let mut c = ui.w.pair.first_child();
-    while let Some(b) = c {
+    for b in w::children(&ui.w.pair) {
         if let Some(name) = b.first_child().and_then(|i| i.last_child()) {
             name.set_visible(!short_top);
         }
-        c = b.next_sibling();
     }
     crate::questions::relayout(lay.narrow);
     // Pushed details that are open when the window narrows: the keyboard follows them.
@@ -1958,15 +1410,13 @@ fn rows(ui: &Ui) -> Vec<gtk::ListBoxRow> {
     let v = ui.st.borrow().view;
     let list = &ui.w.views[&v].list;
     let mut out = Vec::new();
-    let mut child = list.first_child();
-    while let Some(c) = child {
+    for c in w::children(&list) {
         if let Ok(row) = c.clone().downcast::<gtk::ListBoxRow>()
             && row.is_selectable()
             && row.is_visible()
         {
             out.push(row);
         }
-        child = c.next_sibling();
     }
     out
 }
@@ -2005,9 +1455,7 @@ pub fn follow_sel(ui: &Ui, v: View, key: String) {
 /// A view drawn as grids of cards (Projects, Ideas): its grids, one per section, in order.
 pub fn grids_of(ui: &Ui, view: View) -> Vec<gtk::FlowBox> {
     let mut out = Vec::new();
-    let mut c = ui.w.views[&view].list.first_child();
-    while let Some(x) = c {
-        c = x.next_sibling();
+    for x in w::children(&ui.w.views[&view].list) {
         if x.has_css_class("gridrow")
             && let Some(g) = x.downcast::<gtk::ListBoxRow>().ok().and_then(|r| r.child()).and_then(|g| g.downcast::<gtk::FlowBox>().ok())
         {
@@ -2151,8 +1599,7 @@ pub fn restore_sel(ui: &Ui, view: View, had_focus: bool) {
         }
         return;
     }
-    let mut child = list.first_child();
-    while let Some(c) = child {
+    for c in w::children(&list) {
         if let Ok(row) = c.clone().downcast::<gtk::ListBoxRow>()
             && row.widget_name() == sel
         {
@@ -2165,7 +1612,6 @@ pub fn restore_sel(ui: &Ui, view: View, had_focus: bool) {
             }
             return;
         }
-        child = c.next_sibling();
     }
 }
 
@@ -2192,11 +1638,6 @@ pub fn open_sel(ui: &Ui) {
     }
 }
 
-pub fn find_session(ui: &Ui, id: &str) -> Option<SessionSummary> {
-    let st = ui.st.borrow();
-    st.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.id == id).cloned()).or_else(|| st.sessions.get(id).map(|d| d.summary.clone()))
-}
-
 pub fn find_project(ui: &Ui, id: &str) -> Option<ProjectSummary> {
     ui.st.borrow().ov.as_ref().and_then(|ov| ov.projects.iter().find(|p| p.id == id).cloned())
 }
@@ -2213,7 +1654,7 @@ pub fn is_live(s: State) -> bool {
 
 /// A session's window as a person names it: its terminal app's own name, or "its window" when
 /// Wake can't tell the app's name.
-pub fn tab_label(l: &Location) -> String {
+pub fn window_name(l: &Location) -> String {
     l.app.clone().unwrap_or_else(|| "its window".into())
 }
 
@@ -2227,7 +1668,7 @@ pub fn unsure(ui: &Ui) -> bool {
 /// wrong) "background", and can't be gone to: that might attach a second time.
 pub fn loc_of(s: &SessionSummary, unsure: bool) -> (String, &'static str, bool, String) {
     if let Some(l) = &s.location {
-        return (tab_label(l), "", true, format!("Bring {} forward", l.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"))));
+        return (window_name(l), "", true, format!("Bring {} forward", l.app.as_deref().map_or("its window".to_string(), |a| format!("its {a} window"))));
     }
     if unsure && (s.pid.is_some() || is_live(s.state) && s.state != State::Unknown) {
         return ("checking…".into(), "none", false, "Wake is still finding which window this is in.".into());
@@ -2323,7 +1764,7 @@ pub fn glide_to(g: &Rc<Glide>, row: Option<&gtk::ListBoxRow>) {
 
 /// Go to: `Source::go_to`, then say what happened.
 pub fn go_to(ui: &Ui, id: &str) {
-    let Some(s) = find_session(ui, id) else { return };
+    let Some(s) = ui.st.borrow().session(id).cloned() else { return };
     let (_, _, can, _) = loc_of(&s, unsure(ui));
     if !can {
         let msg = if s.deleted_by_claude {
@@ -2379,11 +1820,8 @@ pub fn toast(ui: &Ui, msg: &str, bad: bool) {
     }
     t.set_visible(true);
     crate::motion::pop(t);
-    // Screen readers hear it too (not on Broadway, whose missing accessibility backend crashes
-    // GTK's announce, as behind.rs found).
-    if std::env::var("GDK_BACKEND").map_or(true, |b| b != "broadway") {
-        ui.window.announce(msg, if bad { gtk::AccessibleAnnouncementPriority::High } else { gtk::AccessibleAnnouncementPriority::Medium });
-    }
+    // Screen readers hear it too.
+    w::announce(&ui.window, msg, if bad { gtk::AccessibleAnnouncementPriority::High } else { gtk::AccessibleAnnouncementPriority::Medium });
     let ticket = {
         let mut st = ui.st.borrow_mut();
         st.toast_gen += 1;
@@ -2432,17 +1870,15 @@ pub enum Cmd {
     Escape,
 }
 
-/// The command for `key` in `view`, with no Ctrl or Alt held and no text field focused.
-/// `on_control`: a button or dropdown has the focus, so Enter and Space are its own.
-/// Letters ignore Caps Lock; "Stop all stale" needs a real Shift because it stops several agents.
-pub fn command_for(key: gdk::Key, shift: bool, view: View, on_control: bool) -> Option<Cmd> {
+/// The command for `key` in `view`, with no Ctrl or Alt held and no text field focused (Shift
+/// changes nothing). `on_control`: a button or dropdown has the focus, so Enter and Space are its own.
+pub fn command_for(key: gdk::Key, view: View, on_control: bool) -> Option<Cmd> {
     use gdk::Key as K;
 
     if on_control && matches!(key, K::Return | K::KP_Enter | K::space) {
         return None;
     }
     // Only the keys every desktop list has: no letters, so typing never does anything by surprise.
-    let _ = shift;
     let agents = view == View::Agents;
     let settings = view == View::Settings;
     let cards = matches!(view, View::Projects | View::Ideas);
@@ -2560,8 +1996,7 @@ fn on_key_inner(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propag
     }
     let on_control = focus.as_ref().is_some_and(|f| f.is::<gtk::Button>() || f.is::<gtk::CheckButton>() || f.is::<gtk::DropDown>() || f.ancestor(gtk::DropDown::static_type()).is_some());
     let view = ui.st.borrow().view;
-    let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
-    match command_for(key, shift, view, on_control) {
+    match command_for(key, view, on_control) {
         Some(cmd) if run_cmd(ui, cmd) => Stop,
         _ => Proceed,
     }
@@ -2583,11 +2018,7 @@ fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib:
         K::f | K::F if ctrl => switcher::open(ui),
         K::n | K::N if ctrl => open_capture(ui),
         K::q | K::Q if ctrl => ui.window.close(),
-        K::_1 if ctrl && !shift => set_view(ui, View::Monitor),
-        K::_2 if ctrl && !shift => set_view(ui, View::Projects),
-        K::_3 if ctrl && !shift => set_view(ui, View::Ideas),
-        K::_4 if ctrl && !shift => set_view(ui, View::History),
-        K::_5 if ctrl && !shift => set_view(ui, View::Agents),
+        K::_1 | K::_2 | K::_3 | K::_4 | K::_5 if ctrl && !shift => set_view(ui, View::TABS[key.to_unicode().and_then(|c| c.to_digit(10)).map_or(0, |n| n as usize - 1)]),
         K::_6 if ctrl && !shift => set_view(ui, View::Questions),
         K::comma if ctrl && !shift => set_view(ui, View::Settings),
         K::F1 => dialogs::keys(ui),
@@ -2601,10 +2032,9 @@ fn standard_key(ui: &Ui, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib:
 
 /// Ctrl+Tab: the next view in the switcher's order (wrapping); back with Shift.
 fn step_view(ui: &Ui, d: i32) {
-    const ORDER: [View; 5] = [View::Monitor, View::Projects, View::Ideas, View::History, View::Agents];
     let now = ui.st.borrow().view;
-    let i = ORDER.iter().position(|v| *v == now).map_or(0, |i| (i as i32 + d).rem_euclid(ORDER.len() as i32) as usize);
-    set_view(ui, ORDER[i]);
+    let i = View::TABS.iter().position(|v| *v == now).map_or(0, |i| (i as i32 + d).rem_euclid(View::TABS.len() as i32) as usize);
+    set_view(ui, View::TABS[i]);
 }
 
 /// Shift+F10 or the Menu key: the selected item's ⋯ menu (its details open first).
@@ -2619,8 +2049,8 @@ fn context_menu(ui: &Ui) {
         && let Some(sel) = sel
     {
         let list: gtk::Widget = ui.w.views[&View::Projects].list.clone().upcast();
-        if let Some(item) = panel::find_named(&list, &sel)
-            && let Some(mb) = panel::find_named(&item, "card-more").and_downcast::<gtk::MenuButton>()
+        if let Some(item) = w::named(&list, &sel)
+            && let Some(mb) = w::named(&item, "card-more").and_downcast::<gtk::MenuButton>()
         {
             mb.popup();
             return;
@@ -2632,7 +2062,7 @@ fn context_menu(ui: &Ui) {
     let ui = ui.clone();
     glib::idle_add_local_once(move || {
         let root: gtk::Widget = ui.w.drawer.clone().upcast();
-        if let Some(mb) = panel::find_named(&root, "panel-more").or_else(|| panel::find_named(&root, "project-more")).and_downcast::<gtk::MenuButton>() {
+        if let Some(mb) = w::named(&root, "panel-more").or_else(|| w::named(&root, "project-more")).and_downcast::<gtk::MenuButton>() {
             mb.popup();
         }
     });
@@ -2798,19 +2228,18 @@ mod tests {
 
     #[test]
     fn letters_do_nothing_so_typing_never_surprises() {
-        assert_eq!(command_for(K::Down, false, View::Monitor, false), Some(Cmd::Down));
-        assert_eq!(command_for(K::Up, false, View::Monitor, false), Some(Cmd::Up));
+        assert_eq!(command_for(K::Down, View::Monitor, false), Some(Cmd::Down));
+        assert_eq!(command_for(K::Up, View::Monitor, false), Some(Cmd::Up));
         for k in [K::j, K::k, K::h, K::l, K::g, K::c, K::o, K::p, K::s, K::S, K::x, K::d, K::a, K::_1, K::_2, K::comma, K::slash, K::question] {
             for v in View::ALL {
-                assert_eq!(command_for(k, false, v, false), None, "{k:?} in {v:?}");
-                assert_eq!(command_for(k, true, v, false), None, "Shift+{k:?} in {v:?}");
+                assert_eq!(command_for(k, v, false), None, "{k:?} in {v:?}");
             }
         }
     }
 
     #[test]
     fn settings_arrows_change_the_selected_setting_and_free_keys_stay_free() {
-        assert_eq!(command_for(K::Right, false, View::Settings, false), Some(Cmd::Expand));
+        assert_eq!(command_for(K::Right, View::Settings, false), Some(Cmd::Expand));
     }
 
     #[test]
@@ -2830,10 +2259,10 @@ mod tests {
             let (t, bt) = stretch(a, b, f64::from(i) / 20.0);
             assert!(bt - t >= 2.0);
         }
-        assert_eq!(command_for(K::Left, false, View::Settings, false), Some(Cmd::Collapse));
-        assert_eq!(command_for(K::space, false, View::Settings, false), Some(Cmd::Open), "Space flips a switch");
-        assert_eq!(command_for(K::space, false, View::Monitor, false), None);
-        assert_eq!(command_for(K::Right, false, View::Monitor, false), None, "arrows elsewhere are GTK's");
+        assert_eq!(command_for(K::Left, View::Settings, false), Some(Cmd::Collapse));
+        assert_eq!(command_for(K::space, View::Settings, false), Some(Cmd::Open), "Space flips a switch");
+        assert_eq!(command_for(K::space, View::Monitor, false), None);
+        assert_eq!(command_for(K::Right, View::Monitor, false), None, "arrows elsewhere are GTK's");
     }
 
     #[test]
@@ -2847,18 +2276,18 @@ mod tests {
 
     #[test]
     fn delete_stops_an_agent_only_in_agents_and_lists_keep_their_usual_keys() {
-        assert_eq!(command_for(K::Delete, false, View::Agents, false), Some(Cmd::Stop));
-        assert_eq!(command_for(K::Delete, false, View::Monitor, false), None);
-        assert_eq!(command_for(K::Delete, false, View::Ideas, false), None, "Delete never starts anything");
-        assert_eq!(command_for(K::Right, false, View::Agents, false), Some(Cmd::Expand));
+        assert_eq!(command_for(K::Delete, View::Agents, false), Some(Cmd::Stop));
+        assert_eq!(command_for(K::Delete, View::Monitor, false), None);
+        assert_eq!(command_for(K::Delete, View::Ideas, false), None, "Delete never starts anything");
+        assert_eq!(command_for(K::Right, View::Agents, false), Some(Cmd::Expand));
         // As in any list on Windows or Linux: Home and End, Page Up and Page Down; and ← → among cards.
-        assert_eq!(command_for(K::Home, false, View::Monitor, false), Some(Cmd::Edge(true)));
-        assert_eq!(command_for(K::End, false, View::History, false), Some(Cmd::Edge(false)));
-        assert_eq!(command_for(K::Page_Down, false, View::Agents, false), Some(Cmd::Page(1)));
-        assert_eq!(command_for(K::Page_Up, false, View::Projects, false), Some(Cmd::Page(-1)));
-        assert_eq!(command_for(K::Right, false, View::Projects, false), Some(Cmd::Across(1)));
-        assert_eq!(command_for(K::Left, false, View::Ideas, false), Some(Cmd::Across(-1)));
-        assert_eq!(command_for(K::Right, false, View::Monitor, false), None, "a list has no across");
+        assert_eq!(command_for(K::Home, View::Monitor, false), Some(Cmd::Edge(true)));
+        assert_eq!(command_for(K::End, View::History, false), Some(Cmd::Edge(false)));
+        assert_eq!(command_for(K::Page_Down, View::Agents, false), Some(Cmd::Page(1)));
+        assert_eq!(command_for(K::Page_Up, View::Projects, false), Some(Cmd::Page(-1)));
+        assert_eq!(command_for(K::Right, View::Projects, false), Some(Cmd::Across(1)));
+        assert_eq!(command_for(K::Left, View::Ideas, false), Some(Cmd::Across(-1)));
+        assert_eq!(command_for(K::Right, View::Monitor, false), None, "a list has no across");
     }
 
     #[test]
@@ -2917,8 +2346,8 @@ mod tests {
 
     #[test]
     fn enter_on_a_button_is_the_button_s() {
-        assert_eq!(command_for(K::Return, false, View::Agents, true), None);
-        assert_eq!(command_for(K::space, false, View::Agents, true), None);
-        assert_eq!(command_for(K::Return, false, View::Monitor, false), Some(Cmd::Open));
+        assert_eq!(command_for(K::Return, View::Agents, true), None);
+        assert_eq!(command_for(K::space, View::Agents, true), None);
+        assert_eq!(command_for(K::Return, View::Monitor, false), Some(Cmd::Open));
     }
 }

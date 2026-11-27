@@ -74,11 +74,6 @@ pub fn short_when(iso: Option<&str>) -> String {
     w.rsplit_once(' ').map(|(d, _)| d.to_string()).unwrap_or(w)
 }
 
-/// The local clock, "22:39".
-pub fn clock() -> String {
-    glib::DateTime::now_local().ok().and_then(|t| t.format("%H:%M").ok()).map(|s| s.to_string()).unwrap_or_default()
-}
-
 /// Minutes as a span: "45 min", "1 h".
 pub fn minutes(m: u32) -> String {
     span(u64::from(m) * 60)

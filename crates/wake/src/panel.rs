@@ -83,7 +83,7 @@ pub fn open_page(ui: &Ui, key: &'static str) {
     if let Some(sw) = find_scroll(&ui.w.drawer) {
         sw.vadjustment().set_value(0.0);
     }
-    if let Some(b) = find_named(ui.w.drawer.upcast_ref(), "page-back") {
+    if let Some(b) = w::named(&ui.w.drawer, "page-back") {
         b.grab_focus();
     }
 }
@@ -102,7 +102,7 @@ pub fn back(ui: &Ui) {
     }
     render(ui);
     // The keyboard goes back to the row that opened the page.
-    if let Some(b) = find_named(ui.w.drawer.upcast_ref(), &format!("fold-{key}")) {
+    if let Some(b) = w::named(&ui.w.drawer, &format!("fold-{key}")) {
         b.grab_focus();
     }
 }
@@ -152,28 +152,13 @@ pub fn focus_near(ui: &Ui, x: f64, y: f64) {
 }
 
 pub fn focus_primary(ui: &Ui) {
-    let mut child = ui.w.drawer.first_child();
     // The primary button carries the "primary" class; else the close button.
-    fn find(w: &gtk::Widget) -> Option<gtk::Widget> {
-        if w.is::<gtk::Button>() && w.has_css_class("primary") {
-            return Some(w.clone());
-        }
-        let mut c = w.first_child();
-        while let Some(x) = c {
-            if let Some(f) = find(&x) {
-                return Some(f);
-            }
-            c = x.next_sibling();
-        }
-        None
-    }
-    while let Some(c) = child {
-        if let Some(f) = find(&c)
+    for c in w::children(&ui.w.drawer) {
+        if let Some(f) = w::find(&c, |w| w.is::<gtk::Button>() && w.has_css_class("primary"))
             && f.grab_focus()
         {
             return;
         }
-        child = c.next_sibling();
     }
     // No main button (a session Wake can't place, or one that has ended): the first control
     // after the close button, so the keyboard is always in the details once they open.
@@ -444,26 +429,10 @@ fn show(ui: &Ui, on: bool) {
 }
 
 fn find_scroll(w: &gtk::Box) -> Option<gtk::ScrolledWindow> {
-    let mut c = w.first_child();
-    while let Some(x) = c {
+    for x in w::children(&w) {
         if let Ok(s) = x.clone().downcast::<gtk::ScrolledWindow>() {
             return Some(s);
         }
-        c = x.next_sibling();
-    }
-    None
-}
-
-pub fn find_named(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
-    if w.widget_name() == name {
-        return Some(w.clone());
-    }
-    let mut c = w.first_child();
-    while let Some(x) = c {
-        if let Some(f) = find_named(&x, name) {
-            return Some(f);
-        }
-        c = x.next_sibling();
     }
     None
 }
@@ -709,15 +678,15 @@ fn fill_steps(ui: &Ui, sid: &str, aid: &str, steps: &gtk::Box) {
 /// switcher): no redraw, so nothing above moves and the scroll stays. Opening scrolls it into view
 /// within `scroll` when it opens below the fold.
 pub fn set_steps(ui: &Ui, root: &gtk::Widget, scroll: Option<&gtk::ScrolledWindow>, sid: &str, aid: &str, open: bool) {
-    let Some(rev) = find_named(root, &format!("steps-{aid}")).and_downcast::<gtk::Revealer>() else { return };
+    let Some(rev) = w::named(root, &format!("steps-{aid}")).and_downcast::<gtk::Revealer>() else { return };
     if open && let Some(steps) = rev.child().and_downcast::<gtk::Box>() {
         fill_steps(ui, sid, aid, &steps);
     }
-    if let Some(back) = find_named(root, &format!("subback-{aid}")) {
+    if let Some(back) = w::named(root, &format!("subback-{aid}")) {
         back.set_visible(!open);
     }
     rev.set_reveal_child(open);
-    if open && let (Some(sw), Some(block)) = (scroll, find_named(root, &format!("subw-{aid}"))) {
+    if open && let (Some(sw), Some(block)) = (scroll, w::named(root, &format!("subw-{aid}"))) {
         // Opened under the subagent's row: show the steps, never move the row off the top.
         crate::motion::reveal_below(sw, &block, &block);
     }
@@ -727,14 +696,14 @@ pub fn set_steps(ui: &Ui, root: &gtk::Widget, scroll: Option<&gtk::ScrolledWindo
 /// and nothing else needs drawing for them).
 pub fn patch_subs(root: &gtk::Widget, subs: &[SubagentSummary]) {
     for a in subs {
-        if let Some(l) = find_named(root, &format!("sublive-{}", a.agent_id)).and_downcast::<gtk::Label>() {
+        if let Some(l) = w::named(root, &format!("sublive-{}", a.agent_id)).and_downcast::<gtk::Label>() {
             let t = format!("now: {}", a.live.as_deref().unwrap_or("working"));
             if l.text() != t {
                 l.set_text(&t);
                 l.set_tooltip_text(Some(&t));
             }
         }
-        if let Some(l) = find_named(root, &format!("subdur-{}", a.agent_id)).and_downcast::<gtk::Label>() {
+        if let Some(l) = w::named(root, &format!("subdur-{}", a.agent_id)).and_downcast::<gtk::Label>() {
             let t = sub_when(a);
             if l.text() != t {
                 l.set_text(&t);
@@ -870,12 +839,11 @@ fn session_menu(ui: &Ui, s: &SessionSummary) -> gtk::MenuButton {
 }
 
 fn session(ui: &Ui, id: &str) {
-    let (detail, summary) = {
+    let (detail, s) = {
         let st = ui.st.borrow();
-        let sum = st.ov.as_ref().and_then(|ov| ov.sessions.iter().find(|s| s.id == id).cloned());
-        (st.sessions.get(id).cloned(), sum)
+        (st.sessions.get(id).cloned(), st.session(id).cloned())
     };
-    let Some(s) = summary.clone().or_else(|| detail.as_ref().map(|d| d.summary.clone())) else {
+    let Some(s) = s else {
         head(ui, "Session", &[]);
         skeleton(&body(ui));
         return;
@@ -1088,7 +1056,7 @@ fn proc_words(r: SessionResources) -> String {
 /// The memory on the open panel's process line, kept current in place.
 pub fn tick_procs(ui: &Ui) {
     let Some(Drawer::Session(id)) = ui.st.borrow().drawer.clone() else { return };
-    let Some(b) = find_named(ui.w.drawer.upcast_ref(), "pmem").and_downcast::<gtk::Button>() else { return };
+    let Some(b) = w::named(&ui.w.drawer, "pmem").and_downcast::<gtk::Button>() else { return };
     let t = {
         let st = ui.st.borrow();
         res_of(&st, &id).map(proc_words)
@@ -1102,9 +1070,9 @@ pub fn tick_procs(ui: &Ui) {
     }
 }
 
-/// The way to a session, saying where it goes (the same key, o): "Go to tab 3" for one in a tab,
-/// "Open in a new window" for one running in the background, "Resume in a new window" for one
-/// that has ended and can be reopened.
+/// The way to a session, saying where it goes (`go_words`): "Go to <its terminal app>" for one in
+/// a window, "Open in a new window" for one running in the background, "Resume in a new window"
+/// for one that has ended and can be reopened.
 pub fn go_button(ui: &Ui, s: &SessionSummary, primary: bool) -> Option<gtk::Button> {
     if !(s.location.is_some() || app::can_reopen(s) || app::is_live(s.state) || s.pid.is_some()) {
         return None;
@@ -1413,7 +1381,7 @@ fn project(ui: &Ui, id: &str) {
     } else if p.removed {
         let ui2 = ui.clone();
         let id2 = p.id.clone();
-        let b = w::button("Track again", None, &["primary"], move || crate::views::restore_project(&ui2, &id2));
+        let b = w::button("Track again", None, &["primary"], move || crate::projects::restore_project(&ui2, &id2));
         b.set_widget_name("primary");
         act.append(&b);
         act.append(&w::clip("Wake is not tracking this project.", &["meta"]));

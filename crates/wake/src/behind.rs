@@ -159,11 +159,8 @@ pub fn render(ui: &Ui) {
         };
         if bn.showing.as_ref().map(|s| &s.0) != Some(&b.project) {
             bn.showing = Some((b.project.clone(), Instant::now()));
-            // Screen readers hear it too (not on Broadway, whose missing accessibility backend
-            // crashes GTK's announce).
-            if std::env::var("GDK_BACKEND").map_or(true, |b| b != "broadway") {
-                ui.window.announce(&format!("Warning: {} is behind. Pull before you build.", b.project_name), gtk::AccessibleAnnouncementPriority::High);
-            }
+            // Screen readers hear it too.
+            crate::w::announce(&ui.window, &format!("Warning: {} is behind. Pull before you build.", b.project_name), gtk::AccessibleAnnouncementPriority::High);
         }
         bn.title.set_text(&format!("You're building in {}. {}", b.project_name, news(b)));
         bn.fix.set_text(&next_step(b));

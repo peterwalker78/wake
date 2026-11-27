@@ -95,11 +95,11 @@ fn cmd_idea(words: &[String]) -> u8 {
         Ok(idea) => {
             let projects = s.load_projects();
             let name = idea.project.as_deref().and_then(|p| store::project_by_id(p, &projects)).map(|p| p.name.clone());
-            out!("kept · {}", name.as_deref().unwrap_or("Unsorted"));
+            out!("kept · {}", plain(name.as_deref().unwrap_or("Unsorted")));
             0
         }
         Err(e) => {
-            out!("Could not keep that idea: {e}");
+            out!("Could not keep that idea: {}", plain(&e.to_string()));
             1
         }
     }
@@ -115,7 +115,7 @@ fn cmd_ideas() -> u8 {
     }
     for i in ideas.iter().take(40) {
         let name = i.project.as_deref().and_then(|p| store::project_by_id(p, &projects)).map(|p| p.name.as_str()).unwrap_or("Unsorted");
-        out!("{:<18} {}", util::take_chars(name, 18), i.text);
+        out!("{:<18} {}", util::take_chars(&plain(name), 18), plain(&i.text));
     }
     0
 }
@@ -147,11 +147,11 @@ fn cmd_index() -> u8 {
     out!("Indexed {} sessions in {dt:.1} s ({read}); peak memory {peak} MB.", counts.iter().map(|c| c.1).sum::<u32>());
     // What it couldn't read, understand or save, in words.
     match live.indexer().stats().sentence() {
-        Some(s) => out!("{}", s.trim_end_matches(" Run `wake doctor`.")),
+        Some(s) => out!("{}", plain(s.trim_end_matches(" Run `wake doctor`."))),
         None => out!("Every transcript was read and understood."),
     }
     for (name, n) in counts.iter().take(12) {
-        out!("  {:<22} {n}", util::take_chars(name, 22));
+        out!("  {:<22} {n}", util::take_chars(&plain(name), 22));
     }
     0
 }
@@ -207,9 +207,9 @@ impl Doctor {
             Mark::Needed => "!!",
         };
         self.needed |= mark == Mark::Needed;
-        out!("  {m}   {text}");
+        out!("  {m}   {}", plain(text));
         if mark != Mark::Ok && !fix.is_empty() {
-            out!("       Fix: {fix}");
+            out!("       Fix: {}", plain(fix));
         }
     }
 }
@@ -480,7 +480,7 @@ fn doctor_log(d: &mut Doctor, paths: &store::Paths) {
     }
     d.heading("What Wake did lately");
     for l in lines {
-        out!("  {l}");
+        out!("  {}", plain(&l));
     }
 }
 
@@ -539,11 +539,11 @@ fn cmd_disk() -> u8 {
     ps.sort_by_key(|p| std::cmp::Reverse(p.bytes));
     for p in ps {
         out!();
-        out!("{}  {}{} · {} rebuildable", name(&p.project), if p.partial { ">= " } else { "" }, bytes(p.bytes), bytes(p.rebuildable));
+        out!("{}  {}{} · {} rebuildable", plain(&name(&p.project)), if p.partial { ">= " } else { "" }, bytes(p.bytes), bytes(p.rebuildable));
         for i in &p.items {
             let pad = if i.within.is_some() { "    " } else { "  " };
             seen.push(i.safety);
-            out!("{pad}{:>7}  {:<11} {}  {}{}", bytes(i.bytes), safety(i.safety), i.name, tilde(&i.path), i.refused.as_deref().map(|r| format!("  [{r}]")).unwrap_or_default());
+            out!("{pad}{:>7}  {:<11} {}  {}{}", bytes(i.bytes), safety(i.safety), plain(&i.name), tilde(&i.path), i.refused.as_deref().map(|r| format!("  [{}]", plain(r))).unwrap_or_default());
         }
     }
     if let Some(m) = r.machine.as_ref().filter(|m| !m.items.is_empty()) {
@@ -551,7 +551,7 @@ fn cmd_disk() -> u8 {
         out!("Outside projects");
         for i in &m.items {
             seen.push(i.safety);
-            out!("  {:>7}  {:<11} {}  {}{}", bytes(i.bytes), safety(i.safety), i.name, tilde(&i.path), i.command.as_deref().map(|c| format!("  ({c})")).unwrap_or_default());
+            out!("  {:>7}  {:<11} {}  {}{}", bytes(i.bytes), safety(i.safety), plain(&i.name), tilde(&i.path), i.command.as_deref().map(|c| format!("  ({})", plain(c))).unwrap_or_default());
         }
     }
     let legend: Vec<&str> = [
@@ -631,19 +631,19 @@ fn cmd_ps() -> u8 {
             cpu,
             if folded { "" } else { state },
             if folded { String::new() } else { idle(p.idle_seconds) },
-            if folded { String::new() } else { where_ },
-            util::take_chars(&task, 34),
-            if folded { "" } else { p.project_name.as_deref().unwrap_or("") }
+            if folded { String::new() } else { plain(&where_) },
+            util::take_chars(&plain(&task), 34),
+            plain(if folded { "" } else { p.project_name.as_deref().unwrap_or("") })
         );
         if let Some(h) = p.helpers.as_ref().filter(|h| !h.is_empty()) {
-            out!("{:<9} subagents running: {}", "", h.join(" · "));
+            out!("{:<9} subagents running: {}", "", plain(&h.join(" · ")));
         }
         if let Some(r) = &p.stale_reason {
-            out!("{:<9} stale: {r}", "");
+            out!("{:<9} stale: {}", "", plain(r));
         } else if p.kind == ProcKind::Stray
             && let Some(t) = &p.title
         {
-            out!("{:<9} stray: {t}", "");
+            out!("{:<9} stray: {}", "", plain(t));
         }
     }
     if let Some(legend) = ps_legend(&seen) {
@@ -662,7 +662,7 @@ fn cmd_ps() -> u8 {
             .iter()
             .map(|p| {
                 let n = p.project.as_ref().map_or_else(|| "no project".to_string(), |id| names.get(id).cloned().unwrap_or_else(|| id.clone()));
-                format!("{n} {} ({} session{})", mem(p.rss_bytes), p.sessions, if p.sessions == 1 { "" } else { "s" })
+                format!("{} {} ({} session{})", plain(&n), mem(p.rss_bytes), p.sessions, if p.sessions == 1 { "" } else { "s" })
             })
             .collect();
         if !parts.is_empty() {
@@ -686,14 +686,14 @@ fn cmd_behind() -> u8 {
         repos_n += checks.len();
         for c in &checks {
             if let Outcome::CouldNotCheck(why) = &c.outcome {
-                quiet.push(format!("{} ({why})", wake_core::util::take_chars(&tilde(&c.path), 60)));
+                quiet.push(format!("{} ({})", wake_core::util::take_chars(&tilde(&c.path), 60), plain(why)));
             }
         }
         let refs: Vec<&RepoCheck> = checks.iter().collect();
         let dirty = |path: &str| repos.iter().find(|r| r.state.path == path).map_or(0, |r| r.state.dirty_files + r.state.untracked);
         if let Some(b) = remote::behind_for(&p.id, &p.name, &p.roots, &refs, &dirty) {
             behind += 1;
-            out!("{:<18} {}", util::take_chars(&p.name, 18), b.line);
+            out!("{:<18} {}", util::take_chars(&plain(&p.name), 18), plain(&b.line));
             let mut more = format!("in {}", tilde(&b.repo));
             if b.others > 0 {
                 more.push_str(&format!(" ({} more {} behind)", b.others, if b.others == 1 { "repo" } else { "repos" }));
@@ -715,8 +715,25 @@ fn tilde(p: &str) -> String {
     // On Fedora Atomic $HOME is /home/x but paths are often /var/home/x: try both.
     let real = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
     let path = std::path::Path::new(p);
-    match path.strip_prefix(&home).or_else(|_| path.strip_prefix(&real)) {
+    plain(&match path.strip_prefix(&home).or_else(|_| path.strip_prefix(&real)) {
         Ok(rest) => format!("~/{}", rest.display()),
         Err(_) => p.to_string(),
+    })
+}
+
+/// Names, titles, paths and commands come from files and processes Wake doesn't control: printed
+/// without control characters, so none can move the cursor, recolour the terminal or start a line.
+fn plain(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn printed_names_lose_their_control_characters() {
+        assert_eq!(plain("fix \u{1b}[2Jthe\nlogin\u{7}"), "fix [2Jthelogin");
+        assert_eq!(plain("café · 日本"), "café · 日本");
     }
 }

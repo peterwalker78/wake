@@ -97,6 +97,14 @@ fn folded(p: &ProcOverview) -> Vec<u32> {
     p.procs.iter().flat_map(|a| a.children.iter().copied()).collect()
 }
 
+/// While Wake is still finding which window each session is in, an agent in a window could look
+/// stale (idle, no window): nothing is called stale, or offered to stop as such, until it knows.
+pub fn hold_stale(p: &mut ProcOverview, unsure: bool) {
+    if unsure {
+        p.procs.iter_mut().for_each(|a| a.stale_reason = None);
+    }
+}
+
 /// The stale rows, as "Looks stale" lists them and "Stop all stale" stops them.
 pub fn stale_rows(p: &ProcOverview) -> Vec<&AgentProc> {
     let folded = folded(p);
@@ -1351,7 +1359,7 @@ pub fn set_open(ui: &Ui, pid: u32, open: bool) {
         reveal(ui, &row, &fresh);
     }
     if open && let Some(sid) = sid {
-        load(ui, vec![sid]);
+        load(ui, vec![sid], false);
     }
 }
 
@@ -1422,17 +1430,22 @@ pub fn show_row(ui: &Ui, pid: u32) {
 pub fn refresh_open(ui: &Ui) {
     let sids: Vec<String> = {
         let st = ui.st.borrow();
+        if st.busy_agents_open {
+            return;
+        }
         st.procs.as_ref().map(|p| p.procs.iter().filter(|a| st.agent_open.contains(&a.pid)).filter_map(|a| a.session_id.clone()).collect()).unwrap_or_default()
     };
     if !sids.is_empty() {
-        load(ui, sids);
+        ui.st.borrow_mut().busy_agents_open = true;
+        load(ui, sids, true);
     }
 }
 
-/// Reads these sessions (and their opened, running subagents' steps) off the UI thread.
-fn load(ui: &Ui, sids: Vec<String>) {
+/// Reads these sessions (and their opened, running subagents' steps) off the UI thread. A
+/// `periodic` read clears the busy flag `refresh_open` set.
+fn load(ui: &Ui, sids: Vec<String>, periodic: bool) {
     let open: Vec<String> = ui.st.borrow().agent_sub_open.iter().cloned().collect();
-    app::bg(
+    app::bg_or(
         ui,
         move |src| {
             sids.iter()
@@ -1443,9 +1456,12 @@ fn load(ui: &Ui, sids: Vec<String>) {
                 })
                 .collect::<Vec<_>>()
         },
-        |ui, got| {
+        move |ui, got| {
             {
                 let mut st = ui.st.borrow_mut();
+                if periodic {
+                    st.busy_agents_open = false;
+                }
                 for (d, subs) in got {
                     let id = d.summary.id.clone();
                     for s in subs {
@@ -1458,6 +1474,12 @@ fn load(ui: &Ui, sids: Vec<String>) {
                 render(ui);
                 patch_trees(ui);
             }
+        },
+        move |ui| {
+            if periodic {
+                ui.st.borrow_mut().busy_agents_open = false;
+            }
+            app::toast(ui, "Wake hit an error reading that session; it will keep trying.", true);
         },
     );
 }
@@ -1616,7 +1638,7 @@ pub fn stop_one(ui: &Ui, pid: u32) {
             move |ui, r| {
                 if r.ok {
                     app::toast(ui, &stopped_words(&task, pid, how), false);
-                    after_five(ui, vec![pid]);
+                    after_five(ui, vec![(pid, ticks)]);
                 } else {
                     unmark_leaving(ui, &[pid]);
                     say(ui, &r);
@@ -1654,11 +1676,12 @@ pub fn stop_all_stale(ui: &Ui) {
     dialogs::confirm(ui, &title, &body, &list, &format!("Stop {}", stale.len()), move |ui| {
         let (plan, names) = (plan.clone(), names.clone());
         mark_leaving(ui, &plan.iter().map(|p| p.0).collect::<Vec<_>>());
+        let which: Vec<(u32, Option<u64>)> = plan.iter().map(|(pid, ticks, _)| (*pid, *ticks)).collect();
         app::bg(
             ui,
             move |src| plan.iter().map(|(pid, ticks, how)| (*pid, src.stop(*pid, *ticks, *how, false))).collect::<Vec<_>>(),
             move |ui, results| {
-                let ok: Vec<u32> = results.iter().filter(|(_, r)| r.ok).map(|(p, _)| *p).collect();
+                let ok: Vec<(u32, Option<u64>)> = which.into_iter().filter(|(pid, _)| results.iter().any(|(p, r)| p == pid && r.ok)).collect();
                 unmark_leaving(ui, &results.iter().filter(|(_, r)| !r.ok).map(|(p, _)| *p).collect::<Vec<_>>());
                 app::toast(ui, &stopped_all_words(&names, &results), results.iter().any(|(_, r)| !r.ok && !r.message.contains("already ended")));
                 after_five(ui, ok);
@@ -1814,8 +1837,14 @@ fn say(ui: &Ui, r: &ActionResult) {
 
 /// Five seconds after a polite stop: anything still running can be forced, with a second
 /// confirmation naming each.
-fn after_five(ui: &Ui, pids: Vec<u32>) {
-    if pids.is_empty() {
+/// What was stopped and is still running: the same process, by its PID and its start time, so a
+/// new process that was given a reused PID is never offered for Force.
+fn still_running(p: &ProcOverview, stopped: &[(u32, Option<u64>)]) -> Vec<AgentProc> {
+    p.procs.iter().filter(|a| stopped.contains(&(a.pid, a.start_ticks))).cloned().collect()
+}
+
+fn after_five(ui: &Ui, stopped: Vec<(u32, Option<u64>)>) {
+    if stopped.is_empty() {
         return;
     }
     let ui = ui.clone();
@@ -1823,8 +1852,9 @@ fn after_five(ui: &Ui, pids: Vec<u32>) {
         app::bg(
             &ui,
             |src| src.processes(),
-            move |ui, p| {
-                let alive: Vec<AgentProc> = p.procs.iter().filter(|a| pids.contains(&a.pid)).cloned().collect();
+            move |ui, mut p| {
+                let alive = still_running(&p, &stopped);
+                hold_stale(&mut p, app::unsure(ui));
                 ui.st.borrow_mut().procs = Some(p);
                 if ui.st.borrow().view == View::Agents {
                     render(ui);
@@ -1899,6 +1929,24 @@ mod tests {
             start_ticks: Some(start),
             helpers: None,
         }
+    }
+
+    #[test]
+    fn force_is_offered_only_for_the_same_process() {
+        let p = ProcOverview { procs: vec![a(10, ProcKind::Session, 100, 300, None), a(20, ProcKind::Session, 100, 999, None)], ..Default::default() };
+        // 10 is the one that was stopped; 20's PID was reused by a new process (a later start).
+        let alive: Vec<u32> = still_running(&p, &[(10, Some(300)), (20, Some(200)), (30, Some(1))]).iter().map(|a| a.pid).collect();
+        assert_eq!(alive, vec![10]);
+    }
+
+    #[test]
+    fn nothing_looks_stale_while_windows_are_being_found() {
+        let mut p = ProcOverview { procs: vec![a(10, ProcKind::Session, 100, 300, Some("idle 31 h, no window"))], ..Default::default() };
+        hold_stale(&mut p, false);
+        assert_eq!(stale_summary(&p).0, 1);
+        hold_stale(&mut p, true);
+        assert_eq!(stale_summary(&p).0, 0, "its window may not have been found yet");
+        assert!(p.procs[0].stale_reason.is_none());
     }
 
     fn pids(p: &ProcOverview, stale_only: bool) -> Vec<u32> {

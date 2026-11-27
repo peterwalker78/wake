@@ -5,6 +5,11 @@
 //! session started, never by when it last wrote), a refresh that changes nothing redraws nothing,
 //! and ages, memory and CPU are updated in place (`Live`) instead of rebuilding rows.
 
+use std::{
+    cmp::Reverse,
+    sync::atomic::{AtomicU64, Ordering::Relaxed},
+};
+
 use gtk4::{self as gtk, gdk, glib, prelude::*};
 use wake_core::*;
 
@@ -32,15 +37,26 @@ const CHIPS: [(Filter, &str); 6] =
 /// A widget that a view updates in place from the latest data: an age, a memory figure.
 type Update = Box<dyn Fn(&AppState, &gtk::Widget)>;
 
+/// Held weakly: a widget that has gone (a chip drawn again, say) is dropped from the list rather
+/// than kept alive and updated for ever.
 pub struct Live {
-    widget: gtk::Widget,
+    widget: glib::WeakRef<gtk::Widget>,
     f: Update,
 }
 
 impl Live {
     pub fn apply(&self, st: &AppState) {
-        (self.f)(st, &self.widget);
+        if let Some(w) = self.widget.upgrade() {
+            (self.f)(st, &w);
+        }
     }
+}
+
+fn push_live(ui: &Ui, view: View, widget: gtk::Widget, f: Update) {
+    let mut live = ui.live.borrow_mut();
+    let list = live.entry(view).or_default();
+    list.retain(|l| l.widget.upgrade().is_some());
+    list.push(Live { widget: widget.downgrade(), f });
 }
 
 /// `l`'s text follows `f` (None leaves it as it is).
@@ -52,7 +68,7 @@ pub fn live_text(ui: &Ui, view: View, l: &gtk::Label, f: impl Fn(&AppState) -> O
             l.set_text(&t);
         }
     };
-    ui.live.borrow_mut().entry(view).or_default().push(Live { widget: l.clone().upcast(), f: Box::new(f) });
+    push_live(ui, view, l.clone().upcast(), Box::new(f));
 }
 
 /// `wd`'s tooltip follows `f`.
@@ -64,7 +80,7 @@ pub fn live_tip(ui: &Ui, view: View, wd: &impl IsA<gtk::Widget>, f: impl Fn(&App
             w.set_tooltip_text(Some(&t));
         }
     };
-    ui.live.borrow_mut().entry(view).or_default().push(Live { widget: wd.clone().upcast(), f: Box::new(f) });
+    push_live(ui, view, wd.clone().upcast(), Box::new(f));
 }
 
 fn session_in<'a>(st: &'a AppState, id: &str) -> Option<&'a SessionSummary> {
@@ -91,10 +107,11 @@ pub fn by_session(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering 
 
 /// History's order: by the day each was last used (newest day first), then newest started first.
 /// The day only changes once a day, so the list stays put while you read it.
-pub fn by_recent_day(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
+/// A key for `sort_by_cached_key`, so each date is read once per sort.
+pub fn recent_day(s: &SessionSummary) -> (Reverse<Option<String>>, Reverse<Option<String>>, String) {
     // The local day, as History's day headings show it.
-    let day = |s: &SessionSummary| s.last_at.as_deref().map(|t| fmt::day_key(t).unwrap_or_else(|| t.chars().take(10).collect()));
-    day(b).cmp(&day(a)).then_with(|| b.started_at.cmp(&a.started_at)).then_with(|| a.id.cmp(&b.id))
+    let day = s.last_at.as_deref().map(|t| fmt::day_key(t).unwrap_or_else(|| t.chars().take(10).collect()));
+    (Reverse(day), Reverse(s.started_at.clone()), s.id.clone())
 }
 
 /// Projects: waiting, then working, then loose ends in git, then the rest. Live projects (whose
@@ -2526,6 +2543,10 @@ pub fn toggle_pick(ui: &Ui, id: &str) {
     glib::idle_add_local_once(move || render_view(&ui));
 }
 
+/// The newest search, for the worker threads: one that has been typed over is skipped before
+/// it starts reading.
+static LATEST_SEARCH: AtomicU64 = AtomicU64::new(0);
+
 pub fn search_changed(ui: &Ui, q: String) {
     let seq = {
         // Fired from inside our own set_text too: never panic on a busy state.
@@ -2536,6 +2557,7 @@ pub fn search_changed(ui: &Ui, q: String) {
         if q.trim().is_empty() {
             st.search = None;
         }
+        LATEST_SEARCH.store(st.search_seq, Relaxed);
         st.search_seq
     };
     if q.trim().is_empty() {
@@ -2551,11 +2573,9 @@ pub fn search_changed(ui: &Ui, q: String) {
         let q2 = q.clone();
         app::bg(
             &ui,
-            move |src| src.search(q2.trim()),
+            move |src| (LATEST_SEARCH.load(Relaxed) == seq).then(|| src.search(q2.trim())),
             move |ui, results| {
-                if ui.st.borrow().search_seq != seq {
-                    return;
-                }
+                let Some(results) = results.filter(|_| ui.st.borrow().search_seq == seq) else { return };
                 ui.st.borrow_mut().search = Some(results);
                 history(ui);
             },
@@ -2596,7 +2616,7 @@ fn history(ui: &Ui) {
     let (q, results, recent, compact) = {
         let st = ui.st.borrow();
         let mut recent: Vec<SessionSummary> = st.ov.as_ref().map(|ov| ov.sessions.clone()).unwrap_or_default();
-        recent.sort_by(by_recent_day);
+        recent.sort_by_cached_key(recent_day);
         (st.search_q.trim().to_string(), st.search.clone(), recent, app::compact(&st))
     };
     let stable: Vec<String> = recent.iter().map(stable_key).collect();
@@ -2740,10 +2760,10 @@ mod tests {
             s("a", State::Idle, "2026-11-19T08:00:00Z", "2026-11-20T08:00:00Z"),
             s("b", State::Idle, "2026-11-20T06:00:00Z", "2026-11-20T07:00:00Z"),
         ];
-        v.sort_by(by_recent_day);
+        v.sort_by_cached_key(recent_day);
         assert_eq!(ids(&v), ["b", "a", "old"]);
         v[1].last_at = Some("2026-11-20T09:00:00Z".into());
-        v.sort_by(by_recent_day);
+        v.sort_by_cached_key(recent_day);
         assert_eq!(ids(&v), ["b", "a", "old"]);
     }
 

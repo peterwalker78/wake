@@ -2138,6 +2138,47 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"What woul
         check_real_lists(&t.claude_session.clone().unwrap());
     }
 
+    /// One real New project interview with the real claude, answered from a script (real requests,
+    /// so ignored): `cargo test -p wake-core real_claude_interview -- --ignored --nocapture`.
+    /// Prints each message, checks the plan parses, then deletes the thread; makes no project.
+    #[test]
+    #[ignore = "runs the real claude several times"]
+    fn real_claude_interview_plans_a_project() {
+        let paths = Paths::from_env();
+        let q = Questions::new(&paths, find_claude(&paths));
+        let answers =
+            ["A website with our family's recipes, for my parents and my kids.", "A website, so technical I think.", "You decide.", "Yes please.", "Family Recipes", "You decide.", "You decide."];
+        let id = q.interview(None, crate::newproject::OPENER).unwrap();
+        let mut plan = None;
+        for turn in 0..=answers.len() {
+            let end = Instant::now() + Duration::from_secs(180);
+            let t = loop {
+                let s = q.interview_state(&id, 0).unwrap();
+                if s.answering.is_none() && s.waiting.is_empty() {
+                    break s.threads[0].clone();
+                }
+                assert!(Instant::now() < end, "no answer in 3 minutes");
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let last = t.turns.last().unwrap();
+            assert!(last.error.is_none(), "{:?}", last.error);
+            println!("--- AI ({}):\n{}\n", t.ai.as_deref().unwrap_or("claude"), last.answer);
+            plan = crate::newproject::parse_plan(&last.answer);
+            if plan.is_some() || turn == answers.len() {
+                break;
+            }
+            println!("--- You: {}\n", answers[turn]);
+            q.interview(Some(&id), answers[turn]).unwrap();
+        }
+        let sid = q.interview_state(&id, 0).and_then(|s| s.threads[0].claude_session.clone());
+        q.delete(&id).unwrap();
+        println!("plan: {plan:#?}");
+        assert!(plan.is_some(), "no plan after {} answers", answers.len());
+        if let Some(sid) = sid {
+            check_real_lists(&sid);
+        }
+    }
+
     /// One real run each for Codex and Gemini (a real request each, so ignored):
     /// `cargo test -p wake-core real_other_ai -- --ignored --nocapture --test-threads 1`, or with
     /// `WAKE_REAL_AI=codex` / `gemini` for just one. Writes a real thread to

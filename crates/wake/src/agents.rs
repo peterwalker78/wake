@@ -83,7 +83,7 @@ fn kind_words(k: ProcKind) -> &'static str {
         ProcKind::PtyHost => "terminal host for a background session",
         ProcKind::Spare => "spare session, not used yet",
         ProcKind::Stray => "agent process with no session",
-        ProcKind::Subagent => "subagent of the session above",
+        ProcKind::Subagent => "an agent this session started",
         ProcKind::Dashboard => "Claude's agent list",
     }
 }
@@ -166,15 +166,8 @@ pub fn ordered_by<'a>(p: &'a ProcOverview, stale_only: bool, by: &Sort) -> Vec<(
         if let Some((k, rev)) = by {
             sort::agents(&mut these, k, *rev);
         }
-        for a in these {
-            out.push((group, a));
-            if stale_only {
-                continue; // a subagent is never stale on its own
-            }
-            let mut subs: Vec<&AgentProc> = p.procs.iter().filter(|s| s.kind == ProcKind::Subagent && a.children.contains(&s.pid)).collect();
-            subs.sort_by_key(|s| (s.start_ticks.unwrap_or(u64::MAX), s.pid));
-            out.extend(subs.into_iter().map(|s| (group, s)));
-        }
+        // An agent a session started is not a row of its own: it is in the session's fold.
+        out.extend(these.into_iter().map(|a| (group, a)));
     }
     out
 }
@@ -441,14 +434,15 @@ fn group_words(group: &str) -> Option<&'static str> {
 /// chevron, then how many there are and how many run (what they are doing is on the line below).
 /// `name` finds it again, to turn its chevron. `slim` (a narrow window): the chevron alone, the
 /// count in its tooltip, so the row keeps its room for the title.
-/// The fold button for a session's subagents and its `tasks` background tasks.
-pub fn sub_toggle(name: &str, sc: &SubagentCounts, tasks: usize, open: bool, slim: bool, act: impl Fn() + 'static) -> gtk::Button {
+/// The fold button for what is under a session: its subagents, and `(agents, tasks)`, the agents it
+/// started as processes of their own and its background tasks.
+pub fn sub_toggle(name: &str, sc: &SubagentCounts, (agents, tasks): (usize, usize), open: bool, slim: bool, act: impl Fn() + 'static) -> gtk::Button {
     let b = gtk::Button::new();
     b.add_css_class("subcount");
     b.set_widget_name(name);
     let inner = w::hbox(5, &[]);
     inner.append(&w::chevron(open));
-    let words = crate::why::fold_count(sc, tasks);
+    let words = crate::why::fold_count(sc, agents, tasks);
     if slim {
         b.add_css_class("slim");
     } else {
@@ -463,7 +457,7 @@ pub fn sub_toggle(name: &str, sc: &SubagentCounts, tasks: usize, open: bool, sli
     if sc.running > 0 {
         b.add_css_class("running");
     }
-    let what = if sc.total == 0 { "Background tasks" } else { "Subagents" };
+    let what = if sc.total == 0 && agents == 0 { "Background tasks" } else { "Subagents" };
     b.update_property(&[gtk::accessible::Property::Label(&format!("{what}: {words}"))]);
     b.set_valign(gtk::Align::Center);
     set_toggle(&b, open);
@@ -515,9 +509,7 @@ fn has_where(a: &AgentProc) -> bool {
 fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols: &[Col], hide: u8) -> gtk::ListBoxRow {
     let pid = w::vbox(2, &[]);
     pid.append(&w::clip(&a.pid.to_string(), &["pid"]));
-    if a.kind == ProcKind::Subagent {
-        pid.append(&w::clip("└ subagent", &["tree"]));
-    } else if Some(a.ppid) == daemon && a.kind != ProcKind::Daemon {
+    if Some(a.ppid) == daemon && a.kind != ProcKind::Daemon {
         pid.append(&w::clip("└ daemon", &["tree"]));
     }
     // Task: the title, then the project and what it is doing right now (its helpers, in words).
@@ -530,13 +522,14 @@ fn proc_row(ui: &Ui, a: &AgentProc, daemon: Option<u32>, p: &ProcOverview, cols:
     top.append(&tl);
     // One fold for what a session has going on beneath it: its subagents and its background tasks.
     let subs = session_of(&ui.st.borrow(), a).map(|s| s.subagents.clone()).filter(|s| s.total > 0);
-    if subs.is_some() || !a.tasks.is_empty() {
+    let kids = p.procs.iter().filter(|x| is_child(a, x)).count();
+    if subs.is_some() || kids > 0 || !a.tasks.is_empty() {
         let sc = subs.unwrap_or_default();
         let open = ui.st.borrow().agent_open.contains(&a.pid);
         let ui2 = ui.clone();
         let pid = a.pid;
         // Slim when the table is narrow (the PID column has made way).
-        top.append(&sub_toggle(&format!("subcount-{pid}"), &sc, a.tasks.len(), open, hide & 0b11 != 0, move || {
+        top.append(&sub_toggle(&format!("subcount-{pid}"), &sc, (kids, a.tasks.len()), open, hide & 0b11 != 0, move || {
             let open = ui2.st.borrow().agent_open.contains(&pid);
             set_open(&ui2, pid, !open);
         }));
@@ -893,20 +886,20 @@ enum Link {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Item {
     Run(usize),
+    /// An agent the session started as a process of its own: working, so with the running ones.
+    Proc(usize),
     /// A background task: listed with what is running, before the finished ones.
     Task(usize),
     Fold,
     Done(usize),
 }
 
-fn plan(n_run: usize, n_task: usize, n_done: usize, done_open: bool) -> Vec<(Item, Link)> {
-    let mut out = Vec::new();
-    for i in 0..n_run {
-        out.push((Item::Run(i), if i + 1 == n_run && n_task == 0 && n_done == 0 { Link::Last } else { Link::Mid }));
-    }
-    for i in 0..n_task {
-        out.push((Item::Task(i), if i + 1 == n_task && n_done == 0 { Link::Last } else { Link::Mid }));
-    }
+/// A session's tree, top to bottom: running subagents, agents it started, background tasks, then
+/// the fold over the finished subagents. `live` is how many of the first three there are.
+fn plan(n_run: usize, n_proc: usize, n_task: usize, n_done: usize, done_open: bool) -> Vec<(Item, Link)> {
+    let live = (0..n_run).map(Item::Run).chain((0..n_proc).map(Item::Proc)).chain((0..n_task).map(Item::Task));
+    let n_live = n_run + n_proc + n_task;
+    let mut out: Vec<(Item, Link)> = live.enumerate().map(|(i, item)| (item, if i + 1 == n_live && n_done == 0 { Link::Last } else { Link::Mid })).collect();
     if n_done > 0 {
         out.push((Item::Fold, if done_open { Link::FoldOpen } else { Link::Last }));
         if done_open {
@@ -1090,6 +1083,7 @@ struct Want {
 enum What {
     Note(&'static str),
     Sub(SubagentSummary, Link),
+    Proc(Box<AgentProc>, Link),
     Task(TaskSummary, Link),
     Fold(String, Link),
 }
@@ -1101,17 +1095,24 @@ fn wanted(ui: &Ui, a: &AgentProc) -> Vec<Want> {
         let st = ui.st.borrow();
         (st.agent_open.contains(&pid), st.agent_done_open.contains(&pid), a.session_id.as_ref().and_then(|s| st.sessions.get(s).cloned()))
     };
-    if !open || a.session_id.is_none() {
+    if !open {
         return vec![];
     }
+    let kids = children(ui, a);
     let note = |t: &'static str| vec![Want { name: format!("snote-{pid}"), sig: t.to_string(), what: What::Note(t) }];
-    let Some(d) = detail else { return note("reading its subagents…") };
-    if d.subagents.is_empty() && a.tasks.is_empty() {
+    // Its subagents come from its transcript: none to read without a session.
+    let subs = match (&a.session_id, detail) {
+        (None, _) => Vec::new(),
+        (Some(_), Some(d)) => d.subagents,
+        (Some(_), None) if kids.is_empty() && a.tasks.is_empty() => return note("reading its subagents…"),
+        (Some(_), None) => Vec::new(),
+    };
+    if subs.is_empty() && kids.is_empty() && a.tasks.is_empty() {
         return note("No subagents. This session did its work itself.");
     }
     let helpers = live_helpers(a);
-    let (running, done) = crate::why::split_subs(&d.subagents);
-    plan(running.len(), a.tasks.len(), done.len(), done_open)
+    let (running, done) = crate::why::split_subs(&subs);
+    plan(running.len(), kids.len(), a.tasks.len(), done.len(), done_open)
         .into_iter()
         .map(|(item, link)| match item {
             Item::Run(i) => {
@@ -1122,6 +1123,11 @@ fn wanted(ui: &Ui, a: &AgentProc) -> Vec<Want> {
                 }
                 // Its "now:" line is patched in place, so it is not part of what it shows.
                 Want { name: sub_name(pid, &s.agent_id), sig: format!("run{link:?}{}{}", s.task, s.kind), what: What::Sub(s, link) }
+            }
+            // Its state, memory and idle time are patched in place.
+            Item::Proc(i) => {
+                let k = kids[i].clone();
+                Want { name: format!("agent-{pid}-{}", k.pid), sig: format!("proc{link:?}{:?}", k.title), what: What::Proc(Box::new(k), link) }
             }
             // How long it has run ticks, and is patched in place.
             Item::Task(i) => {
@@ -1166,6 +1172,13 @@ fn build(ui: &Ui, a: &AgentProc, want: &Want, grid: Grid) -> gtk::ListBoxRow {
             let kind = if s.kind.is_empty() || s.kind == "general-purpose" { String::new() } else { format!(" ({})", s.kind) };
             row.set_tooltip_text(Some(&format!("{}{kind}\nClick for its steps · Enter", s.task)));
             on_click(ui, &row);
+        }
+        What::Proc(k, link) => {
+            row.set_selectable(false);
+            row.set_activatable(false);
+            row.set_focusable(false);
+            row.set_child(Some(&proc_line(ui, k, *link, grid)));
+            row.set_tooltip_text(Some(&format!("An agent this session started, running as a process of its own:\n{}\nProcess {}", k.command, k.pid)));
         }
         What::Task(t, link) => {
             row.set_selectable(false);
@@ -1296,6 +1309,74 @@ fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, gr
         glib::idle_add_local_once(move || panel::set_steps(&ui2, o.upcast_ref(), None, &sid2, &aid, true));
     }
     outer
+}
+
+/// Whether `x` is an agent that `a` started, as a process of its own.
+fn is_child(a: &AgentProc, x: &AgentProc) -> bool {
+    x.kind == ProcKind::Subagent && a.children.contains(&x.pid)
+}
+
+/// The agents a session started as processes of their own, oldest first.
+fn children(ui: &Ui, a: &AgentProc) -> Vec<AgentProc> {
+    let st = ui.st.borrow();
+    let mut out: Vec<AgentProc> = st.procs.as_ref().map(|p| p.procs.iter().filter(|x| is_child(a, x)).cloned().collect()).unwrap_or_default();
+    out.sort_by_key(|x| (x.start_ticks.unwrap_or(u64::MAX), x.pid));
+    out
+}
+
+/// An agent the session started, as a line in its tree: "agent" and its PID, what it is doing,
+/// its state (while it has one of its own), its memory, and Stop.
+fn proc_line(ui: &Ui, k: &AgentProc, link: Link, grid: Grid) -> gtk::Widget {
+    let id = k.pid;
+    let kind = w::vbox(2, &[]);
+    kind.append(&w::clip("agent", &["tree"]));
+    kind.append(&w::clip(&id.to_string(), &["pid"]));
+    let task = w::vbox(2, &["pj"]);
+    let title = w::clip(&k.title.clone().unwrap_or_else(|| kind_words(k.kind).to_string()), &["title"]);
+    title.set_width_chars(9);
+    task.append(&title);
+    if let Some(h) = live_helpers(k).first() {
+        task.append(&w::clip(&format!("now: {h}"), &["desc", "now"]));
+    }
+    let state = w::vbox(3, &[]);
+    if k.state == State::Unknown {
+        // It has no session of its own to say whether it is working: only that it runs.
+        state.append(&w::clip("running", &["ev"]));
+    } else {
+        state.append(&w::state_badge(k.state));
+        let l = w::clip(&idle_words(&ui.st.borrow(), k), &["ev"]);
+        live_text(ui, View::Agents, &l, move |st| st.procs.as_ref()?.procs.iter().find(|x| x.pid == id).map(|a| idle_words(st, a)));
+        state.append(&l);
+    }
+    let Grid::Table(cols, hide) = grid else {
+        return tree_row(&connector(link, None), kind.upcast(), task.upcast(), state.upcast(), grid).upcast();
+    };
+    let mem = w::vbox(3, &[]);
+    let rss = w::clip(&util::bytes(k.rss_bytes), &["num", "ink"]);
+    live_text(ui, View::Agents, &rss, move |st| st.procs.as_ref()?.procs.iter().find(|x| x.pid == id).map(|a| util::bytes(a.rss_bytes)));
+    mem.append(&rss);
+    let cpu = w::clip(&cpu_words(k), &["ev"]);
+    live_text(ui, View::Agents, &cpu, move |st| st.procs.as_ref()?.procs.iter().find(|x| x.pid == id).map(cpu_words));
+    mem.append(&cpu);
+    let ui2 = ui.clone();
+    let stop = w::button("Stop", None, &["sm", "stop", "ghost"], move || stop_one(&ui2, id));
+    stop.set_tooltip_text(Some("Stop it. Wake asks first; the session carries on."));
+    stop.update_property(&[gtk::accessible::Property::Label(&format!("Stop the agent this session started, process {id}"))]);
+    stop.set_halign(gtk::Align::Start);
+    stop.set_valign(gtk::Align::Center);
+    let blank = || w::label("", &[]).upcast::<gtk::Widget>();
+    let conn = connector(link, None);
+    let all: Vec<gtk::Widget> = if hide & 1 != 0 {
+        vec![blank(), conn.clone().upcast(), task.upcast(), state.upcast(), mem.upcast(), blank(), blank(), stop.upcast()]
+    } else {
+        vec![conn.clone().upcast(), kind.upcast(), task.upcast(), state.upcast(), mem.upcast(), blank(), blank(), stop.upcast()]
+    };
+    let row = w::row(cells(all, cols, hide), &["tr", "agentrow", "subtr"]);
+    conn.set_valign(gtk::Align::Fill);
+    if let Some(cell) = conn.parent() {
+        cell.add_css_class("conncell");
+    }
+    row.upcast()
 }
 
 /// A background task's line in a session's tree, in a subagent row's parts: its kind as a quiet
@@ -1515,7 +1596,9 @@ fn patch_trees(ui: &Ui) {
 pub fn set_open(ui: &Ui, pid: u32, open: bool) {
     let Some(a) = find(ui, pid) else { return };
     let sid = a.session_id.clone();
-    let has = !a.tasks.is_empty() || sid.as_deref().is_some_and(|id| ui.st.borrow().ov.as_ref().is_some_and(|ov| ov.sessions.iter().any(|s| s.id == id && s.subagents.total > 0)));
+    let has = !a.tasks.is_empty()
+        || !children(ui, &a).is_empty()
+        || sid.as_deref().is_some_and(|id| ui.st.borrow().ov.as_ref().is_some_and(|ov| ov.sessions.iter().any(|s| s.id == id && s.subagents.total > 0)));
     if open && !has {
         return;
     }
@@ -1655,11 +1738,11 @@ pub fn board_tree(ui: &Ui, s: &SessionSummary, lead: i32) -> Vec<gtk::ListBoxRow
     }
     let (running, done) = crate::why::split_subs(&d.subagents);
     // Monitor's tree lists subagents only: background tasks are Agents' to show.
-    plan(running.len(), 0, done.len(), done_open)
+    plan(running.len(), 0, 0, done.len(), done_open)
         .into_iter()
         .filter_map(|(item, link)| {
             Some(match item {
-                Item::Task(_) => return None,
+                Item::Proc(_) | Item::Task(_) => return None,
                 Item::Run(i) => {
                     let mut sub = running[i].clone();
                     if sub.live.is_none() {
@@ -2317,15 +2400,19 @@ mod tests {
     fn running_first_then_the_fold_then_the_finished_on_their_own_line() {
         use Item::*;
         use Link::*;
-        assert_eq!(plan(2, 0, 0, false), [(Run(0), Mid), (Run(1), Last)]);
+        assert_eq!(plan(2, 0, 0, 0, false), [(Run(0), Mid), (Run(1), Last)]);
         // Background tasks follow what is running, before the finished ones: one unbroken line.
-        assert_eq!(plan(1, 2, 0, false), [(Run(0), Mid), (Task(0), Mid), (Task(1), Last)]);
-        assert_eq!(plan(1, 1, 3, false), [(Run(0), Mid), (Task(0), Mid), (Fold, Last)]);
-        assert_eq!(plan(0, 1, 0, false), [(Task(0), Last)], "tasks alone");
-        assert_eq!(plan(2, 0, 3, false), [(Run(0), Mid), (Run(1), Mid), (Fold, Last)], "closed: no finished rows at all");
-        assert_eq!(plan(1, 0, 2, true), [(Run(0), Mid), (Fold, FoldOpen), (Done(0), InnerMid), (Done(1), InnerLast)]);
-        assert_eq!(plan(0, 0, 1, true), [(Fold, FoldOpen), (Done(0), InnerLast)]);
-        assert!(plan(0, 0, 0, true).is_empty());
+        assert_eq!(plan(1, 0, 2, 0, false), [(Run(0), Mid), (Task(0), Mid), (Task(1), Last)]);
+        assert_eq!(plan(1, 0, 1, 3, false), [(Run(0), Mid), (Task(0), Mid), (Fold, Last)]);
+        assert_eq!(plan(0, 0, 1, 0, false), [(Task(0), Last)], "tasks alone");
+        assert_eq!(plan(2, 0, 0, 3, false), [(Run(0), Mid), (Run(1), Mid), (Fold, Last)], "closed: no finished rows at all");
+        assert_eq!(plan(1, 0, 0, 2, true), [(Run(0), Mid), (Fold, FoldOpen), (Done(0), InnerMid), (Done(1), InnerLast)]);
+        assert_eq!(plan(0, 0, 0, 1, true), [(Fold, FoldOpen), (Done(0), InnerLast)]);
+        assert!(plan(0, 0, 0, 0, true).is_empty());
+        // An agent the session started sits with what is running, after its subagents and
+        // before its tasks: the whole family on one line.
+        assert_eq!(plan(1, 1, 1, 2, false), [(Run(0), Mid), (Proc(0), Mid), (Task(0), Mid), (Fold, Last)]);
+        assert_eq!(plan(0, 2, 0, 0, false), [(Proc(0), Mid), (Proc(1), Last)], "agents alone");
     }
 
     #[test]
@@ -2365,7 +2452,7 @@ mod tests {
     }
 
     #[test]
-    fn subagents_follow_their_session_and_are_never_stale() {
+    fn agents_a_session_started_are_in_its_fold_and_never_stale() {
         let mut parent = a(10, ProcKind::Session, 700, 10, Some("idle 31 h"));
         parent.children = vec![11, 12, 13];
         let mut host = a(11, ProcKind::PtyHost, 40, 11, None);
@@ -2374,7 +2461,10 @@ mod tests {
         s1.ppid = 10;
         let s2 = a(13, ProcKind::Subagent, 100, 30, None);
         let p = ProcOverview { procs: vec![a(20, ProcKind::Session, 100, 5, None), parent, host, s1, s2], ..Default::default() };
-        assert_eq!(pids(&p, false), [10, 13, 12, 20], "the stale session first, its subagents right after it as they started");
+        assert_eq!(pids(&p, false), [10, 20], "the stale session first; the agents it started are in its fold, not rows");
+        let parent = &p.procs[1];
+        let kids: Vec<u32> = p.procs.iter().filter(|x| is_child(parent, x)).map(|x| x.pid).collect();
+        assert_eq!(kids, [12, 13], "its fold holds the agents it started, not its terminal host");
         assert_eq!(pids(&p, true), [10]);
         assert_eq!(stale_summary(&p), (1, 700 << 20));
         let mut x = a(14, ProcKind::Subagent, 1, 1, Some("x"));

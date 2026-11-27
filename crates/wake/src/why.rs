@@ -123,15 +123,21 @@ pub fn sub_count(c: &SubagentCounts) -> String {
     }
 }
 
-/// What a session's fold holds, in words: its subagents (as `sub_count` says) and its background
-/// tasks, "1 running · 4 subagents · 1 task"; tasks alone, "2 tasks".
-pub fn fold_count(c: &SubagentCounts, tasks: usize) -> String {
-    let t = fmt::pl(tasks as u32, "task", "tasks");
-    match (c.total, tasks) {
-        (0, _) => t,
-        (_, 0) => sub_count(c),
-        _ => format!("{} · {t}", sub_count(c)),
+/// What a session's fold holds, in words: its subagents (as `sub_count` says), the agents it
+/// started as processes of their own, and its background tasks: "1 running · 4 subagents · 1 task",
+/// "1 agent · 2 tasks".
+pub fn fold_count(c: &SubagentCounts, agents: usize, tasks: usize) -> String {
+    let mut parts = Vec::new();
+    if c.total > 0 {
+        parts.push(sub_count(c));
     }
+    if agents > 0 {
+        parts.push(fmt::pl(agents as u32, "agent", "agents"));
+    }
+    if tasks > 0 {
+        parts.push(fmt::pl(tasks as u32, "task", "tasks"));
+    }
+    parts.join(" · ")
 }
 
 // ---------- background tasks ----------
@@ -268,9 +274,10 @@ mod tests {
         assert_eq!(sub_count(&SubagentCounts { total: 30, running: 0 }), "30 subagents, none running");
         assert_eq!(sub_count(&SubagentCounts { total: 1, running: 1 }), "1 subagent · running");
         // One fold holds subagents and background tasks: its count says both, or tasks alone.
-        assert_eq!(fold_count(&SubagentCounts { total: 4, running: 1 }, 1), "1 running · 4 subagents · 1 task");
-        assert_eq!(fold_count(&SubagentCounts::default(), 2), "2 tasks");
-        assert_eq!(fold_count(&SubagentCounts { total: 4, running: 1 }, 0), "1 running · 4 subagents");
+        assert_eq!(fold_count(&SubagentCounts { total: 4, running: 1 }, 0, 1), "1 running · 4 subagents · 1 task");
+        assert_eq!(fold_count(&SubagentCounts::default(), 0, 2), "2 tasks");
+        assert_eq!(fold_count(&SubagentCounts { total: 4, running: 1 }, 0, 0), "1 running · 4 subagents");
+        assert_eq!(fold_count(&SubagentCounts::default(), 1, 2), "1 agent · 2 tasks");
     }
 
     #[test]

@@ -491,6 +491,13 @@ impl DemoSource {
         procs[5].children = vec![30656];
         procs[5].rss_bytes = a + b;
         procs[10].agent = Some(Agent::Claude);
+        // An agent the tideline session started as a process of its own (a `claude -p` review).
+        let mut review = proc(43318, 43310, ProcKind::Subagent, None, State::Unknown, None, 61, Some(4.0), None, None);
+        review.title = Some("Review the scope diff".into());
+        review.command = "claude -p review the scope diff".into();
+        procs[1].children.push(43318);
+        procs[1].rss_bytes += review.rss_bytes;
+        procs.push(review);
         // Background tasks: a command in each of two terminal sessions (one idle, its task still
         // running), and a background job's command and monitor (its job record lists those).
         let task = |kind: &str, label: &str, secs: i64, pid: Option<u32>| TaskSummary { kind: kind.into(), label: label.into(), started_at: Some(ago(secs)), pid };

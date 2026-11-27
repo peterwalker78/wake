@@ -1284,7 +1284,7 @@ fn board_item(ui: &Ui, s: &SessionSummary, (first, last): (bool, bool), narrow: 
     let open = ui.st.borrow().board_open.contains(&s.id) && s.subagents.total > 0;
     let toggle = (s.subagents.total > 0).then(|| {
         let (ui2, id) = (ui.clone(), s.id.clone());
-        agents::sub_toggle(&format!("subcount-{}", s.id), &s.subagents, 0, open, narrow, move || {
+        agents::sub_toggle(&format!("subcount-{}", s.id), &s.subagents, (0, 0), open, narrow, move || {
             let open = ui2.st.borrow().board_open.contains(&id);
             agents::set_board_open(&ui2, &id, !open);
         })

@@ -301,7 +301,8 @@ fn signature(ui: &Ui) -> String {
                 d
             });
             let procs = res_of(&st, id).map(|r| r.pid);
-            format!("s{id}{minute}{}{}{procs:?}", serde_json::to_string(&sum).unwrap_or_default(), serde_json::to_string(&det).unwrap_or_default())
+            let tasks: Vec<(String, String)> = tasks_of(&st, id).into_iter().map(|t| (t.kind, t.label)).collect();
+            format!("s{id}{minute}{}{}{procs:?}{tasks:?}", serde_json::to_string(&sum).unwrap_or_default(), serde_json::to_string(&det).unwrap_or_default())
         }
         Some(Drawer::Project(id)) => {
             let sum = st.ov.as_ref().and_then(|ov| ov.projects.iter().find(|p| &p.id == id).cloned()).map(|mut p| {
@@ -675,6 +676,25 @@ pub fn sub_widget(ui: &Ui, sid: &str, a: &SubagentSummary, open: bool, sel: bool
     outer
 }
 
+/// A background task, in a running subagent's parts: the dot, its kind as a quiet word, its label
+/// and how long it has run. Nothing opens under it.
+pub fn task_widget(t: &TaskSummary) -> gtk::Box {
+    let outer = w::vbox(0, &["sub"]);
+    let btn = gtk::Button::new();
+    btn.add_css_class("subbtn");
+    btn.set_focusable(false);
+    btn.set_can_target(false);
+    let h = w::hbox(8, &["h"]);
+    h.append(&w::dot("running"));
+    h.append(&w::label(crate::why::task_kind(&t.kind), &["ty"]));
+    h.append(&w::clip(&t.label, &["task"]));
+    h.append(&w::label(&crate::why::task_age(t.started_at.as_deref()), &["dur"]));
+    btn.set_child(Some(&h));
+    outer.append(&btn);
+    outer.set_tooltip_text(Some(&t.label));
+    outer
+}
+
 /// A subagent's steps and what it handed back, from what has been read of its record.
 fn fill_steps(ui: &Ui, sid: &str, aid: &str, steps: &gtk::Box) {
     w::clear(steps);
@@ -883,7 +903,12 @@ fn session(ui: &Ui, id: &str) {
     let page = ui.st.borrow().panel_page;
     if let Some(k) = page {
         // A section's page: the way back, its name, and whose it is.
-        page_head(ui, &if k == "recap" { recap_title(s.agent) } else { page_title(k).to_string() }, &s.title);
+        let title = match k {
+            "recap" => recap_title(s.agent),
+            "subs" => subs_title(detail.as_ref().is_some_and(|d| !d.subagents.is_empty()), !tasks_of(&ui.st.borrow(), id).is_empty()).to_string(),
+            _ => page_title(k).to_string(),
+        };
+        page_head(ui, &title, &s.title);
     } else {
         let mut sub: Vec<gtk::Widget> = vec![session_line(ui, &s).upcast()];
         if let Some(r) = crate::why::stop_reason(&s).filter(|r| r.decision.is_none()) {
@@ -943,14 +968,19 @@ fn session(ui: &Ui, id: &str) {
     if page.is_some() {
         folds.add_css_class("paged");
     }
-    // Subagents first while one is running: that is what moves.
-    let run = d.subagents.iter().filter(|a| a.state == State::Working).count();
+    // Subagents (and background tasks) first while one is running: that is what moves.
+    let tasks = tasks_of(&ui.st.borrow(), id);
+    let run = d.subagents.iter().filter(|a| a.state == State::Working).count() + tasks.len();
     let subs_fold = |folds: &gtk::Box| {
-        if d.subagents.is_empty() {
+        if d.subagents.is_empty() && tasks.is_empty() {
             return;
         }
-        let note = crate::why::sub_count(&s.subagents);
-        folds.append(&fold(ui, "subs", "Subagents", &note, if run > 0 { "mint" } else { "" }, |x| {
+        let note = match (d.subagents.is_empty(), tasks.is_empty()) {
+            (false, true) => crate::why::sub_count(&s.subagents),
+            (false, false) => format!("{} · {}", fmt::pl(s.subagents.total, "subagent", "subagents"), crate::why::task_count(tasks.len())),
+            _ => crate::why::task_count(tasks.len()),
+        };
+        folds.append(&fold(ui, "subs", subs_title(!d.subagents.is_empty(), !tasks.is_empty()), &note, if run > 0 { "mint" } else { "" }, |x| {
             // Running first; the finished ones folded into one line, newest first, on demand.
             let (running, done) = crate::why::split_subs(&d.subagents);
             let one = |a: &SubagentSummary| {
@@ -988,6 +1018,10 @@ fn session(ui: &Ui, id: &str) {
             };
             for a in &running {
                 x.append(&one(a));
+            }
+            // Its background tasks after its running subagents.
+            for t in &tasks {
+                x.append(&task_widget(t));
             }
             if done.is_empty() {
                 return;
@@ -1085,6 +1119,20 @@ fn session(ui: &Ui, id: &str) {
         }
     }));
     b.append(&folds);
+}
+
+/// A live session's background tasks, from its process's row in the Agents list.
+fn tasks_of(st: &app::AppState, id: &str) -> Vec<TaskSummary> {
+    st.procs.as_ref().and_then(|p| p.procs.iter().find(|a| a.kind == ProcKind::Session && a.session_id.as_deref() == Some(id))).map(|a| a.tasks.clone()).unwrap_or_default()
+}
+
+/// The section holding a session's subagents and tasks, by what it has.
+fn subs_title(subagents: bool, tasks: bool) -> &'static str {
+    match (subagents, tasks) {
+        (true, true) => "Subagents and tasks",
+        (false, true) => "Background tasks",
+        _ => "Subagents",
+    }
 }
 
 /// A live session's processes added up (wake-core's `Overview::resources`).

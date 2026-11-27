@@ -8,6 +8,11 @@
 //! agent row in a `gtk::DrawingArea` instead of a stack down the wallpaper's right edge, so the
 //! readout is a fixed width and its trace always the full height (no squeezing to fit a screen).
 //!
+//! Task rows (the background tasks of agent-notify's `task<TAB><label>` lines) follow the helper
+//! rows in the same parts. Their small waves are in Wake's tertiary colour, its lightness moved
+//! just enough to stand out 3:1 from the backing (theme.rs `readable_on`), and keep moving while
+//! the task runs, even when the agent is idle and its own trace lies flat.
+//!
 //! The two colours come from Slipstream's settings exactly as the compositor takes them
 //! (`set_colours(settings.borders.selected_tile_rgb(), settings.borders.bullet_time_rgb())`): the
 //! focused window's ring colour for a wave at work, bullet time's for a line that has stopped, with
@@ -115,6 +120,8 @@ pub struct Agent {
     pub name: String,
     pub active: bool,
     pub helpers: Vec<String>,
+    /// Its background tasks, by label.
+    pub tasks: Vec<String>,
 }
 
 /// One agent's readout state.
@@ -123,6 +130,7 @@ struct Trace {
     pid: u32,
     name: String,
     helpers: Vec<String>,
+    tasks: Vec<String>,
     alive: bool,
     active: bool,
     colour: f32,
@@ -146,13 +154,24 @@ impl Trace {
     }
 }
 
-/// The rows listed under a readout for `helpers`: past MOST_ROWS the last says how many more.
-pub fn rows(helpers: &[String]) -> Vec<(String, bool)> {
-    if helpers.len() <= MOST_ROWS {
-        return helpers.iter().map(|h| (h.clone(), true)).collect();
+/// What a row under a readout is: a helper (subagent) or a task, each with its small wave, or the
+/// last row saying how many more there are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RowKind {
+    Helper,
+    Task,
+    More,
+}
+
+/// The rows listed under a readout: the helpers, then the tasks; past MOST_ROWS (both counted,
+/// helpers first) the last says how many more.
+pub fn rows(helpers: &[String], tasks: &[String]) -> Vec<(String, RowKind)> {
+    let all: Vec<(String, RowKind)> = helpers.iter().map(|h| (h.clone(), RowKind::Helper)).chain(tasks.iter().map(|t| (t.clone(), RowKind::Task))).collect();
+    if all.len() <= MOST_ROWS {
+        return all;
     }
-    let mut rows: Vec<_> = helpers[..MOST_ROWS - 1].iter().map(|h| (h.clone(), true)).collect();
-    rows.push((format!("+{} more", helpers.len() - rows.len()), false));
+    let mut rows: Vec<_> = all[..MOST_ROWS - 1].to_vec();
+    rows.push((format!("+{} more", all.len() - rows.len()), RowKind::More));
     rows
 }
 
@@ -191,6 +210,7 @@ impl Model {
                     trace.alive = true;
                     trace.active = agent.active;
                     trace.helpers.clone_from(&agent.helpers);
+                    trace.tasks.clone_from(&agent.tasks);
                     if agent.active || trace.name.is_empty() {
                         trace.name.clone_from(&agent.name);
                     }
@@ -198,6 +218,7 @@ impl Model {
                 None => {
                     trace.alive = false;
                     trace.helpers.clear();
+                    trace.tasks.clear();
                 }
             }
         }
@@ -206,6 +227,7 @@ impl Model {
                 pid: agent.pid,
                 name: agent.name.clone(),
                 helpers: agent.helpers.clone(),
+                tasks: agent.tasks.clone(),
                 alive: true,
                 active: agent.active,
                 colour: if agent.active { 1.0 } else { 0.0 },
@@ -213,7 +235,7 @@ impl Model {
             });
         }
         for &pid in gone {
-            self.traces.entry(pid).or_insert_with(|| Trace { pid, name: String::new(), helpers: Vec::new(), alive: false, active: false, colour: 0.0, amp: 0.0 });
+            self.traces.entry(pid).or_insert_with(|| Trace { pid, name: String::new(), helpers: Vec::new(), tasks: Vec::new(), alive: false, active: false, colour: 0.0, amp: 0.0 });
         }
         self.traces.retain(|pid, _| at_work.iter().any(|a| a.pid == *pid) || gone.contains(pid));
     }
@@ -257,7 +279,7 @@ impl Model {
             }
             settling |= trace.colour != target || trace.amp != target;
         }
-        let waving = !reduced && self.traces.values().any(|t| t.amp > 0.0);
+        let waving = !reduced && self.traces.values().any(|t| t.amp > 0.0 || !t.tasks.is_empty());
         waving || settling || self.shown < 1.0
     }
 }
@@ -346,6 +368,14 @@ fn draw_mini(cr: &cairo::Context, model: &Model, trace: &Trace, (w, h): (i32, i3
     Ok(())
 }
 
+/// The colour task rows' waves are drawn in: the tertiary colour, made to stand out 3:1 from the
+/// backing as it shows over a row of the theme now showing.
+fn task_colour() -> String {
+    let backing = format!("#{:06X}", BACKING >> 8);
+    let ground = crate::theme::over(&backing, f64::from(BACKING & 0xff) / 255.0, crate::theme::hex("panel"));
+    crate::theme::readable_on(&crate::theme::tertiary_hex(), &ground, 3.0)
+}
+
 fn set_hex(cr: &cairo::Context, colour: u32) {
     let c = |shift: u32| ((colour >> shift) & 0xff) as f64 / 255.0;
     cr.set_source_rgba(c(24), c(16), c(8), c(0));
@@ -397,7 +427,7 @@ fn draw(cr: &cairo::Context, area: &gtk::DrawingArea, model: &Model, trace: &Tra
     // Helper rows.
     let left = (PAD + HELPER_WAVE + HELPER_GAP) as f64;
     let first = (PAD + LABEL + TRACE) as f64;
-    let shown_rows = rows(&trace.helpers);
+    let shown_rows = rows(&trace.helpers, &trace.tasks);
     for (i, (row, _)) in shown_rows.iter().enumerate() {
         let l = area.create_pango_layout(Some(row));
         l.set_font_description(Some(&font(10.0)));
@@ -422,6 +452,9 @@ fn draw(cr: &cairo::Context, area: &gtk::DrawingArea, model: &Model, trace: &Tra
     let spot = (time * SWEEP + trace.pid as f64 * 0.37).fract() as f32;
     let trace_top = PAD + LABEL;
     let pen = Pen { pitch, dot, rgb };
+    // Task rows' small waves: the tertiary colour, made to stand out 3:1 from the backing as it
+    // shows over the row (WCAG's ask of marks that aren't text), whatever the trace is doing.
+    let task_pen = Pen { pitch, dot, rgb: crate::theme::colour_rgb(&task_colour()).map(|c| c as f32 * 255.0) };
     pen.line(cr, (l, r), (px(trace_top) + px(TRACE) / 2, px(TRACE)), |across| {
         let lift = trace.wave(across, time as f32) * trace.amp;
         let lit = match t {
@@ -435,8 +468,15 @@ fn draw(cr: &cairo::Context, area: &gtk::DrawingArea, model: &Model, trace: &Tra
     });
     let first = trace_top + TRACE;
     let wave_right = l + px(HELPER_WAVE) - dot;
-    for (i, _) in shown_rows.iter().enumerate().filter(|(_, (_, helper))| *helper) {
-        pen.line(cr, (l, wave_right), (px(first + i as i32 * HELPER) + px(HELPER) / 2, px(HELPER)), |across| (trace.helper_wave(i, across, time as f32) * trace.amp, HELPER_LIT));
+    for (i, (_, kind)) in shown_rows.iter().enumerate() {
+        // A helper's wave lies flat with its agent's trace; a task's moves while the task runs, and
+        // is drawn solid so it shows in exactly the colour that was made to stand out.
+        let (pen, amp, lit) = match kind {
+            RowKind::Helper => (&pen, trace.amp, HELPER_LIT),
+            RowKind::Task => (&task_pen, 1.0, 1.0),
+            RowKind::More => continue,
+        };
+        pen.line(cr, (l, wave_right), (px(first + i as i32 * HELPER) + px(HELPER) / 2, px(HELPER)), |across| (trace.helper_wave(i, across, time as f32) * amp, lit));
     }
     cr.restore()?;
     cr.pop_group_to_source()?;
@@ -510,17 +550,54 @@ mod tests {
     #[test]
     fn past_the_room_for_rows_the_last_says_how_many_more() {
         let many: Vec<String> = ["a", "b", "c", "d", "e", "f"].iter().map(|s| s.to_string()).collect();
-        let r = rows(&many);
+        let r = rows(&many, &[]);
         assert_eq!(r.len(), MOST_ROWS);
-        assert_eq!(r[MOST_ROWS - 1], ("+3 more".to_string(), false));
+        assert_eq!(r[MOST_ROWS - 1], ("+3 more".to_string(), RowKind::More));
+    }
+
+    #[test]
+    fn task_rows_follow_the_helpers_and_count_toward_the_room() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let kinds = |r: &[(String, RowKind)]| r.iter().map(|x| x.1).collect::<Vec<_>>();
+        let r = rows(&s(&["review"]), &s(&["cargo test", "CI run 42"]));
+        assert_eq!(r.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["review", "cargo test", "CI run 42"]);
+        assert_eq!(kinds(&r), [RowKind::Helper, RowKind::Task, RowKind::Task]);
+        // Helpers first: two helpers and three tasks fill the room with one task and "+2 more".
+        let r = rows(&s(&["a", "b"]), &s(&["t1", "t2", "t3"]));
+        assert_eq!(kinds(&r), [RowKind::Helper, RowKind::Helper, RowKind::Task, RowKind::More]);
+        assert_eq!(r[3].0, "+2 more");
+        assert_eq!(rows(&[], &s(&["t"])), [("t".to_string(), RowKind::Task)]);
+    }
+
+    #[test]
+    fn tasks_never_change_idle_and_go_with_their_agent() {
+        let model = Model::new(Look { reduced_motion: true, ..Look::parse("") });
+        let mut m = model.borrow_mut();
+        m.follow(&[Agent { pid: 300, name: "kiln".into(), active: false, helpers: vec![], tasks: vec!["cargo build".into()] }], &[]);
+        m.advance(0.0);
+        assert_eq!((m.traces[&300].amp, m.traces[&300].tasks.len()), (0.0, 1), "idle stays flat with a task running");
+        assert!(!m.advance(1.0), "reduced motion: nothing moves, tasks or not");
+        drop(m);
+        let moving = Model::new(Look::parse(""));
+        let mut m = moving.borrow_mut();
+        m.follow(&[Agent { pid: 301, name: "kiln".into(), active: false, helpers: vec![], tasks: vec!["cargo build".into()] }], &[]);
+        m.appeared(0.0);
+        assert!(m.advance(0.05), "a running task's wave keeps moving while its agent is idle");
+        assert_eq!(m.traces[&301].amp, 0.0, "its own trace stays flat");
+        m.follow(&[Agent { pid: 301, name: "kiln".into(), active: false, helpers: vec![], tasks: vec![] }], &[]);
+        assert!(!m.advance(0.1), "with the task done, nothing moves");
+        drop(m);
+        let mut m = model.borrow_mut();
+        m.follow(&[], &[300]);
+        assert!(m.traces[&300].tasks.is_empty(), "a gone agent lists no tasks");
     }
 
     #[test]
     fn idle_settles_flat_and_reduced_motion_snaps() {
         let model = Model::new(Look { reduced_motion: true, ..Look::parse("") });
         let mut m = model.borrow_mut();
-        m.follow(&[Agent { pid: 300, name: "kiln".into(), active: true, helpers: vec![] }], &[]);
-        m.follow(&[Agent { pid: 300, name: "done".into(), active: false, helpers: vec![] }], &[]);
+        m.follow(&[Agent { pid: 300, name: "kiln".into(), active: true, helpers: vec![], tasks: vec![] }], &[]);
+        m.follow(&[Agent { pid: 300, name: "done".into(), active: false, helpers: vec![], tasks: vec![] }], &[]);
         m.advance(0.0);
         assert_eq!(m.traces[&300].amp, 0.0);
         assert_eq!(m.traces[&300].name, "kiln", "the name stays from before idle");

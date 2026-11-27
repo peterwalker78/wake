@@ -123,6 +123,29 @@ pub fn sub_count(c: &SubagentCounts) -> String {
     }
 }
 
+// ---------- background tasks ----------
+
+/// A background task's kind in plain words: a shell runs a "command"; a monitor is "watching"
+/// something (a log, a test run, a build) for the agent.
+pub fn task_kind(kind: &str) -> &'static str {
+    if kind == "monitor" { "watching" } else { "command" }
+}
+
+/// How long a task has run, as a running subagent's time reads: "under a minute so far",
+/// "12 min so far". Empty when its start isn't known.
+pub fn task_age(started_at: Option<&str>) -> String {
+    match started_at.and_then(fmt::secs_since) {
+        Some(s) if s < 60 => "under a minute so far".into(),
+        Some(s) => format!("{} so far", fmt::secs(s as u64)),
+        None => String::new(),
+    }
+}
+
+/// A session's tasks counted for a section's note: "1 task", "3 tasks".
+pub fn task_count(n: usize) -> String {
+    fmt::pl(n as u64, "task", "tasks")
+}
+
 // ---------- one idle clock ----------
 
 /// How long a session has been idle, on the one clock every surface uses: the transcript's last

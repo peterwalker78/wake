@@ -420,11 +420,33 @@ impl DemoSource {
                 Some(3),
                 512,
                 Some(38.0),
-                Some(note("tideline: scope helper rows", false, &["reading effects/scope.rs", "running cargo test -p tideline scope"])),
+                Some(WorkingNote { tasks: vec!["cargo test -p tideline scope".into()], ..note("tideline: scope helper rows", false, &["reading effects/scope.rs"]) }),
                 None,
             ),
-            proc(41022, 3120, ProcKind::Session, Some(find("7c1e")), State::Waiting, Some(40), 438, Some(0.4), Some(note("Gradebook: report write-up", true, &[])), None),
-            proc(44871, 2101, ProcKind::Session, Some(find("91aa")), State::Working, Some(12), 655, Some(21.5), Some(note("Skyhook: level loader", false, &["tracing the platform save path"])), None),
+            proc(
+                41022,
+                3120,
+                ProcKind::Session,
+                Some(find("7c1e")),
+                State::Waiting,
+                Some(40),
+                438,
+                Some(0.4),
+                Some(WorkingNote { tasks: vec!["npm run dev".into()], ..note("Gradebook: report write-up", true, &[]) }),
+                None,
+            ),
+            proc(
+                44871,
+                2101,
+                ProcKind::Session,
+                Some(find("91aa")),
+                State::Working,
+                Some(12),
+                655,
+                Some(21.5),
+                Some(WorkingNote { tasks: vec!["cargo build --release".into(), "the level loader's test log".into()], ..note("Skyhook: level loader", false, &["tracing the platform save path"]) }),
+                None,
+            ),
             proc(44872, 44871, ProcKind::PtyHost, Some(find("91aa")), State::Working, None, 38, Some(0.2), None, None),
             proc(
                 30655,
@@ -463,6 +485,15 @@ impl DemoSource {
         procs[5].children = vec![30656];
         procs[5].rss_bytes = a + b;
         procs[10].agent = Some(Agent::Claude);
+        // Background tasks: a command in each of two terminal sessions (one idle, its task still
+        // running), and a background job's command and monitor (its job record lists those).
+        let task = |kind: &str, label: &str, secs: i64, pid: Option<u32>| TaskSummary { kind: kind.into(), label: label.into(), started_at: Some(ago(secs)), pid };
+        procs[1].tasks = vec![task("shell", "cargo test -p tideline scope", 3 * MIN, Some(43402))];
+        procs[1].others = vec![43402, 43403];
+        procs[1].others_rss_bytes = 1_204 * 1_048_576;
+        procs[1].rss_bytes += procs[1].others_rss_bytes;
+        procs[2].tasks = vec![task("shell", "npm run dev", 25 * MIN, Some(41090))];
+        procs[3].tasks = vec![task("shell", "cargo build --release", 6 * MIN, None), task("monitor", "the level loader's test log", 12 * MIN, None)];
 
         Self {
             state: Mutex::new(Pretend { behind: demo_behind(&projects), projects, sessions, ideas, procs, pauses: Vec::new(), next_idea: 8, groups: Vec::new() }),

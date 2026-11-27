@@ -632,6 +632,10 @@ fn cmd_ps() -> u8 {
         if let Some(h) = p.helpers.as_ref().filter(|h| !h.is_empty()) {
             out!("{:<9} subagents running: {}", "", plain(&h.join(" · ")));
         }
+        if !p.tasks.is_empty() {
+            let tasks: Vec<String> = p.tasks.iter().map(|t| format!("{} ({})", t.label, crate::why::task_kind(&t.kind))).collect();
+            out!("{:<9} tasks running: {}", "", plain(&tasks.join(" · ")));
+        }
         if let Some(r) = &p.stale_reason {
             out!("{:<9} stale: {}", "", plain(r));
         } else if p.kind == ProcKind::Stray

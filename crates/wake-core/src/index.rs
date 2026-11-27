@@ -516,7 +516,7 @@ fn dispatch(acc: &mut Acc, d: &Value) {
 /// Fold one raw transcript line into acc, decoding JSON only when it can matter.
 pub fn claude_line(acc: &mut Acc, line: &[u8]) {
     if line.starts_with(b"{\"type\":\"") {
-        let end = line[9..].iter().position(|&c| c == b'"').map(|e| 9 + e).unwrap_or(line.len());
+        let end = line[9..].iter().position(|&c| c == b'"').map_or(line.len(), |e| 9 + e);
         if CLAUDE_META_TYPES.contains(&&line[9..end])
             && let Some(d) = decode(line)
         {
@@ -644,7 +644,7 @@ pub fn codex_line(acc: &mut Acc, line: &[u8]) {
                 let txt = txt.trim();
                 if !txt.is_empty() {
                     acc.last_text = Some(util::last_chars(txt, LAST_TEXT_MAX));
-                    acc.last_text_at = ts.clone();
+                    acc.last_text_at.clone_from(&ts);
                     acc.last_kind = Some("text".into());
                 }
             }

@@ -182,7 +182,7 @@ fn compare(p: &Path, t: &Tracking, remote_sha: Option<&str>) -> Option<Outcome> 
     let local = |up: &str| (count(p, &format!("HEAD..{up}")).unwrap_or(0), count(p, &format!("{up}..HEAD")).unwrap_or(0));
     let Some(sha) = remote_sha else {
         // Only the last fetch to go on.
-        let (behind, ahead) = up.as_deref().map(local).unwrap_or((0, 0));
+        let (behind, ahead) = up.as_deref().map_or((0, 0), local);
         return Some(if behind > 0 { Outcome::Behind { count: Some(behind), ahead } } else { Outcome::InStep { ahead } });
     };
     if up.as_deref() == Some(sha) || has_commit(p, sha) {
@@ -193,7 +193,7 @@ fn compare(p: &Path, t: &Tracking, remote_sha: Option<&str>) -> Option<Outcome> 
         return Some(Outcome::Behind { count: Some(behind.max(1)), ahead });
     }
     // The remote's commit isn't here, so HEAD can't contain it: new commits, not fetched yet.
-    let ahead = up.as_deref().map(|u| local(u).1).unwrap_or(0);
+    let ahead = up.as_deref().map_or(0, |u| local(u).1);
     Some(Outcome::Behind { count: None, ahead })
 }
 
@@ -202,7 +202,7 @@ pub fn check_repo(path: &str) -> RepoCheck {
     let p = Path::new(path);
     let mut c = RepoCheck { path: path.into(), upstream: String::new(), host: "the remote".into(), outcome: Outcome::NoUpstream, remote_sha: None, problem: None, asked_at: None, at: Instant::now() };
     let Some(t) = tracking(p) else { return c };
-    c.upstream = t.short.clone();
+    c.upstream.clone_from(&t.short);
     let url = gitinfo::git(p, &["ls-remote", "--get-url", &t.remote]).unwrap_or_default().trim().to_string();
     c.host = host_of_url(&url);
     // Asked by address from outside the repo, so nothing in the repo's own config (a credential
@@ -238,7 +238,7 @@ pub fn recheck(prev: &RepoCheck) -> RepoCheck {
         c.outcome = Outcome::NoUpstream;
         return c;
     };
-    c.upstream = t.short.clone();
+    c.upstream.clone_from(&t.short);
     // A fetch since (a pull, say) may have moved the tracking ref past what the remote said.
     let remote = match (&prev.remote_sha, rev(p, &t.local_ref)) {
         (Some(r), Some(up)) if r != &up && is_ancestor(p, r, &up) == Some(true) => Some(up),

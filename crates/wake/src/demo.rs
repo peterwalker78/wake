@@ -45,7 +45,7 @@ impl Default for DemoSource {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "made-up data, one argument per column")]
 fn project(id: &str, desc: &str, next: &str, why: &str, last: i64, ahead: u32, dirty: u32, noup: u32) -> ProjectSummary {
     ProjectSummary {
         id: id.into(),
@@ -94,7 +94,7 @@ struct S<'a> {
     last_prompt: &'a str,
 }
 
-fn session(s: S) -> SessionSummary {
+fn session(s: &S) -> SessionSummary {
     SessionSummary {
         id: s.id.into(),
         agent: Agent::Claude,
@@ -121,8 +121,8 @@ fn session(s: S) -> SessionSummary {
 }
 
 /// A made-up terminal window (`n` tells them apart).
-fn window(n: u32) -> Option<Location> {
-    Some(Location { pid: 3120 + n, app: Some("Terminal".into()) })
+fn window(n: u32) -> Location {
+    Location { pid: 3120 + n, app: Some("Terminal".into()) }
 }
 
 /// Tasks for the demo's long tail of finished subagents.
@@ -150,7 +150,7 @@ fn sub(id: &str, task: &str, kind: &str, state: State, secs: u32, back: Option<&
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "made-up data, one argument per column")]
 fn proc(
     pid: u32,
     ppid: u32,
@@ -192,11 +192,16 @@ fn proc(
     }
 }
 
-fn note(name: &str, idle: bool, helpers: &[&str]) -> Option<WorkingNote> {
-    Some(WorkingNote { name: name.into(), idle, helpers: helpers.iter().map(|h| h.to_string()).collect() })
+fn note(name: &str, idle: bool, helpers: &[&str]) -> WorkingNote {
+    WorkingNote { name: name.into(), idle, helpers: helpers.iter().map(|h| h.to_string()).collect() }
 }
 
 impl DemoSource {
+    /// The made-up state; a panic elsewhere never locks the demo out of it.
+    fn st(&self) -> std::sync::MutexGuard<'_, Pretend> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn new() -> Self {
         let mut projects = vec![
             project("Gradebook", "Rails app: AI tutor for schools", "Pick the font for the printed term reports", "Priya wants a sample before parents' evening", 11 * HOUR, 2, 3, 1),
@@ -209,7 +214,7 @@ impl DemoSource {
         projects[3].last_summary = Some("Chapters 1–3 are live. Chapter 4 is drafted and needs a proofread.".into());
 
         let mut sessions = Vec::new();
-        let mut s = session(S {
+        let mut s = session(&S {
             id: "7c1e9a40-gradebook-reports",
             project: "Gradebook",
             title: "term-report-pdf-export",
@@ -222,13 +227,13 @@ impl DemoSource {
             last_prompt: "okay, send a brief write up of this stuff to priya for her awareness too",
         });
         s.question = Some("Should I send the write-up to Priya now, or keep it as a draft for you to check first?".into());
-        s.location = window(1);
+        s.location = Some(window(1));
         s.pid = Some(41022);
         s.away_summary = Some("The PDF export is built and a sample report is drafted, both merged to develop, and Priya has the sample. Next, you pick the font for the printed reports.".into());
         s.subagents = SubagentCounts { total: 3, running: 0 };
         sessions.push(s);
 
-        let mut s = session(S {
+        let mut s = session(&S {
             id: "2b8f0d11-slip-scope",
             project: "tideline-desktop",
             title: "scope-helper-rows",
@@ -240,12 +245,12 @@ impl DemoSource {
             prompts: 5,
             last_prompt: "the helper rows overlap the PID when there are more than four, fix that",
         });
-        s.location = window(1);
+        s.location = Some(window(1));
         s.pid = Some(43310);
         s.subagents = SubagentCounts { total: 30, running: 2 };
         sessions.push(s);
 
-        let mut s = session(S {
+        let mut s = session(&S {
             id: "91aa4e7c-skyhook-bg",
             project: "Skyhook",
             title: "level-editor-load-bug",
@@ -262,7 +267,7 @@ impl DemoSource {
         s.subagents = SubagentCounts { total: 1, running: 1 };
         sessions.push(s);
 
-        let mut s = session(S {
+        let mut s = session(&S {
             id: "c4d2771e-waypoint-idle",
             project: "waypoint",
             title: "rail-times-import",
@@ -279,7 +284,7 @@ impl DemoSource {
         s.away_summary = Some("The rail timetable import works for GTFS feeds; the Italian feed still fails on a date format.".into());
         sessions.push(s);
 
-        let mut s = session(S {
+        let mut s = session(&S {
             id: "e0b3f5aa-fern-proof",
             project: "fernlight",
             title: "chapter-4-proofread",
@@ -294,7 +299,7 @@ impl DemoSource {
         s.pid = Some(38410);
         sessions.push(s);
 
-        let mut s = session(S {
+        let mut s = session(&S {
             id: "5a7d0c3b-home-notes",
             project: "",
             title: "terminal-style-project-dashboard",
@@ -308,11 +313,11 @@ impl DemoSource {
         });
         s.away_summary = Some("Sketched the board in three layouts. Next, say whether you want me to build the dense one or the two-pane one. (turn off recaps in /config)".into());
         s.question = Some("Next, say whether you want me to build the dense one or the two-pane one.".into());
-        s.location = window(2);
+        s.location = Some(window(2));
         s.pid = Some(39977);
         sessions.push(s);
 
-        let mut s = session(S {
+        let mut s = session(&S {
             id: "0f9e8d7c-slip-unknown",
             project: "tideline-desktop",
             title: "unfinished-work-check",
@@ -327,7 +332,7 @@ impl DemoSource {
         s.subagents = SubagentCounts { total: 2, running: 0 };
         sessions.push(s);
 
-        let s = session(S {
+        let s = session(&S {
             id: "3c3c1b2a-gradebook-ended",
             project: "Gradebook",
             title: "report-layout-review",
@@ -341,7 +346,7 @@ impl DemoSource {
         });
         sessions.push(s);
 
-        let mut s = session(S {
+        let mut s = session(&S {
             id: "8e8e7f6d-phase-deleted",
             project: "Skyhook",
             title: "itch-page-assets",
@@ -358,7 +363,7 @@ impl DemoSource {
         s.away_summary = Some("The itch page has a new banner, three screenshots and the cover; the generator writes them to assets/itch.".into());
         sessions.push(s);
 
-        let s = session(S {
+        let s = session(&S {
             id: "6d5c4b3a-waypoint-ended",
             project: "waypoint",
             title: "map-tiles-offline",
@@ -397,6 +402,7 @@ impl DemoSource {
             p.ideas = ideas.iter().filter(|i| i.project.as_deref() == Some(p.id.as_str()) && i.state == IdeaState::Inbox).count() as u32;
         }
 
+        #[expect(clippy::unwrap_used, reason = "the ids are the made-up sessions' own, a few lines up")]
         let find = |id: &str| sessions.iter().find(|s| s.id.starts_with(id)).unwrap();
         let mut procs = vec![
             proc(2101, 1, ProcKind::Daemon, None, State::Unknown, None, 96, Some(0.1), None, None),
@@ -409,11 +415,11 @@ impl DemoSource {
                 Some(3),
                 512,
                 Some(38.0),
-                note("tideline: scope helper rows", false, &["reading effects/scope.rs", "running cargo test -p tideline scope"]),
+                Some(note("tideline: scope helper rows", false, &["reading effects/scope.rs", "running cargo test -p tideline scope"])),
                 None,
             ),
-            proc(41022, 3120, ProcKind::Session, Some(find("7c1e")), State::Waiting, Some(40), 438, Some(0.4), note("Gradebook: report write-up", true, &[]), None),
-            proc(44871, 2101, ProcKind::Session, Some(find("91aa")), State::Working, Some(12), 655, Some(21.5), note("Skyhook: level loader", false, &["tracing the platform save path"]), None),
+            proc(41022, 3120, ProcKind::Session, Some(find("7c1e")), State::Waiting, Some(40), 438, Some(0.4), Some(note("Gradebook: report write-up", true, &[])), None),
+            proc(44871, 2101, ProcKind::Session, Some(find("91aa")), State::Working, Some(12), 655, Some(21.5), Some(note("Skyhook: level loader", false, &["tracing the platform save path"])), None),
             proc(44872, 44871, ProcKind::PtyHost, Some(find("91aa")), State::Working, None, 38, Some(0.2), None, None),
             proc(
                 30655,
@@ -424,12 +430,12 @@ impl DemoSource {
                 Some(31 * HOUR as u64),
                 702,
                 Some(0.0),
-                note("waypoint: rail times", true, &[]),
+                Some(note("waypoint: rail times", true, &[])),
                 Some("idle for 31 h, background, nobody attached"),
             ),
             proc(30656, 30655, ProcKind::PtyHost, Some(find("c4d2")), State::Idle, None, 41, Some(0.0), None, None),
-            proc(38410, 3120, ProcKind::Session, Some(find("e0b3")), State::Idle, Some(9 * HOUR as u64), 466, Some(0.0), note("fernlight: chapter 4", true, &[]), None),
-            proc(39977, 3120, ProcKind::Session, Some(find("5a7d")), State::Idle, Some(2 * HOUR as u64), 390, Some(0.1), note("", true, &[]), None),
+            proc(38410, 3120, ProcKind::Session, Some(find("e0b3")), State::Idle, Some(9 * HOUR as u64), 466, Some(0.0), Some(note("fernlight: chapter 4", true, &[])), None),
+            proc(39977, 3120, ProcKind::Session, Some(find("5a7d")), State::Idle, Some(2 * HOUR as u64), 390, Some(0.1), Some(note("", true, &[])), None),
             proc(29001, 2101, ProcKind::Spare, None, State::Idle, Some(3 * HOUR as u64), 214, Some(0.0), None, Some("a spare session nobody has used for 3 h")),
             proc(
                 27740,
@@ -440,7 +446,7 @@ impl DemoSource {
                 Some(2 * DAY as u64),
                 588,
                 Some(0.0),
-                note("tideline: unfinished work", true, &[]),
+                Some(note("tideline: unfinished work", true, &[])),
                 Some("not tied to any session; its terminal has gone"),
             ),
         ];
@@ -591,11 +597,11 @@ impl Pretend {
 
 impl Source for DemoSource {
     fn overview(&self) -> Overview {
-        self.state.lock().unwrap().overview()
+        self.st().overview()
     }
 
     fn session(&self, id: &str) -> Option<SessionDetail> {
-        let st = self.state.lock().unwrap();
+        let st = self.st();
         let summary = st.sessions.iter().find(|s| s.id == id)?.clone();
         let n = summary.prompts.max(1);
         let asks = [
@@ -631,7 +637,7 @@ impl Source for DemoSource {
     }
 
     fn subagent(&self, session: &str, agent_id: &str) -> Option<SubagentDetail> {
-        let st = self.state.lock().unwrap();
+        let st = self.st();
         let summary = st.subagents(session).into_iter().find(|a| a.agent_id == agent_id)?;
         let list = match agent_id {
             "b1" => steps(&[("read", "tideline/src/effects/scope.rs"), ("searched", "MOST_ROWS in tideline/src"), ("read", "tideline/src/working.rs")]),
@@ -651,7 +657,7 @@ impl Source for DemoSource {
     }
 
     fn project(&self, id: &str) -> Option<ProjectDetail> {
-        let st = self.state.lock().unwrap();
+        let st = self.st();
         let summary = st.projects.iter().find(|p| p.id == id)?.clone();
         let root = summary.roots[0].clone();
         let repos = vec![RepoState {
@@ -696,7 +702,7 @@ impl Source for DemoSource {
     }
 
     fn search(&self, query: &str) -> Vec<(SessionSummary, String)> {
-        let st = self.state.lock().unwrap();
+        let st = self.st();
         let q = query.to_lowercase();
         st.sessions
             .iter()
@@ -708,11 +714,11 @@ impl Source for DemoSource {
     }
 
     fn ideas(&self) -> Vec<Idea> {
-        self.state.lock().unwrap().ideas.clone()
+        self.st().ideas.clone()
     }
 
     fn add_idea(&self, text: &str, project: Option<&str>) -> Result<Idea, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let id = format!("i{}", st.next_idea);
         st.next_idea += 1;
         let i = idea(&id, 0, text, project, "typed", IdeaState::Inbox);
@@ -721,7 +727,7 @@ impl Source for DemoSource {
     }
 
     fn set_idea(&self, id: &str, state: Option<IdeaState>, project: Option<Option<&str>>) -> Result<Idea, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let i = st.ideas.iter_mut().find(|i| i.id == id).ok_or("No such idea.")?;
         if let Some(s) = state {
             i.state = s;
@@ -735,7 +741,7 @@ impl Source for DemoSource {
     }
 
     fn pause(&self, project: &str, note: &str, next: &str) -> Result<Checkpoint, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let at = ago(0);
         let p = st.projects.iter_mut().find(|p| p.id == project).ok_or("No such project.")?;
         p.paused = Some(PauseNote { at: at.clone(), note: note.into() });
@@ -748,7 +754,7 @@ impl Source for DemoSource {
     }
 
     fn add_project(&self, path: &str) -> Result<ProjectSummary, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let name = crate::fmt::base(path);
         let p = project(&name, "", "", "", 0, 0, 0, 0);
         st.projects.push(p.clone());
@@ -756,7 +762,7 @@ impl Source for DemoSource {
     }
 
     fn remove_project(&self, id: &str, removed: bool) -> Result<ProjectSummary, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No such project.")?;
         p.removed = removed;
         Ok(p.clone())
@@ -772,7 +778,7 @@ impl Source for DemoSource {
 
     /// Nothing is written or typed: the ideas are only marked sent in the made-up data.
     fn start_agent(&self, req: &wake_core::brief::StartAgent, _dry_run: bool) -> ActionResult {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         if req.ideas.iter().any(|id| !st.ideas.iter().any(|i| &i.id == id && i.project.as_deref() == Some(req.project.as_str()))) {
             return ActionResult { ok: false, message: format!("Those ideas aren't all for {}. Start one agent per project.", req.project), steps: vec![] };
         }
@@ -787,7 +793,7 @@ impl Source for DemoSource {
     }
 
     fn go_to(&self, session: &str, _dry_run: bool) -> ActionResult {
-        let st = self.state.lock().unwrap();
+        let st = self.st();
         let Some(s) = st.sessions.iter().find(|s| s.id == session) else {
             return ActionResult { ok: false, message: "Wake can't find that session.".into(), steps: Vec::new() };
         };
@@ -804,7 +810,7 @@ impl Source for DemoSource {
     }
 
     fn processes(&self) -> ProcOverview {
-        let st = self.state.lock().unwrap();
+        let st = self.st();
         let mut procs = st.procs.clone();
         // A little life in the CPU column, as two samples would give.
         let wobble = (glib::monotonic_time() / 1_000_000 % 7) as f32;
@@ -822,7 +828,7 @@ impl Source for DemoSource {
     /// Made-up terminals: a working agent in a window, a background one, and a quiet prompt for the
     /// other live sessions. The working ones grow a line every second so the preview looks live.
     fn screen(&self, session: &str) -> Option<Screen> {
-        let s = self.state.lock().unwrap().sessions.iter().find(|s| s.id == session).cloned()?;
+        let s = self.st().sessions.iter().find(|s| s.id == session).cloned()?;
         if !matches!(s.state, State::Working | State::Waiting | State::Idle) {
             return None;
         }
@@ -854,7 +860,7 @@ impl Source for DemoSource {
     }
 
     fn stop(&self, pid: u32, _start_ticks: Option<u64>, how: StopHow, _dry_run: bool) -> ActionResult {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let Some(p) = st.procs.iter().find(|p| p.pid == pid).cloned() else {
             return ActionResult { ok: false, message: format!("PID {pid} has already gone."), steps: Vec::new() };
         };
@@ -895,7 +901,8 @@ impl Source for DemoSource {
     }
 
     fn delete_thread(&self, thread: &str) -> Result<(), String> {
-        self.questions.delete(thread)
+        self.questions.delete(thread);
+        Ok(())
     }
 
     fn mark_read(&self, thread: &str) {
@@ -911,7 +918,7 @@ impl Source for DemoSource {
 
     /// Set project (disk.rs): the demo's sessions change in memory only.
     fn set_session_project(&self, session: &str, project: Option<Option<&str>>) -> Result<(), String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let s = st.sessions.iter_mut().find(|s| s.id == session).ok_or("No session with that id.")?;
         if let Some(p) = project {
             s.project = p.map(String::from);
@@ -921,24 +928,24 @@ impl Source for DemoSource {
     }
 
     fn set_project_color(&self, id: &str, color: Option<&str>) -> Result<ProjectSummary, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
         p.color = Some(color.map_or_else(|| wake_core::store::default_colour(&p.name).to_string(), String::from));
         Ok(p.clone())
     }
 
     fn set_next(&self, id: &str, next: &str) -> Result<ProjectSummary, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
         p.next = next.into();
         Ok(p.clone())
     }
 
     fn set_project_group(&self, id: &str, group: Option<&str>) -> Result<ProjectSummary, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let group = group.map(str::trim).filter(|g| !g.is_empty()).map(String::from);
         let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
-        p.group = group.clone();
+        p.group.clone_from(&group);
         let out = p.clone();
         if let Some(g) = group
             && !st.groups.contains(&g)
@@ -953,7 +960,7 @@ impl Source for DemoSource {
         if name.is_empty() {
             return Err("A group needs a name.".into());
         }
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         if let Some(same) = st.all_groups().into_iter().find(|g| g.eq_ignore_ascii_case(&name)) {
             if !st.groups.contains(&same) {
                 st.groups.push(same.clone());
@@ -965,7 +972,7 @@ impl Source for DemoSource {
     }
 
     fn order_groups(&self, order: &[String]) -> Result<(), String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let known = st.all_groups();
         let mut out: Vec<String> = Vec::new();
         for g in order.iter().chain(known.iter()) {
@@ -978,7 +985,7 @@ impl Source for DemoSource {
     }
 
     fn remove_group(&self, name: &str) -> Result<usize, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         st.groups.retain(|g| g != name);
         let mut moved = 0;
         for p in st.projects.iter_mut().filter(|p| p.group.as_deref() == Some(name)) {
@@ -989,20 +996,20 @@ impl Source for DemoSource {
     }
 
     fn set_project_importance(&self, id: &str, importance: Option<&str>) -> Result<ProjectSummary, String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let p = st.projects.iter_mut().find(|p| p.id == id).ok_or("No project with that id.")?;
         p.importance = importance.map(String::from);
         Ok(p.clone())
     }
 
     fn ack_behind(&self, project: &str) {
-        for b in self.state.lock().unwrap().behind.iter_mut().filter(|b| b.project == project) {
+        for b in self.st().behind.iter_mut().filter(|b| b.project == project) {
             b.alarm = None;
         }
     }
 
     fn pull(&self, project: &str, dry_run: bool) -> ActionResult {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.st();
         let Some(b) = st.behind.iter().find(|b| b.project == project).cloned() else {
             return ActionResult { ok: false, message: "That project isn't behind; nothing to pull.".into(), steps: vec![] };
         };
@@ -1100,7 +1107,7 @@ const H: f64 = 3600.0;
 const GB: u64 = 1 << 30;
 const MB: u64 = 1 << 20;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "made-up data, one argument per column")]
 fn item(path: &str, kind: DiskKind, name: &str, bytes: u64, used: f64, safety: DiskSafety, cost: &str, action: Option<DiskAction>) -> DiskItem {
     DiskItem {
         path: path.into(),

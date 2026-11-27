@@ -114,7 +114,7 @@ fn cmd_ideas() -> u8 {
         return 0;
     }
     for i in ideas.iter().take(40) {
-        let name = i.project.as_deref().and_then(|p| store::project_by_id(p, &projects)).map(|p| p.name.as_str()).unwrap_or("Unsorted");
+        let name = i.project.as_deref().and_then(|p| store::project_by_id(p, &projects)).map_or("Unsorted", |p| p.name.as_str());
         out!("{:<18} {}", util::take_chars(&plain(name), 18), plain(&i.text));
     }
     0
@@ -170,8 +170,8 @@ fn cmd_doctor() -> u8 {
     doctor_files(&mut d, &paths);
     doctor_log(&mut d, &paths);
     out!();
-    out!("Wake writes only to {} and its settings to {}.", tilde(&paths.data), tilde(&paths.config.join("settings.toml")));
-    out!("If Wake shows the wrong thing, include this output and {} in your report.", tilde(&paths.data.join("wake.log")));
+    out!("Wake writes only to {} and its settings to {}.", tilde(&paths.data), tilde(paths.config.join("settings.toml")));
+    out!("If Wake shows the wrong thing, include this output and {} in your report.", tilde(paths.data.join("wake.log")));
     u8::from(d.needed)
 }
 
@@ -232,7 +232,7 @@ fn doctor_sessions(d: &mut Doctor, paths: &store::Paths) {
     let found = wake_core::index::Indexer::new(paths.clone()).discover();
     let claude = found.iter().filter(|f| f.1 == wake_core::Agent::Claude).count();
     let codex = found.len() - claude;
-    let (claude_dir, codex_dir) = (tilde(&paths.claude.join("projects")), tilde(&paths.codex.join("sessions")));
+    let (claude_dir, codex_dir) = (tilde(paths.claude.join("projects")), tilde(paths.codex.join("sessions")));
     if found.is_empty() {
         d.line(
             Mark::Needed,
@@ -415,7 +415,7 @@ fn doctor_projects(d: &mut Doctor, paths: &store::Paths) {
 /// settings.toml, if Wake can't read or understand it (`settings::check` only reads;
 /// `settings::load` would move a broken file aside).
 fn doctor_settings(d: &mut Doctor, paths: &store::Paths) {
-    let file = tilde(&paths.config.join("settings.toml"));
+    let file = tilde(paths.config.join("settings.toml"));
     let why = match wake_core::settings::check(&paths.config) {
         FileCheck::Unreadable(why) => format!("can't read {file} ({why})"),
         FileCheck::Damaged(why) => format!("can't understand {file} ({why})"),
@@ -432,7 +432,7 @@ fn doctor_ideas(d: &mut Doctor, paths: &store::Paths) {
         d.line(
             Mark::Optional,
             &format!("{what} can't be read, so Ideas doesn't show {verb}."),
-            &format!("{} still in {}.", if n == 1 { "it is" } else { "they are" }, tilde(&paths.data.join("ideas.jsonl"))),
+            &format!("{} still in {}.", if n == 1 { "it is" } else { "they are" }, tilde(paths.data.join("ideas.jsonl"))),
         );
     }
 }
@@ -616,7 +616,7 @@ fn cmd_ps() -> u8 {
                 seen.push(word);
             }
         }
-        let cpu = p.cpu_percent.map(|c| format!("{c:.0}%")).unwrap_or_else(|| "-".into());
+        let cpu = p.cpu_percent.map_or_else(|| "-".into(), |c| format!("{c:.0}%"));
         out!(
             "{:<9} {:<8} {:>6} {:>5}  {:<10} {:<8} {:<16} {:<34} {}",
             pid,

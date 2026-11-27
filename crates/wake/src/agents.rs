@@ -246,7 +246,7 @@ pub fn render(ui: &Ui) {
     }
     ui.st.borrow_mut().agent_leaving.retain(|pid| !gone.contains(pid));
     ui.scope.borrow_mut().follow(&followers(&p), &p.dead_notes);
-    let Some(had_focus) = views::begin(ui, View::Agents, sig) else {
+    let Some(had_focus) = views::begin(ui, View::Agents, &sig) else {
         app::tick_live(ui);
         ensure_ticking(ui);
         return;
@@ -889,7 +889,7 @@ fn draw_link(da: &gtk::DrawingArea, link: Link, tick_at: Option<f64>) {
 /// A tree row in the table's columns: `conn` in the wave column, then the PID, task and state
 /// cells, the rest blank. With the wave column hidden (a narrow window) the connector takes the
 /// PID column's place.
-fn tree_row(conn: gtk::DrawingArea, pid: gtk::Widget, task: gtk::Widget, state: gtk::Widget, cols: &[Col], hide: u8) -> gtk::Box {
+fn tree_row(conn: &gtk::DrawingArea, pid: gtk::Widget, task: gtk::Widget, state: gtk::Widget, cols: &[Col], hide: u8) -> gtk::Box {
     let blank = || w::label("", &[]).upcast::<gtk::Widget>();
     let wave_hidden = hide & 1 != 0;
     let all: Vec<gtk::Widget> = if wave_hidden {
@@ -907,12 +907,12 @@ fn tree_row(conn: gtk::DrawingArea, pid: gtk::Widget, task: gtk::Widget, state: 
 }
 
 /// A row spanning from the task column to the end (messages, a subagent's steps).
-fn tree_span(conn: gtk::DrawingArea, child: &impl IsA<gtk::Widget>, cols: &[Col], hide: u8) -> gtk::Box {
+fn tree_span(conn: &gtk::DrawingArea, child: &impl IsA<gtk::Widget>, cols: &[Col], hide: u8) -> gtk::Box {
     let line = w::hbox(0, &["subtr", "span"]);
     let n_lead = if hide & 1 == 0 { 2 } else { 1 };
     for (i, c) in cols.iter().take(n_lead).enumerate() {
         if i == 0 {
-            line.append(&w::col(&conn, c.1, false));
+            line.append(&w::col(conn, c.1, false));
             conn.set_valign(gtk::Align::Fill);
             if let Some(cell) = conn.parent() {
                 cell.add_css_class("conncell");
@@ -998,7 +998,7 @@ fn build(ui: &Ui, a: &AgentProc, want: &Want, cols: &[Col], hide: u8) -> gtk::Li
             row.set_activatable(false);
             row.set_focusable(false);
             let class = if t.starts_with("reading") { "loading" } else { "desc" };
-            row.set_child(Some(&tree_span(connector(Link::Last, None), &w::label(t, &[class]), cols, hide)));
+            row.set_child(Some(&tree_span(&connector(Link::Last, None), &w::label(t, &[class]), cols, hide)));
         }
         What::Sub(s, link) => {
             let open = ui.st.borrow().agent_sub_open.contains(&s.agent_id);
@@ -1052,7 +1052,7 @@ fn fold_line(pid: u32, line: &str, link: Link, open: bool, cols: &[Col], hide: u
     state.set_widget_name(&format!("subwhen-{pid}"));
     let conn = connector(link, None);
     conn.set_widget_name(&format!("subconn-{pid}"));
-    tree_row(conn, w::label("", &[]).upcast(), task.upcast(), state.upcast(), cols, hide)
+    tree_row(&conn, w::label("", &[]).upcast(), task.upcast(), state.upcast(), cols, hide)
 }
 
 /// One subagent as a table row: its task where a session's title goes, what it is doing now (or
@@ -1089,7 +1089,7 @@ fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, co
         state.append(&ago);
     }
     let pid_cell = w::clip("subagent", &["tree"]);
-    let line = tree_row(connector(link, Some(18.0)), pid_cell.upcast(), task.upcast(), state.upcast(), cols, hide);
+    let line = tree_row(&connector(link, Some(18.0)), pid_cell.upcast(), task.upcast(), state.upcast(), cols, hide);
     line.set_widget_name(&format!("sub-{}", s.agent_id));
     if matches!(link, Link::InnerMid | Link::InnerLast) {
         line.add_css_class("inner");
@@ -1104,7 +1104,7 @@ fn tree_line(ui: &Ui, sid: &str, s: &SubagentSummary, link: Link, open: bool, co
         Link::InnerMid => Link::InnerPass,
         _ => Link::None,
     };
-    let span = tree_span(connector(pass, None), &rev, cols, hide);
+    let span = tree_span(&connector(pass, None), &rev, cols, hide);
     // Closed, the steps take no room at all (a hidden revealer's line would still be a line high).
     span.set_visible(open);
     {

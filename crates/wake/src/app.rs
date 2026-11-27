@@ -436,7 +436,7 @@ pub fn run(opts: Opts) -> glib::ExitCode {
             window.present();
             return;
         }
-        build(app, opts.clone());
+        build(app, &opts);
     });
     app.run_with_args::<&str>(&[])
 }
@@ -505,7 +505,7 @@ fn view_widgets(view: View) -> ViewW {
     ViewW { root, top, head, list, scroll, empty, glide }
 }
 
-fn build(app: &gtk::Application, opts: Opts) {
+fn build(app: &gtk::Application, opts: &Opts) {
     let demo = opts.demo;
     let src = if demo {
         crate::fmt::set_home(std::path::Path::new(crate::demo::HOME_DIR));

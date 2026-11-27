@@ -889,7 +889,7 @@ impl Store {
                 return Ok(p.clone());
             }
         }
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| ps.clone());
+        let name = path.file_name().map_or_else(|| ps.clone(), |n| n.to_string_lossy().into_owned());
         let mut id = slug(&name);
         while projects.iter().any(|p| p.id == id) {
             id.push_str("-2");
@@ -936,7 +936,7 @@ impl Store {
         let mut projects = self.load_projects_locked();
         let mut groups = self.load_groups_locked();
         let p = projects.iter_mut().find(|p| p.id == id).ok_or_else(|| StoreError("No project with that id.".into()))?;
-        p.group = group.clone();
+        p.group.clone_from(&group);
         let out = p.clone();
         if let Some(g) = group
             && !groups.contains(&g)
@@ -1027,7 +1027,7 @@ impl Store {
             idea.brief = None;
         }
         if let Some(p) = project {
-            rec.insert("project".into(), p.map(Value::from).unwrap_or(Value::Null));
+            rec.insert("project".into(), p.map_or(Value::Null, Value::from));
             idea.project = p.map(Into::into);
         }
         self.writer.append_jsonl(&self.ideas_path(), &rec)?;

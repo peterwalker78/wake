@@ -220,7 +220,7 @@ pub fn repo_state(path: &str) -> Result<Repo, GitError> {
             }
         }
     }
-    let worktrees = git(p, &["worktree", "list", "--porcelain"]).map(|wt| wt.lines().filter(|l| l.starts_with("worktree ")).count() as u32).unwrap_or(1);
+    let worktrees = git(p, &["worktree", "list", "--porcelain"]).map_or(1, |wt| wt.lines().filter(|l| l.starts_with("worktree ")).count() as u32);
     let (mut last_at, mut subject) = (None, None);
     if let Ok(lg) = git(p, &["log", "-n", "1", "--format=%cI%x09%s"]) {
         let lg = lg.trim();

@@ -266,7 +266,7 @@ pub fn watch_system(on_change: impl Fn() + 'static) {
     }
     let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else { return };
     // The subscription lives as long as the app; Wake never unwatches.
-    #[allow(deprecated)]
+    #[expect(deprecated, reason = "subscribe_to_signal unsubscribes when its handle is dropped; this subscription lasts as long as the app")]
     let _ = bus.signal_subscribe(
         Some(PORTAL),
         Some(PORTAL_SETTINGS),

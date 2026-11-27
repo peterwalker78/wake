@@ -1,0 +1,3 @@
+# Tests may unwrap and expect: a failure there is the test failing, not the app aborting.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

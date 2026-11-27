@@ -353,7 +353,7 @@ fn confirm_remove(ui: &Ui, it: &DiskItem) {
     let cmd = it.command.clone().unwrap_or_default();
     let path = it.path.clone();
     let project = report(&ui.st.borrow()).and_then(|r| r.projects.iter().find(|p| p.items.iter().any(|i| i.path == it.path)).map(|p| p.project.clone()));
-    let whose = project.as_deref().and_then(|id| app::find_project(ui, id)).map(|p| format!("{}'s", p.name)).unwrap_or_else(|| "the".into());
+    let whose = project.as_deref().and_then(|id| app::find_project(ui, id)).map_or_else(|| "the".into(), |p| format!("{}'s", p.name));
     let done = format!("Removed {whose} worktree for {branch}, at {}. The branch is still there.", fmt::tilde(&it.path));
     dialogs::confirm(ui, &format!("Remove the worktree for {branch}?"), &body, &[(cmd, util::bytes(it.bytes))], "Remove worktree", move |ui| {
         let p = path.clone();

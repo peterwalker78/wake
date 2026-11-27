@@ -63,7 +63,7 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
             return;
         }
     };
-    let root = app::find_project(ui, &project).and_then(|p| p.roots.first().cloned()).map(|r| fmt::tilde(&r)).unwrap_or_else(|| "its folder".into());
+    let root = app::find_project(ui, &project).and_then(|p| p.roots.first().cloned()).map_or_else(|| "its folder".into(), |r| fmt::tilde(&r));
     let texts: Vec<&str> = ideas.iter().map(|i| i.text.as_str()).collect();
     let text = brief::brief_text(&name, &texts);
     let id = brief::new_id();

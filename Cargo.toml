@@ -7,9 +7,27 @@ version = "0.1.0-beta.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/peterwalker78/wake"
-rust-version = "1.88"
+# The toolchain rust-toolchain.toml pins, the only one CI builds with.
+rust-version = "1.98"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gtk4 = { version = "0.11", features = ["v4_14"] }
+
+# Line tables only: panics and backtraces still name file and line, and linking takes far less
+# memory than with full debug info.
+[profile.dev]
+debug = "line-tables-only"
+
+# CI runs clippy with -D warnings, so these warnings fail the build. Tests may unwrap and expect
+# (clippy.toml).
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+undocumented_unsafe_blocks = "warn"
+allow_attributes_without_reason = "warn"
+assigning_clones = "warn"
+needless_pass_by_value = "warn"
+map_unwrap_or = "warn"
+unnecessary_wraps = "warn"

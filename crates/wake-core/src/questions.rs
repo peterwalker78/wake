@@ -926,7 +926,7 @@ impl Questions {
         if let Some(r) = st.running.as_mut().filter(|r| r.thread == thread) {
             any = true;
             r.cancelled = true;
-            child = r.child.clone();
+            child.clone_from(&r.child);
         }
         if any {
             st.seq += 1;
@@ -982,12 +982,12 @@ impl Questions {
                     st = self.sh.cv.wait(st).unwrap_or_else(|e| e.into_inner());
                 }
             };
-            self.run(job);
+            self.run(&job);
         }
     }
 
     /// Runs one question to the end. Never panics the worker: every failure ends as the turn's error.
-    fn run(&self, job: Job) {
+    fn run(&self, job: &Job) {
         // Which conversation: continue the thread's once a turn has been answered; otherwise a new
         // one (Claude and Gemini start under an id Wake picks; Codex says its id when it starts).
         let plan = {
@@ -1026,7 +1026,7 @@ impl Questions {
             }
             Plan { ai, session, resume, prompt }
         };
-        let outcome = self.run_ai(&job, &plan);
+        let outcome = self.run_ai(job, &plan);
         let mut st = lock(&self.sh.st);
         let cancelled = st.running.as_ref().is_some_and(|r| r.cancelled);
         st.running = None;
@@ -1043,7 +1043,7 @@ impl Questions {
             t.claude_session = Some(s);
         }
         if let Some(turn) = t.turns.get_mut(job.turn) {
-            turn.answer = answer.text.clone();
+            turn.answer.clone_from(&answer.text);
             match (cancelled, result) {
                 (true, _) => turn.error = Some("Stopped.".into()),
                 (false, Ok(())) => turn.answered_at = Some(util::now_iso()),

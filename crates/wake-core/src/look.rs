@@ -529,7 +529,7 @@ mod tests {
         let end = look.end(true, false);
         assert!(end.ok);
         let calls = calls.lock().unwrap();
-        let methods: Vec<&str> = calls.iter().map(|c| c.iter().rev().nth(1).map(String::as_str).unwrap_or("")).collect();
+        let methods: Vec<&str> = calls.iter().map(|c| c.iter().rev().nth(1).map_or("", String::as_str)).collect();
         assert!(calls[1].iter().any(|x| x.ends_with(".Look.Start")));
         assert!(calls[2].iter().any(|x| x.ends_with(".Look.End")) && calls[2].last().unwrap() == "true", "{methods:?}");
     }

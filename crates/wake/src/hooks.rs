@@ -86,7 +86,7 @@ pub fn apply_show(ui: &Ui, show: &str) {
         // content fits the window at its current width.
         "measure" => {
             let report = |ui: &Ui, when: &str| {
-                let child = ui.window.child().expect("window content");
+                let Some(child) = ui.window.child() else { return };
                 let (min, nat, _, _) = child.measure(gtk::Orientation::Horizontal, -1);
                 let width = ui.window.width();
                 // The body's own content as laid out now (rail and main column; its minimum is its
@@ -207,7 +207,7 @@ pub fn apply_show(ui: &Ui, show: &str) {
         }
         // Settings: the keyboard on one setting (setsel:theme), for a focus screenshot.
         "setsel" => {
-            ui.st.borrow_mut().sel = arg.clone();
+            ui.st.borrow_mut().sel.clone_from(&arg);
             setview::keyboard(ui, true);
             restore_sel(ui, View::Settings, true);
             if std::env::var_os("WAKE_SHOT_DEBUG").is_some() {

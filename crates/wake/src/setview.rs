@@ -186,7 +186,7 @@ pub fn render(ui: &Ui) {
     let secs = all_rows();
     let note = prefs::note();
     let sig = format!("{secs:?}{note:?}{}", theme::is_light());
-    let Some(had_focus) = views::begin(ui, View::Settings, sig) else { return };
+    let Some(had_focus) = views::begin(ui, View::Settings, &sig) else { return };
     let vw = &ui.w.views[&View::Settings];
     w::clear(&vw.top);
     let head = w::vbox(3, &[]);

@@ -1773,7 +1773,7 @@ mod tests {
         fs::write(root.join(format!("{term}/fdinfo/{fd}")), format!("pos:\t0\nflags:\t02\ntty-index:\t{n}\n")).unwrap();
     }
 
-    fn write_session(env: &Env, sid: &str, extra: Value) {
+    fn write_session(env: &Env, sid: &str, extra: &Value) {
         let pid = std::process::id();
         let mut rec = serde_json::json!({"pid": pid, "sessionId": sid, "status": "idle",
             "procStart": START.to_string()});
@@ -1926,7 +1926,7 @@ mod tests {
         assert!(r.steps[0].contains(&env.paths.home.to_string_lossy().to_string()));
         assert!(!l.go_to("nope", true).ok);
         // live, background, no window -> a new window running `claude attach <job>`
-        write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01", "cwd": env.paths.home.to_string_lossy()}));
+        write_session(&env, "sess-aaaa", &serde_json::json!({"jobId": "jobtest01", "cwd": env.paths.home.to_string_lossy()}));
         *lock(&l.inner.live_cache) = None;
         let r = l.go_to("sess-aaaa", true);
         assert!(r.ok, "{r:?}");
@@ -1983,7 +1983,7 @@ mod tests {
         assert!(l.inner.locations_unsure().unwrap().contains("still finding"));
         l.inner.refresh_locations();
         assert_eq!(l.inner.locations_unsure(), None);
-        write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01"}));
+        write_session(&env, "sess-aaaa", &serde_json::json!({"jobId": "jobtest01"}));
         *lock(&l.inner.live_cache) = None;
         // A background session: its own terminal is its host's (an agent), so no window yet.
         let host = 5100;
@@ -2042,10 +2042,10 @@ mod tests {
         let l = live_with(&env, &fp, runner, Arc::new(FakeActor { calls: Mutex::new(vec![]) }));
         l.index_now();
         assert_eq!(l.screen("sess-aaaa"), None, "an ended session has no screen");
-        write_session(&env, "sess-aaaa", serde_json::json!({}));
+        write_session(&env, "sess-aaaa", &serde_json::json!({}));
         *lock(&l.inner.live_cache) = None;
         assert_eq!(l.screen("sess-aaaa"), None, "a terminal app's own screen can't be read");
-        write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01"}));
+        write_session(&env, "sess-aaaa", &serde_json::json!({"jobId": "jobtest01"}));
         *lock(&l.inner.live_cache) = None;
         let s = l.screen("sess-aaaa").unwrap();
         assert_eq!(s.lines, vec!["working on it"]);
@@ -2061,11 +2061,11 @@ mod tests {
     fn hides_unused_sessions_and_shows_named_live_ones() {
         let env = Env::new();
         let (l, _, _fp) = make(&env, &FakeBus::new());
-        write_session(&env, "brand-new-1234", serde_json::json!({"name": "brand-new", "cwd": "/"}));
+        write_session(&env, "brand-new-1234", &serde_json::json!({"name": "brand-new", "cwd": "/"}));
         *lock(&l.inner.live_cache) = None;
         let all = l.inner.all_summaries(&l.inner.store.load_projects(), true);
         assert!(all.iter().all(|s| s.id != "brand-new-1234")); // name is its own id prefix: unused
-        write_session(&env, "brand-new-1234", serde_json::json!({"name": "fix-the-parser", "cwd": "/"}));
+        write_session(&env, "brand-new-1234", &serde_json::json!({"name": "fix-the-parser", "cwd": "/"}));
         *lock(&l.inner.live_cache) = None;
         let all = l.inner.all_summaries(&l.inner.store.load_projects(), true);
         let s = all.iter().find(|s| s.id == "brand-new-1234").unwrap();
@@ -2079,7 +2079,7 @@ mod tests {
         let bus = FakeBus::new();
         let (l, _, _fp) = make(&env, &bus);
         // A live background session: on the card, and a jump opens a window attached to it.
-        write_session(&env, "sess-aaaa", serde_json::json!({"jobId": "jobtest01"}));
+        write_session(&env, "sess-aaaa", &serde_json::json!({"jobId": "jobtest01"}));
         assert!(l.plugin_tick(true).is_none());
         let card: Value = store::read_json(&env.paths.data.join("card/card.json")).unwrap();
         for k in ["working", "waiting", "idle", "ideas", "top", "sessions", "updatedAt"] {
@@ -2165,7 +2165,7 @@ mod tests {
         l.inner.watch_behind();
         assert!(sent.lock().unwrap().is_empty());
         // A session starts working in it: one alarm, one notification.
-        write_session(&env, "build-1", serde_json::json!({"name": "fix-the-build", "cwd": here, "status": "busy", "statusUpdatedAt": (util::now() * 1000.0) as i64}));
+        write_session(&env, "build-1", &serde_json::json!({"name": "fix-the-build", "cwd": here, "status": "busy", "statusUpdatedAt": (util::now() * 1000.0) as i64}));
         *lock(&l.inner.live_cache) = None;
         l.inner.watch_behind();
         let b = l.overview().behind.unwrap().into_iter().find(|b| b.project == p.id).unwrap();

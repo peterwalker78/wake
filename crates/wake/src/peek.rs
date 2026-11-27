@@ -517,7 +517,7 @@ pub fn start(ui: &Ui, id: &str, preview_only: bool) {
                 } else {
                     // Refused or not there any more: the preview, and ask the core again next time.
                     learn_kind(ui);
-                    open_preview(ui, &id, epoch, Some(r.message));
+                    open_preview(ui, &id, epoch, Some(&r.message));
                 }
             }
         },
@@ -646,7 +646,7 @@ fn preview(ui: &Ui) -> Option<PreviewW> {
     ui.peek.try_borrow().ok()?.view.clone()
 }
 
-fn open_preview(ui: &Ui, id: &str, epoch: u64, why: Option<String>) {
+fn open_preview(ui: &Ui, id: &str, epoch: u64, why: Option<&str>) {
     if ui.peek.borrow().view.is_none() {
         let v = build_preview(ui);
         ui.peek.borrow_mut().view = Some(v);
@@ -663,8 +663,8 @@ fn open_preview(ui: &Ui, id: &str, epoch: u64, why: Option<String>) {
         v.meta.set_text(&s.as_ref().map(|s| format!("{} · {}", crate::disk::project_words(ui, s), w::state_word(s.state).1)).unwrap_or_default());
         v.source.set_text("reading…");
         v.body.set_text("");
-        v.note.set_visible(why.as_deref().is_some_and(|m| !m.is_empty() && !m.contains("showing a preview")));
-        v.note.set_text(why.as_deref().unwrap_or(""));
+        v.note.set_visible(why.is_some_and(|m| !m.is_empty() && !m.contains("showing a preview")));
+        v.note.set_text(why.unwrap_or(""));
         v.subs.set_visible(false);
         // Floats over the middle of Wake, a little above centre: 940 by 560 when there is room,
         // else Wake's width less a margin each side.
@@ -759,7 +759,7 @@ fn show(ui: &Ui, screen: Option<&Screen>, subs: Option<Vec<SubagentSummary>>) ->
         let mut p = ui.peek.borrow_mut();
         let changed = p.text != text;
         if changed {
-            p.text = text.clone();
+            p.text.clone_from(&text);
         }
         changed
     };

@@ -123,7 +123,7 @@ fn tail_lines(p: &Path, n: usize) -> Vec<String> {
     let Ok(mut f) = fs::File::open(p) else {
         return vec![];
     };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let len = f.metadata().map_or(0, |m| m.len());
     let from = len.saturating_sub(ROTATE_AT + 64 * 1024);
     if f.seek(SeekFrom::Start(from)).is_err() {
         return vec![];

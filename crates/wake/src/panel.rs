@@ -1048,7 +1048,7 @@ fn res_of(st: &app::AppState, id: &str) -> Option<SessionResources> {
 }
 
 /// "735 MB in memory": with its terminal; the PID and the breakdown are in the tooltip.
-fn proc_words(r: SessionResources) -> String {
+fn proc_words(r: &SessionResources) -> String {
     format!("{} in memory", util::bytes(r.rss_bytes))
 }
 
@@ -1058,7 +1058,7 @@ pub fn tick_procs(ui: &Ui) {
     let Some(b) = w::named(&ui.w.drawer, "pmem").and_downcast::<gtk::Button>() else { return };
     let t = {
         let st = ui.st.borrow();
-        res_of(&st, &id).map(proc_words)
+        res_of(&st, &id).as_ref().map(proc_words)
     };
     // Change the wrapping label inside, never the button's own label (that one doesn't wrap).
     if let Some(t) = t
@@ -1616,7 +1616,7 @@ fn project(ui: &Ui, id: &str) {
     let pid = p.id.clone();
     let pname = p.name.clone();
     folds.append(&fold(ui, "pdetails", "Details", "", "", |x| {
-        let f = w::wrap(&p.roots.iter().map(|r| fmt::tilde(r)).collect::<Vec<_>>().join("\n"), &["facts"]);
+        let f = w::wrap(&p.roots.iter().map(fmt::tilde).collect::<Vec<_>>().join("\n"), &["facts"]);
         f.set_selectable(true);
         x.append(&f);
         for c in &d.could_not_check {

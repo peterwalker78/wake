@@ -62,7 +62,7 @@ pub fn render(ui: &Ui) {
     let groups = ui.st.borrow().ov.as_ref().map(|ov| ov.groups.clone()).unwrap_or_default();
     let (layout, grouping) = (prefs::projects_layout(), prefs::projects_group());
     let sig = format!("{adding}{compact}{}{}{:?}{layout}{grouping}{groups:?}", serde_json::to_string(&sig_list).unwrap_or_default(), crate::behind::sig(ui), prefs::sort_of(View::Projects));
-    let Some(had_focus) = begin(ui, View::Projects, sig) else { return };
+    let Some(had_focus) = begin(ui, View::Projects, &sig) else { return };
     let vw = &ui.w.views[&View::Projects];
     w::clear(&vw.top);
     if adding {
@@ -171,7 +171,7 @@ pub fn render(ui: &Ui) {
             zone.push(r.upcast());
         }
         if let Some(target) = &sec.target {
-            drop_into(ui, &zone, target.clone());
+            drop_into(ui, &zone, target.as_deref());
         }
     }
     finish(ui, View::Projects, had_focus);
@@ -236,10 +236,10 @@ fn drag_payload(ui: &Ui, w: &impl IsA<gtk::Widget>, payload: String) {
 
 /// Makes `zone` (a section's heading and its rows, or its grid) a place to drop a project: it goes
 /// into `target` (None: no group). The whole section lights up while one is held over it.
-fn drop_into(ui: &Ui, zone: &[gtk::Widget], target: Option<String>) {
+fn drop_into(ui: &Ui, zone: &[gtk::Widget], target: Option<&str>) {
     for z in zone {
         let t = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
-        let (ui2, target2) = (ui.clone(), target.clone());
+        let (ui2, target2) = (ui.clone(), target.map(String::from));
         t.connect_drop(move |_, v, _, _| {
             let Ok(s) = v.get::<String>() else { return false };
             if let Some(id) = s.strip_prefix(DRAG_PREFIX) {
@@ -602,7 +602,7 @@ fn project_item(ui: &Ui, p: &ProjectSummary, edge: (bool, bool)) -> gtk::ListBox
     } else if let Some(pause) = p.paused.as_ref().filter(|x| !x.note.is_empty()) {
         format!("paused with a note: {}", pause.note)
     } else {
-        p.last_summary.as_deref().map(fmt::recap).filter(|s| !s.is_empty()).map(|s| format!("last time: {s}")).unwrap_or_else(|| "No next step written yet.".into())
+        p.last_summary.as_deref().map(fmt::recap).filter(|s| !s.is_empty()).map_or_else(|| "No next step written yet.".into(), |s| format!("last time: {s}"))
     };
     let l = w::clip(&second, &["dim"]);
     l.set_xalign(0.0);

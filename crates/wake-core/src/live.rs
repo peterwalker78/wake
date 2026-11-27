@@ -317,9 +317,9 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
         return;
     };
     summary.pid = Some(info.pid);
-    summary.job_id = info.job_id.clone();
+    summary.job_id.clone_from(&info.job_id);
     if summary.cwd.is_none() {
-        summary.cwd = info.cwd.clone();
+        summary.cwd.clone_from(&info.cwd);
     }
     let upd = info.status_updated_at;
     let newest = [upd, last].into_iter().flatten().fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.max(b))));
@@ -395,8 +395,8 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
 /// A summary for a live session the indexer has not seen yet.
 pub fn live_only_summary(info: &LiveInfo, projects: &[ProjectRec], home: &Path, now: f64) -> SessionSummary {
     let mut acc = index::new_acc(&info.session_id, None, crate::types::Agent::Claude);
-    acc.cwd = info.cwd.clone();
-    acc.launch_cwd = info.cwd.clone();
+    acc.cwd.clone_from(&info.cwd);
+    acc.launch_cwd.clone_from(&info.cwd);
     if let Some(c) = info.cwd.as_deref().and_then(|c| store::norm_path(c, home)) {
         acc.cwd_seen.0.push((c, 1));
     }

@@ -104,7 +104,7 @@ impl Look {
             }
         }
         let channels = |c: [f32; 3]| c.map(|v| v * 255.0);
-        Self { working: channels(working.unwrap_or_else(|| rgb(SELECTED_TILE).unwrap())), stopped: channels(stopped.unwrap_or_else(|| rgb(BULLET_TIME).unwrap())), reduced_motion: reduced }
+        Self { working: channels(working.or_else(|| rgb(SELECTED_TILE)).unwrap_or_default()), stopped: channels(stopped.or_else(|| rgb(BULLET_TIME)).unwrap_or_default()), reduced_motion: reduced }
     }
 }
 

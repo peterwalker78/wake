@@ -411,7 +411,7 @@ pub fn process_inside(path: &Path, proc_root: &Path, uid: u32) -> Option<(u32, S
     let rd = fs::read_dir(proc_root).ok()?;
     for e in rd.flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
-        if e.metadata().map(|m| m.uid() != uid).unwrap_or(true) {
+        if e.metadata().map_or(true, |m| m.uid() != uid) {
             continue;
         }
         let Ok(cwd) = fs::read_link(e.path().join("cwd")) else { continue };
@@ -1179,7 +1179,7 @@ pub fn move_to_trash(path: &Path, trash: &Path) -> Result<PathBuf, String> {
     if tm.dev() != m.dev() {
         return Err("It is on another disk from your Trash, so moving it there would mean copying it. Wake doesn't; delete it yourself if you're sure.".into());
     }
-    let base = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "item".into());
+    let base = path.file_name().map_or_else(|| "item".into(), |n| n.to_string_lossy().into_owned());
     for n in 1..1000 {
         let name = if n == 1 { base.clone() } else { format!("{base}.{n}") };
         let ip = info.join(format!("{name}.trashinfo"));

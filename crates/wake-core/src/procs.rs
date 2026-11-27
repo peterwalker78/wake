@@ -90,7 +90,7 @@ pub(crate) fn read_stat(root: &Path, pid: u32) -> Option<Stat> {
 }
 
 fn rss_from_status(status: &str) -> u64 {
-    status.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok()).map(|kb| kb * 1024).unwrap_or(0)
+    status.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok()).map_or(0, |kb| kb * 1024)
 }
 
 fn uid_from_status(status: &str) -> Option<u32> {
@@ -177,7 +177,7 @@ pub fn agent_of(argv: &[String], exe: Option<&str>) -> Option<Agent> {
     if !script.starts_with('/') {
         return None;
     }
-    let resolved = fs::canonicalize(script).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| script.clone());
+    let resolved = fs::canonicalize(script).map_or_else(|_| script.clone(), |p| p.to_string_lossy().into_owned());
     package_of(&resolved).or_else(|| package_of(script))
 }
 
@@ -355,7 +355,7 @@ impl Explorer {
         let mut out = Vec::new();
         for e in rd.flatten() {
             let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
-            if e.metadata().map(|m| m.uid() != self.uid).unwrap_or(true) {
+            if e.metadata().map_or(true, |m| m.uid() != self.uid) {
                 continue;
             }
             if let Some(p) = read_proc(&self.root, pid)
@@ -539,10 +539,10 @@ impl Explorer {
         let fold = |row: &mut AgentProc, extra: &[&Cand], group: &mut Vec<AgentProc>| {
             for h in extra {
                 let mut r = mk(h, ProcKind::PtyHost);
-                r.session_id = row.session_id.clone();
-                r.job_id = row.job_id.clone();
-                r.title = row.title.clone();
-                r.project_name = row.project_name.clone();
+                r.session_id.clone_from(&row.session_id);
+                r.job_id.clone_from(&row.job_id);
+                r.title.clone_from(&row.title);
+                r.project_name.clone_from(&row.project_name);
                 r.state = row.state;
                 row.rss_bytes += h.p.rss_bytes;
                 row.children.push(h.p.pid);
@@ -594,17 +594,17 @@ impl Explorer {
                         continue;
                     }
                     let mut r = mk(c, ProcKind::Session);
-                    r.location = location.clone();
+                    r.location.clone_from(&location);
                     if let Some(info) = info {
                         let v = (inp.view)(info);
                         r.session_id = Some(info.session_id.clone());
-                        r.job_id = info.job_id.clone();
+                        r.job_id.clone_from(&info.job_id);
                         r.title = v.title.clone().or_else(|| info.note.as_ref().map(|n| n.name.clone()).filter(|n| !n.is_empty()));
-                        r.project_name = v.project_name.clone();
+                        r.project_name.clone_from(&v.project_name);
                         r.state = v.state.unwrap_or(State::Unknown);
                         r.idle_seconds = v.idle_since.map(|s| (inp.now - s).max(0.0) as u64);
                         if r.note.is_none() {
-                            r.note = info.note.clone();
+                            r.note.clone_from(&info.note);
                         }
                         r.helpers = info.job_id.as_deref().and_then(|j| self.job_record(j)).map(|rec| helpers(&rec));
                         let mut group = Vec::new();
@@ -653,7 +653,7 @@ impl Explorer {
             if let Some(g) = &group {
                 let top = &g[0];
                 if r.project_name.is_none() {
-                    r.project_name = top.project_name.clone();
+                    r.project_name.clone_from(&top.project_name);
                 }
                 if let Some(job) = top.job_id.as_deref() {
                     let fan = fans.entry(root).or_insert_with(|| self.job_record(job).map(|rec| fan_agents(&rec)).unwrap_or_default());
@@ -996,7 +996,7 @@ pub fn stop(
         return refuse("That is Claude's background daemon. Stopping it would stop every background session, so Wake leaves it alone.".into());
     }
     let info = live.values().find(|l| l.alive && l.pid == pid);
-    let name = info.and_then(title_of).map(|t| format!("'{t}' (PID {pid})")).unwrap_or_else(|| format!("PID {pid}"));
+    let name = info.and_then(title_of).map_or_else(|| format!("PID {pid}"), |t| format!("'{t}' (PID {pid})"));
     let (steps, what) = match how {
         StopHow::AgentStop => {
             let Some(job) = info.and_then(|i| i.job_id.clone()) else {

@@ -52,7 +52,7 @@ impl Live {
     }
 }
 
-fn push_live(ui: &Ui, view: View, widget: gtk::Widget, f: Update) {
+fn push_live(ui: &Ui, view: View, widget: &gtk::Widget, f: Update) {
     let mut live = ui.live.borrow_mut();
     let list = live.entry(view).or_default();
     list.retain(|l| l.widget.upgrade().is_some());
@@ -68,7 +68,7 @@ pub fn live_text(ui: &Ui, view: View, l: &gtk::Label, f: impl Fn(&AppState) -> O
             l.set_text(&t);
         }
     };
-    push_live(ui, view, l.clone().upcast(), Box::new(f));
+    push_live(ui, view, l.upcast_ref(), Box::new(f));
 }
 
 /// `wd`'s tooltip follows `f`.
@@ -80,7 +80,7 @@ pub fn live_tip(ui: &Ui, view: View, wd: &impl IsA<gtk::Widget>, f: impl Fn(&App
             w.set_tooltip_text(Some(&t));
         }
     };
-    push_live(ui, view, wd.clone().upcast(), Box::new(f));
+    push_live(ui, view, wd.upcast_ref(), Box::new(f));
 }
 
 // ---------- order ----------
@@ -452,7 +452,7 @@ pub fn render_rail(ui: &Ui) {
 /// Draws a rail's views and projects, full or slim. The slim strip's items take no keyboard focus
 /// and have no tooltips: the full form slides out over them to show what they are, and takes the
 /// keyboard.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the rail's parts, drawn full or slim by one function")]
 fn fill_rail(ui: &Ui, nav: &gtk::Box, plist: &gtk::Box, slim: bool, view: View, pf: Option<&str>, navs: &[(View, Option<(u32, bool)>)], ps: &[ProjectSummary]) {
     w::clear(nav);
     for &(v, n) in navs {
@@ -573,7 +573,7 @@ pub fn render_status(ui: &Ui) {
         }
         (st.ov_error.clone(), st.last_ok, st.procs.as_ref().map(|p| p.generated_at.clone()))
     };
-    let secs = last_ok.map(|t| (glib::monotonic_time() - t) / 1_000_000).unwrap_or(0);
+    let secs = last_ok.map_or(0, |t| (glib::monotonic_time() - t) / 1_000_000);
     let (icon, words, class, tip) = if ui.demo {
         (w::icons::INFO, "You're looking at made-up data. Nothing here is real.".to_string(), "info", "Demo mode: made-up sessions and agents.".to_string())
     } else if let Some(err) = &err {
@@ -854,7 +854,7 @@ pub fn render_view(ui: &Ui) {
 
 /// Whether the view needs drawing again for `sig`; if so, clears it and says whether its list had
 /// the keyboard focus. Ages are not in any signature: they are updated in place.
-pub fn begin(ui: &Ui, view: View, sig: String) -> Option<bool> {
+pub fn begin(ui: &Ui, view: View, sig: &str) -> Option<bool> {
     // Rows are drawn as columns or as two-line cells, by the list's width.
     let sig = format!("{sig}|{}", app::cards(&ui.st.borrow()));
     if ui.st.borrow().drawn.get(&view) == Some(&sig) {
@@ -1076,7 +1076,7 @@ fn monitor(ui: &Ui) {
     let tally = monitor_tally(ui);
     let waves: Vec<u32> = rows.iter().filter_map(|s| wave_pid(ui, s)).collect();
     let sig = format!("{filter:?}{pf:?}{compact}{stable:?}{}{colours:?}{}{tally:?}{waves:?}", crate::behind::sig(ui), loc_sig(ui));
-    let Some(had_focus) = begin(ui, View::Monitor, sig) else { return };
+    let Some(had_focus) = begin(ui, View::Monitor, &sig) else { return };
     let vw = &ui.w.views[&View::Monitor];
     w::clear(&vw.top);
     // An empty board also says what it is for, for someone who hasn't seen it full.
@@ -1205,14 +1205,14 @@ fn board(ui: &Ui, rows: &[SessionSummary], compact: bool) {
         let n = working.len();
         for (i, s) in working.into_iter().enumerate() {
             let wave = (!narrow).then(|| wave_cell(ui, s)).flatten();
-            vw.list.append(&session_item(ui, s, now_cell(s), wave, (i == 0, i + 1 == n), !narrow, true));
+            vw.list.append(&session_item(ui, s, &now_cell(s), wave, (i == 0, i + 1 == n), !narrow, true));
         }
     }
     if !rest.is_empty() {
         vw.list.append(&section_row("Earlier", rest.len()));
         let n = rest.len();
         for (i, s) in rest.into_iter().enumerate() {
-            vw.list.append(&session_item(ui, s, now_cell(s), None, (i == 0, i + 1 == n), !narrow, true));
+            vw.list.append(&session_item(ui, s, &now_cell(s), None, (i == 0, i + 1 == n), !narrow, true));
         }
     }
 }
@@ -1342,7 +1342,7 @@ fn wave_cell(ui: &Ui, s: &SessionSummary) -> Option<gtk::Widget> {
 /// One session as a row of a boxed list, the same on Monitor and History: an optional lead (the
 /// wave), who, a second line, and at the end its status and age. `edge` is (first, last) in its list.
 /// `peek`: the row says what holding Space does when it is selected (Monitor; History can't peek).
-pub fn session_item(ui: &Ui, s: &SessionSummary, second: gtk::Widget, lead: Option<gtk::Widget>, edge: (bool, bool), wide: bool, peek: bool) -> gtk::ListBoxRow {
+pub fn session_item(ui: &Ui, s: &SessionSummary, second: &gtk::Widget, lead: Option<gtk::Widget>, edge: (bool, bool), wide: bool, peek: bool) -> gtk::ListBoxRow {
     let row = w::hbox(14, &["item"]);
     if let Some(l) = lead {
         row.append(&l);
@@ -1350,8 +1350,8 @@ pub fn session_item(ui: &Ui, s: &SessionSummary, second: gtk::Widget, lead: Opti
     let mid = w::vbox(4, &[]);
     mid.set_hexpand(true);
     mid.append(&who_line(ui, s));
-    w::shrinkable(&second);
-    mid.append(&second);
+    w::shrinkable(second);
+    mid.append(second);
     row.append(&mid);
     let end = w::vbox(6, &[]);
     end.set_valign(gtk::Align::Center);
@@ -1463,7 +1463,7 @@ fn ideas(ui: &Ui) {
     // after the ideas.
     let colours: Vec<String> = ui.st.borrow().ov.as_ref().map(|o| o.projects.iter().map(crate::setview::colour_of).collect()).unwrap_or_default();
     let sig = format!("{tab:?}{pf:?}{picked:?}{brief}{}{projects:?}{colours:?}", serde_json::to_string(&idea_list).unwrap_or_default());
-    let Some(had_focus) = begin(ui, View::Ideas, sig) else { return };
+    let Some(had_focus) = begin(ui, View::Ideas, &sig) else { return };
     let vw = &ui.w.views[&View::Ideas];
     w::clear(&vw.top);
     let Some(all) = idea_list else {
@@ -1677,7 +1677,7 @@ pub fn search_changed(ui: &Ui, q: String) {
     let seq = {
         // Fired from inside our own set_text too: never panic on a busy state.
         let Ok(mut st) = ui.st.try_borrow_mut() else { return };
-        st.search_q = q.clone();
+        st.search_q.clone_from(&q);
         st.search_seq += 1;
         st.sel = None;
         if q.trim().is_empty() {
@@ -1749,7 +1749,7 @@ fn history(ui: &Ui) {
     let found: Option<Vec<(String, &String)>> = results.as_ref().map(|r| r.iter().map(|(s, m)| (stable_key(s), m)).collect());
     let colours: Vec<String> = ui.st.borrow().ov.as_ref().map(|o| o.projects.iter().map(crate::setview::colour_of).collect()).unwrap_or_default();
     let sig = format!("{q}{compact}{found:?}{stable:?}{colours:?}{}", loc_sig(ui));
-    let Some(had_focus) = begin(ui, View::History, sig) else { return };
+    let Some(had_focus) = begin(ui, View::History, &sig) else { return };
     let vw = &ui.w.views[&View::History];
     if q.is_empty() {
         if recent.is_empty() {
@@ -1769,7 +1769,7 @@ fn history(ui: &Ui) {
             vw.list.append(&section_row(&day, 0));
             let n = ss.len();
             for (i, s) in ss.into_iter().enumerate() {
-                vw.list.append(&session_item(ui, s, now_cell(s), None, (i == 0, i + 1 == n), !compact, false));
+                vw.list.append(&session_item(ui, s, &now_cell(s), None, (i == 0, i + 1 == n), !compact, false));
             }
         }
     } else {
@@ -1786,7 +1786,7 @@ fn history(ui: &Ui) {
         for (i, (s, m)) in results.iter().enumerate() {
             let l = w::clip("", &["snip"]);
             l.set_markup(&highlight(m, &q));
-            vw.list.append(&session_item(ui, s, l.upcast(), None, (i == 0, i + 1 == n), !compact, false));
+            vw.list.append(&session_item(ui, s, l.upcast_ref(), None, (i == 0, i + 1 == n), !compact, false));
         }
     }
     finish(ui, View::History, had_focus);

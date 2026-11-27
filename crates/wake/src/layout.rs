@@ -1059,7 +1059,7 @@ pub fn hook(ui: &crate::app::Ui) {
     glib::timeout_add_local(Duration::from_millis(900), move || {
         let i = step.get();
         let report = |ui: &crate::app::Ui, (v, what): (View, &str)| {
-            let root = ui.window.child().expect("window content");
+            let Some(root) = ui.window.child() else { return };
             let (min, ..) = root.measure(gtk::Orientation::Horizontal, -1);
             let mut found = clips(&root);
             // A dialog must be in sight: a card laid out below the window draws nothing at all.

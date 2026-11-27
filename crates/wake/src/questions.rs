@@ -241,7 +241,7 @@ pub fn build(ui: &Ui) {
             let _ = ST.with(|s| s.try_borrow_mut().map(|mut s| s.stick = at_end));
         });
         adj.connect_changed(|a| {
-            if ST.with(|s| s.try_borrow().map(|s| s.stick).unwrap_or(false)) {
+            if ST.with(|s| s.try_borrow().is_ok_and(|s| s.stick)) {
                 a.set_value(a.upper() - a.page_size());
             }
         });
@@ -385,7 +385,7 @@ fn render_list(ui: &Ui) {
     let rows: Vec<ListRow> = threads
         .iter()
         .map(|t| {
-            let last = t.turns.last().map(|x| x.asked_at.as_str()).unwrap_or(t.created.as_str());
+            let last = t.turns.last().map_or(t.created.as_str(), |x| x.asked_at.as_str());
             let when = fmt::short_when(Some(last));
             // Claude's threads say nothing extra; another AI's name its AI.
             let ai = wake_core::questions::thread_ai(t);
@@ -620,7 +620,7 @@ fn fill_answer(bx: &gtk::Box, text: &str) {
 /// how much it holds, a quiet header and a hairline under each row.
 fn table(head: &[String], body: &[Vec<String>]) -> gtk::Widget {
     let n = head.len().max(body.iter().map(Vec::len).max().unwrap_or(0)).max(1);
-    let plain = |m: &str| gtk::pango::parse_markup(m, '\0').map(|(_, s, _)| s.chars().count()).unwrap_or(m.len());
+    let plain = |m: &str| gtk::pango::parse_markup(m, '\0').map_or(m.len(), |(_, s, _)| s.chars().count());
     let mut weight = vec![1usize; n];
     for row in std::iter::once(head).chain(body.iter().map(Vec::as_slice)) {
         for (i, c) in row.iter().enumerate().take(n) {
@@ -680,8 +680,8 @@ fn sync_ctx(ui: &Ui) {
         let current = st(|s| s.ctx_ids.get(wd.ctx.selected() as usize).cloned().flatten());
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let manual = st(|s| {
-            s.ctx_ids = ids.clone();
-            s.ctx_names = names.clone();
+            s.ctx_ids.clone_from(&ids);
+            s.ctx_names.clone_from(&names);
             s.ctx_manual
         });
         wd.ctx.set_model(Some(&gtk::StringList::new(&refs)));
@@ -1196,7 +1196,7 @@ impl Demo {
         any
     }
 
-    pub fn delete(&self, thread: &str) -> Result<(), String> {
+    pub fn delete(&self, thread: &str) {
         let mut ov = self.ov.lock().unwrap_or_else(|e| e.into_inner());
         ov.threads.retain(|t| t.id != thread);
         ov.unread.retain(|t| t != thread);
@@ -1205,7 +1205,6 @@ impl Demo {
             ov.answering = None;
         }
         ov.seq += 1;
-        Ok(())
     }
 
     pub fn mark_read(&self, thread: &str) {

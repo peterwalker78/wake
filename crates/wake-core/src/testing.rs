@@ -29,7 +29,7 @@ pub fn scratch(name: &str) -> Scratch {
 /// like anyone's.
 fn base() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
-    let target = exe.ancestors().nth(3).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
+    let target = exe.ancestors().nth(3).map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"), Path::to_path_buf);
     let text = target.to_string_lossy();
     match text.find("/.claude/") {
         Some(i) => PathBuf::from(&text[..i]).join("target/test-scratch"),

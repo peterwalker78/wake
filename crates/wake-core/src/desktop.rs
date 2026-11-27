@@ -445,7 +445,7 @@ pub(crate) mod tests {
         let bus = FakeBus::new();
         let d = desk(&bus, &f.proc);
         let briefs = f.tmp.0.join("data/briefs");
-        let cmd = crate::brief::command(crate::brief::Agent::Claude, &briefs.join("b0123456789ab.md")).unwrap();
+        let cmd = crate::brief::command(crate::types::Agent::Claude, &briefs.join("b0123456789ab.md")).unwrap();
         let repo = f.repo.to_string_lossy().to_string();
         let r = d.start_typed(&repo, &cmd, &briefs, true);
         assert!(r.ok, "{r:?}");

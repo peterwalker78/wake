@@ -143,10 +143,10 @@ fn native_agent(exe: &str) -> Option<Agent> {
     if parent.as_deref() == Some("versions") && grand.as_deref() == Some("claude") {
         return Some(Agent::Claude);
     }
-    if name == "claude" {
+    if name == Agent::Claude.id() {
         return Some(Agent::Claude);
     }
-    if name == "codex" || (name.starts_with("codex-") && name.contains("-linux")) {
+    if name == Agent::Codex.id() || (name.starts_with("codex-") && name.contains("-linux")) {
         return Some(Agent::Codex);
     }
     package_of(exe)

@@ -760,11 +760,11 @@ impl Source for DemoSource {
         Ok(p.clone())
     }
 
-    fn agent_choices(&self) -> Vec<wake_core::brief::Agent> {
-        wake_core::brief::Agent::ALL.to_vec()
+    fn agent_choices(&self) -> Vec<Agent> {
+        Agent::ALL.into_iter().filter(|a| a.can_brief()).collect()
     }
 
-    fn brief_command(&self, agent: wake_core::brief::Agent, id: &str) -> Option<String> {
+    fn brief_command(&self, agent: Agent, id: &str) -> Option<String> {
         wake_core::brief::command(agent, &wake_core::brief::path(std::path::Path::new("/home/you/.local/share/wake"), id))
     }
 
@@ -780,7 +780,7 @@ impl Source for DemoSource {
             i.sent_at = Some(at.clone());
             i.brief = Some(req.id.clone());
         }
-        let agent = wake_core::brief::Agent::from_id(&req.agent).map_or("Claude", |a| a.label());
+        let agent = req.agent.label();
         ActionResult { ok: true, message: format!("Demo: {agent} would start in a new terminal window in ~/Projects/{}.", req.project), steps: vec![] }
     }
 
@@ -901,9 +901,10 @@ impl Source for DemoSource {
     }
 
     fn question_ais(&self) -> Vec<wake_core::questions::AiChoice> {
-        use wake_core::questions::{Ai, choice};
+        use wake_core::Agent;
+        use wake_core::questions::choice;
         // Made up: all three installed, as on the machine this was written on.
-        Ai::ALL.into_iter().map(|ai| choice(ai, Some(std::path::Path::new("/demo")), false)).collect()
+        Agent::ALL.into_iter().map(|ai| choice(ai, Some(std::path::Path::new("/demo")), false)).collect()
     }
 
     /// Set project (disk.rs): the demo's sessions change in memory only.

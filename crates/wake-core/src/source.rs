@@ -152,7 +152,7 @@ impl Live {
         let store = Store::new(cfg.paths.clone());
         let _ = store.ensure_data_dir();
         let questions = crate::questions::Questions::new(&cfg.paths, crate::questions::find_claude(&cfg.paths));
-        for ai in [crate::questions::Ai::Codex, crate::questions::Ai::Gemini] {
+        for ai in [Agent::Codex, Agent::Gemini] {
             questions.set_tool(ai, crate::questions::find_tool(&cfg.paths, ai));
         }
         Live {
@@ -1230,23 +1230,19 @@ impl Source for Live {
         Some(i.screens.get_or(session, || crate::vt::read_logs(&i.runner, &job, crate::vt::term_size(&i.proc_root, info.pid))))
     }
 
-    fn agent_choices(&self) -> Vec<brief::Agent> {
-        let mut v = vec![brief::Agent::Claude];
-        if run::which("codex").is_some() {
-            v.push(brief::Agent::Codex);
-        }
-        v
+    /// Claude, and the other agents that take a brief when they are installed.
+    fn agent_choices(&self) -> Vec<Agent> {
+        Agent::ALL.into_iter().filter(|a| a.can_brief() && (*a == Agent::Claude || run::which(a.id()).is_some())).collect()
     }
 
-    fn brief_command(&self, agent: brief::Agent, id: &str) -> Option<String> {
+    fn brief_command(&self, agent: Agent, id: &str) -> Option<String> {
         brief::command(agent, &brief::path(&self.inner.paths.data, id))
     }
 
     fn start_agent(&self, req: &brief::StartAgent, dry_run: bool) -> ActionResult {
         let r = self.start_agent_steps(req, dry_run);
         if !dry_run {
-            let agent = brief::Agent::from_id(&req.agent).map_or(req.agent.clone(), |a| a.label().to_string());
-            log::record_action(&self.inner.paths, "start an agent", &format!("{agent} in {}", self.project_words(&req.project)), r.ok, &r.message, &r.steps);
+            log::record_action(&self.inner.paths, "start an agent", &format!("{} in {}", req.agent.label(), self.project_words(&req.project)), r.ok, &r.message, &r.steps);
         }
         r
     }
@@ -1395,9 +1391,10 @@ impl Live {
         let Some(p) = store::project_by_id(&req.project, &projects).filter(|p| !p.removed) else {
             return fail("No tracked project with that id.");
         };
-        let Some(agent) = brief::Agent::from_id(&req.agent).filter(|a| self.agent_choices().contains(a)) else {
+        let agent = req.agent;
+        if !self.agent_choices().contains(&agent) {
             return fail("That agent isn't installed here.");
-        };
+        }
         if req.ideas.is_empty() {
             return fail("Pick at least one idea.");
         }
@@ -1544,7 +1541,7 @@ impl Live {
         let Some(acc) = acc else {
             return (fail("No session with that id."), "reopen", format!("session {session}"));
         };
-        let cmd = info.and_then(|x| x.resume_command.clone()).unwrap_or_else(|| if acc.agent == "codex" { format!("codex resume {session}") } else { format!("claude --resume {session}") });
+        let cmd = info.and_then(|x| x.resume_command.clone()).unwrap_or_else(|| if acc.agent == Agent::Codex { format!("codex resume {session}") } else { format!("claude --resume {session}") });
         let cwd = acc.launch_cwd.clone().or_else(|| info.and_then(|x| x.cwd.clone()));
         let r = i.desktop.reopen(cwd.as_deref(), &cmd, dry_run);
         let target = match &cwd {
@@ -1653,7 +1650,7 @@ impl Inner {
                 project,
                 title: index::title_of(&acc),
                 started_at: acc.started_at.clone(),
-                transcript: (acc.agent != "codex").then(|| acc.source.clone().map(PathBuf::from)).flatten(),
+                transcript: (acc.agent != Agent::Codex).then(|| acc.source.clone().map(PathBuf::from)).flatten(),
                 folders,
                 working: by_id.get(acc.id.as_str()).is_some_and(|s| s.state == State::Working),
             });
@@ -1874,13 +1871,13 @@ mod tests {
         let loose = l.add_idea("unsorted", None).unwrap();
         let id = brief::new_id();
         let text = brief::brief_text("alpha", &[&a.text, &b.text]);
-        let req = |ideas: Vec<String>| brief::StartAgent { project: "alpha".into(), ideas, brief: text.clone(), agent: "claude".into(), id: id.clone() };
+        let req = |ideas: Vec<String>| brief::StartAgent { project: "alpha".into(), ideas, brief: text.clone(), agent: Agent::Claude, id: id.clone() };
         // Mixing projects, or an idea with none, is refused before anything happens.
         for ideas in [vec![a.id.clone(), other.id.clone()], vec![loose.id.clone()]] {
             let r = l.start_agent(&req(ideas), false);
             assert!(!r.ok && r.message.contains("aren't all for alpha"), "{r:?}");
         }
-        assert!(!l.start_agent(&brief::StartAgent { agent: "gemini".into(), ..req(vec![a.id.clone()]) }, false).ok);
+        assert!(!l.start_agent(&brief::StartAgent { agent: Agent::Gemini, ..req(vec![a.id.clone()]) }, false).ok);
         assert!(bus.writes().is_empty());
         let path = brief::path(&env.paths.data, &id);
         // A dry run says what it would do and writes nothing.
@@ -1892,7 +1889,7 @@ mod tests {
         let r = l.start_agent(&req(vec![a.id.clone(), b.id.clone()]), false);
         assert!(r.ok, "{r:?}");
         assert_eq!(fs::read_to_string(&path).unwrap(), format!("{text}\n"));
-        let cmd = l.brief_command(brief::Agent::Claude, &id).unwrap();
+        let cmd = l.brief_command(Agent::Claude, &id).unwrap();
         let started: Vec<Vec<String>> = bus.writes().into_iter().filter(|c| c[0] == "setsid").collect();
         assert_eq!(started.len(), 1);
         let alpha = env.paths.projects.join("alpha").to_string_lossy().to_string();

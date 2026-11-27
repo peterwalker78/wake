@@ -126,7 +126,7 @@ pub struct PromptRec {
 #[serde(rename_all = "camelCase", default)]
 pub struct Acc {
     pub id: String,
-    pub agent: String,
+    pub agent: Agent,
     pub source: Option<String>,
     pub started_at: Option<String>,
     pub last_at: Option<String>,
@@ -164,8 +164,8 @@ pub struct Acc {
     pub scan_offset: Option<u64>,
 }
 
-pub fn new_acc(sid: &str, path: Option<&str>, agent: &str) -> Acc {
-    Acc { id: sid.into(), agent: agent.into(), source: path.map(Into::into), ..Default::default() }
+pub fn new_acc(sid: &str, path: Option<&str>, agent: Agent) -> Acc {
+    Acc { id: sid.into(), agent, source: path.map(Into::into), ..Default::default() }
 }
 
 /// In-memory copy without the bulky lists.
@@ -771,7 +771,7 @@ fn read_meta(path: &Path) -> SubMeta {
 
 pub fn subagent_dir(acc: &Acc) -> Option<PathBuf> {
     let src = acc.source.as_deref()?;
-    if acc.agent != "claude" {
+    if acc.agent != Agent::Claude {
         return None;
     }
     Some(Path::new(src).parent()?.join(&acc.id).join("subagents"))
@@ -1222,7 +1222,7 @@ pub fn title_of(acc: &Acc) -> String {
 }
 
 pub fn resume_command(acc: &Acc, home: &Path) -> String {
-    if acc.agent == "codex" {
+    if acc.agent == Agent::Codex {
         return format!("codex resume {}", acc.id);
     }
     let cmd = format!("claude --resume {}", acc.id);
@@ -1245,7 +1245,7 @@ pub fn base_summary(acc: &Acc, projects: &[ProjectRec], home: &Path) -> SessionS
     let last_prompt = acc.prompts_list.last().map(|p| p.text.clone()).or_else(|| acc.last_prompt_meta.clone());
     SessionSummary {
         id: acc.id.clone(),
-        agent: if acc.agent == "codex" { Agent::Codex } else { Agent::Claude },
+        agent: acc.agent,
         project: pid,
         project_name: pname,
         title: title_of(acc),
@@ -1286,7 +1286,7 @@ pub struct FileRec {
     pub mtime: f64,
     pub offset: u64,
     pub session: String,
-    pub agent: String,
+    pub agent: Agent,
 }
 
 fn codex_id(path: &str) -> String {
@@ -1445,7 +1445,7 @@ impl Indexer {
         }
     }
 
-    pub fn discover(&self) -> Vec<(String, &'static str)> {
+    pub fn discover(&self) -> Vec<(String, Agent)> {
         let mut out = Vec::new();
         let list = |d: &Path| -> Vec<PathBuf> {
             let mut v: Vec<PathBuf> = fs::read_dir(d).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
@@ -1458,7 +1458,7 @@ impl Indexer {
             }
             for p in list(&dir) {
                 if p.extension().is_some_and(|x| x == "jsonl") && !store::is_forbidden(&p) && p.is_file() {
-                    out.push((p.to_string_lossy().into_owned(), "claude"));
+                    out.push((p.to_string_lossy().into_owned(), Agent::Claude));
                 }
             }
         }
@@ -1468,7 +1468,7 @@ impl Indexer {
                     for p in list(&d) {
                         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         if name.starts_with("rollout-") && name.ends_with(".jsonl") && !store::is_forbidden(&p) {
-                            out.push((p.to_string_lossy().into_owned(), "codex"));
+                            out.push((p.to_string_lossy().into_owned(), Agent::Codex));
                         }
                     }
                 }
@@ -1481,8 +1481,8 @@ impl Indexer {
         store::read_json(&self.session_path(sid))
     }
 
-    fn index_one(&self, path: &str, agent: &str, size: u64, mtime: f64) -> Indexed {
-        let sid = if agent == "codex" { codex_id(path) } else { Path::new(path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
+    fn index_one(&self, path: &str, agent: Agent, size: u64, mtime: f64) -> Indexed {
+        let sid = if agent == Agent::Codex { codex_id(path) } else { Path::new(path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
         let prev = self.read().files.get(path).cloned();
         let mut acc = None;
         let mut offset = 0;
@@ -1501,12 +1501,12 @@ impl Indexer {
         let mut acc = acc.unwrap_or_else(|| new_acc(&sid, Some(path), agent));
         acc.source = Some(path.into());
         acc.deleted_by_claude = false;
-        let f: LineFn = if agent == "codex" { codex_line } else { claude_line };
+        let f: LineFn = if agent == Agent::Codex { codex_line } else { claude_line };
         let offset = match scan_file(Path::new(path), &mut acc, offset, f) {
             Ok(o) => o,
             Err(e) => return Indexed::Unreadable(e),
         };
-        if agent == "claude"
+        if agent == Agent::Claude
             && let Some(d) = subagent_dir(&acc)
             && let Ok(rd) = fs::read_dir(&d)
         {
@@ -1524,7 +1524,7 @@ impl Indexer {
             serde_json::to_value(&blank).ok() != serde_json::to_value(&acc).ok()
         };
         let mut st = self.write();
-        st.files.insert(path.into(), FileRec { size, mtime, offset, session: sid.clone(), agent: agent.into() });
+        st.files.insert(path.into(), FileRec { size, mtime, offset, session: sid.clone(), agent });
         st.sessions.insert(sid, Arc::new(lite(&acc)));
         Indexed::Done { understood }
     }
@@ -1553,7 +1553,7 @@ impl Indexer {
                 let (size, mtime) = (m.len(), mtime_of(&m));
                 let unchanged = self.read().files.get(path).is_some_and(|p| p.size == size && same_time(p.mtime, mtime));
                 if !unchanged {
-                    match self.index_one(path, agent, size, mtime) {
+                    match self.index_one(path, *agent, size, mtime) {
                         Indexed::Done { understood } => {
                             let mut st = self.write();
                             if understood || now - mtime > ODD_WITHIN {
@@ -1779,7 +1779,7 @@ mod tests {
     fn tool_results_and_blobs_never_decoded() {
         let f = setup();
         DECODED.with(|d| d.borrow_mut().clear());
-        let mut acc = new_acc("x", None, "claude");
+        let mut acc = new_acc("x", None, Agent::Claude);
         scan_file(&f.env.transcript("sess-aaaa"), &mut acc, 0, claude_line).unwrap();
         let decoded = DECODED.with(|d| d.borrow().clone());
         assert!(!decoded.is_empty());
@@ -2020,7 +2020,7 @@ mod tests {
         assert_eq!(tool_names(br#"{"type":"tool_use","id":"t1","name":"Read","input":{}},{"type":"tool_use","id":"t2","name":"Bash"}"#), ["Read", "Bash"]);
         assert_eq!(ts_search(br#"{"timestamp":"short","x":1,"timestamp":"2026-11-19T10:00:00.000Z"}"#).as_deref(), Some("2026-11-19T10:00:00.000Z"));
         let home = Path::new("/var/home/u");
-        let mut acc = new_acc("s1", None, "claude");
+        let mut acc = new_acc("s1", None, Agent::Claude);
         acc.launch_cwd = Some("/var/home/u/Projects/my app".into());
         assert_eq!(resume_command(&acc, home), "cd ~/'Projects/my app' && claude --resume s1");
         acc.launch_cwd = Some("/var/home/u".into());

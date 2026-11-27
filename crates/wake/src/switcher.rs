@@ -104,7 +104,7 @@ fn items(ui: &Ui) -> Vec<Item> {
                 return true;
             }
             let (loc, ..) = app::loc_of(s, unsure);
-            let hay = [s.project_name.clone().unwrap_or_default(), s.title.clone(), format!("{:?}", s.agent), loc, s.last_prompt.clone().unwrap_or_default(), w::state_word(s.state).1.to_string()]
+            let hay = [s.project_name.clone().unwrap_or_default(), s.title.clone(), s.agent.label().to_string(), loc, s.last_prompt.clone().unwrap_or_default(), w::state_word(s.state).1.to_string()]
                 .join(" ")
                 .to_lowercase();
             terms.iter().all(|t| hay.contains(t))

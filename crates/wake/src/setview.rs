@@ -82,9 +82,9 @@ fn short_reason(c: &AiChoice) -> String {
 /// project's colour is changed in its panel. Their keys in settings.toml are still read and kept.
 pub fn sections(s: &Settings, ais: &[AiChoice]) -> Vec<(&'static str, Vec<Row>)> {
     let ai_rows = {
-        let choices: Vec<Choice> = ais.iter().map(|c| Choice { id: c.ai.id().into(), label: c.ai.name().into(), enabled: c.usable, tip: Some(c.hint.clone()) }).collect();
-        let current = ais.iter().find(|c| c.ai.id() == s.ai && c.usable).map_or("claude", |c| c.ai.id());
-        let off: Vec<String> = ais.iter().filter(|c| !c.usable).map(|c| format!("{}: {}", c.ai.name(), short_reason(c))).collect();
+        let choices: Vec<Choice> = ais.iter().map(|c| Choice { id: c.ai.id().into(), label: c.ai.label().into(), enabled: c.usable, tip: Some(c.hint.clone()) }).collect();
+        let current = ais.iter().find(|c| c.ai.id() == s.ai && c.usable).map_or(wake_core::Agent::Claude.id(), |c| c.ai.id());
+        let off: Vec<String> = ais.iter().filter(|c| !c.usable).map(|c| format!("{}: {}", c.ai.label(), short_reason(c))).collect();
         let hint = if off.is_empty() { "A thread keeps the AI that started it.".to_string() } else { format!("{}.", off.join(" · ")) };
         vec![row("ai", "Answered by", &hint, Kind::Segments, choices, current)]
     };
@@ -134,14 +134,14 @@ pub fn step_choice(r: &Row, d: i32) -> Option<String> {
 }
 
 /// The AI that answers new questions: the one chosen, if Wake can use it here, else Claude.
-pub fn current_ai() -> wake_core::questions::Ai {
-    let want = wake_core::questions::Ai::from_id(&prefs::get().ai).unwrap_or_default();
+pub fn current_ai() -> wake_core::Agent {
+    let want = wake_core::Agent::from_id(&prefs::get().ai).unwrap_or_default();
     let usable = AIS.with(|a| a.borrow().as_ref().is_some_and(|l| l.iter().any(|c| c.ai == want && c.usable)));
-    if usable { want } else { wake_core::questions::Ai::Claude }
+    if usable { want } else { wake_core::Agent::Claude }
 }
 
 fn ais() -> Vec<AiChoice> {
-    AIS.with(|a| a.borrow().clone()).unwrap_or_else(|| vec![wake_core::questions::choice(wake_core::questions::Ai::Claude, None, false)])
+    AIS.with(|a| a.borrow().clone()).unwrap_or_else(|| vec![wake_core::questions::choice(wake_core::Agent::Claude, None, false)])
 }
 
 fn all_rows() -> Vec<(&'static str, Vec<Row>)> {
@@ -465,11 +465,12 @@ pub fn set_colour(ui: &Ui, project: &str, colour: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wake_core::questions::{Ai, choice};
+    use wake_core::Agent;
+    use wake_core::questions::choice;
 
     #[test]
     fn only_usable_ais_can_be_chosen_and_arrows_skip_the_rest() {
-        let ais = vec![choice(Ai::Claude, None, false), choice(Ai::Codex, Some(std::path::Path::new("/x")), false), choice(Ai::Gemini, None, false)];
+        let ais = vec![choice(Agent::Claude, None, false), choice(Agent::Codex, Some(std::path::Path::new("/x")), false), choice(Agent::Gemini, None, false)];
         let mut s = Settings::default();
         s.ai = "gemini".into();
         let secs = sections(&s, &ais);
@@ -485,7 +486,7 @@ mod tests {
 
     #[test]
     fn the_sections_and_their_controls() {
-        let secs = sections(&Settings::default(), &[choice(Ai::Claude, None, false)]);
+        let secs = sections(&Settings::default(), &[choice(Agent::Claude, None, false)]);
         let names: Vec<&str> = secs.iter().map(|s| s.0).collect();
         assert_eq!(names, ["Ask", "Appearance", "When Wake opens", "Git"], "no sorting, no project colours");
         let kinds: Vec<(&str, Kind)> = secs.iter().flat_map(|s| s.1.iter().map(|r| (r.key.as_str(), r.kind))).collect();

@@ -14,12 +14,49 @@ pub enum State {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The coding agents Wake knows. Written as their lowercase id ("claude") wherever Wake saves one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Agent {
+    #[default]
     Claude,
+    /// `codex [PROMPT]` starts the interactive CLI with that first prompt (checked with `codex --help`).
     Codex,
     Gemini,
+}
+
+impl Agent {
+    /// Every agent, in the order Wake offers them. All of them can answer Questions.
+    pub const ALL: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::Gemini];
+
+    /// Its program's name, and how Wake writes it in files: "claude".
+    pub fn id(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::Gemini => "gemini",
+        }
+    }
+
+    /// Its name for people: "Claude".
+    pub fn label(self) -> &'static str {
+        match self {
+            Agent::Claude => "Claude",
+            Agent::Codex => "Codex",
+            Agent::Gemini => "Gemini",
+        }
+    }
+
+    /// The agent with this id, ignoring case and spaces around it.
+    pub fn from_id(id: &str) -> Option<Agent> {
+        let id = id.trim().to_lowercase();
+        Agent::ALL.into_iter().find(|a| a.id() == id)
+    }
+
+    /// Whether Wake can start it with a brief as its first prompt, interactively.
+    pub fn can_brief(self) -> bool {
+        matches!(self, Agent::Claude | Agent::Codex)
+    }
 }
 
 /// Where a live session can be seen: the terminal window showing it.

@@ -789,8 +789,7 @@ fn session_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
     wl.set_hexpand(true);
     line.append(&wl);
     // How Wake knows, and the rest of the small print, only when asked.
-    let agent = format!("{:?}", s.agent).to_lowercase();
-    line.set_tooltip_text(Some(&format!("{}\n{agent} · {} · {}", s.evidence, fmt::minutes(s.minutes), fmt::pl(s.prompts, "prompt", "prompts"))));
+    line.set_tooltip_text(Some(&format!("{}\n{} · {} · {}", s.evidence, s.agent.id(), fmt::minutes(s.minutes), fmt::pl(s.prompts, "prompt", "prompts"))));
     line
 }
 

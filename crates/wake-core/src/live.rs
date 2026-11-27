@@ -78,7 +78,7 @@ pub fn pid_alive(proc_root: &Path, pid: u32, expected_start: Option<&str>) -> bo
             let argv = crate::procs::read_cmdline(proc_root, pid);
             match fs::read_link(proc_root.join(pid.to_string()).join("exe")) {
                 Ok(exe) => crate::procs::agent_of(&argv, Some(exe.to_string_lossy().trim_end_matches(" (deleted)"))).is_some(),
-                Err(_) => crate::procs::agent_of(&argv, None).is_some() || argv.first().is_some_and(|a| a.rsplit('/').next() == Some("claude")),
+                Err(_) => crate::procs::agent_of(&argv, None).is_some() || argv.first().is_some_and(|a| a.rsplit('/').next() == Some(crate::types::Agent::Claude.id())),
             }
         }
     }
@@ -394,7 +394,7 @@ pub fn apply_live(summary: &mut SessionSummary, acc: Option<&Acc>, info: Option<
 
 /// A summary for a live session the indexer has not seen yet.
 pub fn live_only_summary(info: &LiveInfo, projects: &[ProjectRec], home: &Path, now: f64) -> SessionSummary {
-    let mut acc = index::new_acc(&info.session_id, None, "claude");
+    let mut acc = index::new_acc(&info.session_id, None, crate::types::Agent::Claude);
     acc.cwd = info.cwd.clone();
     acc.launch_cwd = info.cwd.clone();
     if let Some(c) = info.cwd.as_deref().and_then(|c| store::norm_path(c, home)) {

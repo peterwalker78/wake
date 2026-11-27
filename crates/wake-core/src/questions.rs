@@ -42,7 +42,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::store::{self, Paths, Writer};
-use crate::types::{ProcKind, ProcOverview, QOverview, QThread, QTurn};
+use crate::types::{Agent, ProcKind, ProcOverview, QOverview, QThread, QTurn};
 use crate::util;
 
 /// Tools for "just a question".
@@ -62,57 +62,20 @@ pub const DENIED_TOOLS: &str = "Edit,Write,Bash,NotebookEdit";
 const SYSTEM_NOTE: &str = "The person is asking a quick question from Wake, a calm console for their coding agents. \
 Answer plainly and briefly in Markdown. You can search and read, but you cannot change any files or run commands.";
 
-/// Which AI answers a thread.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Ai {
-    #[default]
-    Claude,
-    Codex,
-    Gemini,
-}
-
-impl Ai {
-    pub const ALL: [Ai; 3] = [Ai::Claude, Ai::Codex, Ai::Gemini];
-
-    pub fn id(self) -> &'static str {
-        match self {
-            Ai::Claude => "claude",
-            Ai::Codex => "codex",
-            Ai::Gemini => "gemini",
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Ai::Claude => "Claude",
-            Ai::Codex => "Codex",
-            Ai::Gemini => "Gemini",
-        }
-    }
-
-    pub fn from_id(id: &str) -> Option<Ai> {
-        Ai::ALL.into_iter().find(|a| a.id() == id.trim().to_lowercase())
-    }
-
-    /// The environment variable that names this AI's program instead of $PATH.
-    fn env(self) -> &'static str {
-        match self {
-            Ai::Claude => "WAKE_CLAUDE",
-            Ai::Codex => "WAKE_CODEX",
-            Ai::Gemini => "WAKE_GEMINI",
-        }
-    }
+/// The environment variable that names this AI's program instead of $PATH: `WAKE_CLAUDE`.
+fn env_var(ai: Agent) -> String {
+    format!("WAKE_{}", ai.id().to_uppercase())
 }
 
 /// The AI a thread was asked of (threads from before there was a choice are Claude's).
-pub fn thread_ai(t: &QThread) -> Ai {
-    t.ai.as_deref().and_then(Ai::from_id).unwrap_or_default()
+pub fn thread_ai(t: &QThread) -> Agent {
+    t.ai.as_deref().and_then(Agent::from_id).unwrap_or_default()
 }
 
 /// One AI as Settings offers it: whether Wake can use it here, and a short plain hint.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiChoice {
-    pub ai: Ai,
+    pub ai: Agent,
     pub usable: bool,
     pub hint: String,
 }
@@ -166,11 +129,11 @@ pub enum Event {
 }
 
 /// One line of `ai`'s streaming output.
-pub fn parse_line_for(ai: Ai, line: &str) -> Event {
+pub fn parse_line_for(ai: Agent, line: &str) -> Event {
     match ai {
-        Ai::Claude => parse_line(line),
-        Ai::Codex => parse_codex(line),
-        Ai::Gemini => parse_gemini(line),
+        Agent::Claude => parse_line(line),
+        Agent::Codex => parse_codex(line),
+        Agent::Gemini => parse_gemini(line),
     }
 }
 
@@ -289,7 +252,7 @@ pub struct Answer {
     /// The last problem reported along the way, for when the run ends without a result.
     pub warning: Option<String>,
     /// Whose answer this is (for its error lines).
-    pub ai: Ai,
+    pub ai: Agent,
     streamed: bool,
     need_break: bool,
 }
@@ -348,7 +311,7 @@ impl Answer {
                 }
                 self.activity = None;
                 if is_error {
-                    let fallback = format!("{} stopped with an error.", self.ai.name());
+                    let fallback = format!("{} stopped with an error.", self.ai.label());
                     let raw = text.or_else(|| self.warning.clone()).unwrap_or(fallback);
                     self.done = Some(Err(plain_error_for(self.ai, &raw)));
                 } else {
@@ -366,13 +329,13 @@ impl Answer {
 }
 
 /// One plain line for the person from whatever `ai` said went wrong.
-pub fn plain_error_for(ai: Ai, raw: &str) -> String {
+pub fn plain_error_for(ai: Agent, raw: &str) -> String {
     let low = raw.to_lowercase();
     let signed_out = ["not logged in", "/login", "invalid api key", "please log in", "authentication", "auth method", "401 unauthorized", "codex login", "gemini_api_key"];
     if signed_out.iter().any(|w| low.contains(w)) {
-        return format!("{} isn't logged in. Run {} once in a terminal to log in, then retry.", ai.name(), ai.id());
+        return format!("{} isn't logged in. Run {} once in a terminal to log in, then retry.", ai.label(), ai.id());
     }
-    let fallback = format!("{} stopped with an error.", ai.name());
+    let fallback = format!("{} stopped with an error.", ai.label());
     let line = raw.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(&fallback);
     let line = util::squash(line);
     if line.chars().count() > 200 { format!("{}…", line.chars().take(199).collect::<String>()) } else { line }
@@ -397,9 +360,9 @@ pub fn claude_args(session: &str, resume: bool, project: bool) -> Vec<String> {
 
 /// The first question as sent: Codex takes no system prompt, so Wake's note goes before it
 /// (Claude gets it as `--append-system-prompt`, Gemini after the question with `-p`).
-pub fn first_prompt(ai: Ai, question: &str) -> String {
+pub fn first_prompt(ai: Agent, question: &str) -> String {
     match ai {
-        Ai::Codex => format!("{SYSTEM_NOTE}\n\n{question}"),
+        Agent::Codex => format!("{SYSTEM_NOTE}\n\n{question}"),
         _ => question.to_string(),
     }
 }
@@ -445,13 +408,13 @@ pub fn gemini_args(session: &str, resume: bool, policy: &Path) -> Vec<String> {
 /// The `claude` to run: $WAKE_CLAUDE, else the first on $PATH, else ~/.local/bin/claude (the
 /// installer's place, often missing from a desktop session's PATH).
 pub fn find_claude(paths: &Paths) -> PathBuf {
-    find_tool(paths, Ai::Claude).unwrap_or_else(|| paths.home.join(".local/bin/claude"))
+    find_tool(paths, Agent::Claude).unwrap_or_else(|| paths.home.join(".local/bin/claude"))
 }
 
 /// Where `ai`'s program is: its $WAKE_… variable, else $PATH, else the places installers use that
 /// a desktop session's PATH often lacks (~/.local/bin, Homebrew on Linux). None if not installed.
-pub fn find_tool(paths: &Paths, ai: Ai) -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(ai.env()).filter(|v| !v.is_empty()) {
+pub fn find_tool(paths: &Paths, ai: Agent) -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os(env_var(ai)).filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(p));
     }
     crate::run::which(ai.id()).or_else(|| [paths.home.join(".local/bin"), PathBuf::from("/home/linuxbrew/.linuxbrew/bin")].into_iter().map(|d| d.join(ai.id())).find(|c| c.is_file()))
@@ -459,20 +422,20 @@ pub fn find_tool(paths: &Paths, ai: Ai) -> Option<PathBuf> {
 
 /// Whether Wake can keep `ai` read-only here, given where its program is (None: not installed)
 /// and whether the system has gemini policies of its own.
-pub fn choice(ai: Ai, program: Option<&Path>, gemini_system_policies: bool) -> AiChoice {
+pub fn choice(ai: Agent, program: Option<&Path>, gemini_system_policies: bool) -> AiChoice {
     let (usable, hint) = match (ai, program) {
-        (Ai::Claude, _) => (true, "Searches and reads; Wake turns off every tool that changes files.".to_string()),
-        (_, None) => (false, format!("{} isn't installed here.", ai.name())),
-        (Ai::Codex, Some(_)) => (true, "Runs in Codex's read-only sandbox: it reads and searches, never writes.".to_string()),
-        (Ai::Gemini, Some(_)) if gemini_system_policies => (false, format!("Not offered: a system policy in {GEMINI_SYSTEM_POLICIES} would override the rules that keep it read-only.")),
-        (Ai::Gemini, Some(_)) => (true, "Runs in plan mode with Wake's rules: it reads and searches, every tool that writes is off.".to_string()),
+        (Agent::Claude, _) => (true, "Searches and reads; Wake turns off every tool that changes files.".to_string()),
+        (_, None) => (false, format!("{} isn't installed here.", ai.label())),
+        (Agent::Codex, Some(_)) => (true, "Runs in Codex's read-only sandbox: it reads and searches, never writes.".to_string()),
+        (Agent::Gemini, Some(_)) if gemini_system_policies => (false, format!("Not offered: a system policy in {GEMINI_SYSTEM_POLICIES} would override the rules that keep it read-only.")),
+        (Agent::Gemini, Some(_)) => (true, "Runs in plan mode with Wake's rules: it reads and searches, every tool that writes is off.".to_string()),
     };
     AiChoice { ai, usable, hint }
 }
 
 /// The choice for an AI whose program isn't here.
-pub fn not_installed(ai: Ai) -> AiChoice {
-    AiChoice { ai, usable: false, hint: format!("{} isn't installed here.", ai.name()) }
+pub fn not_installed(ai: Agent) -> AiChoice {
+    AiChoice { ai, usable: false, hint: format!("{} isn't installed here.", ai.label()) }
 }
 
 /// True when gemini's system policy folder holds a policy (it then ignores `--admin-policy`).
@@ -644,7 +607,7 @@ struct Job {
 
 /// How one question is sent: to which AI, in which session, and the words that go on stdin.
 struct Plan {
-    ai: Ai,
+    ai: Agent,
     /// None for a new Codex thread (Codex picks its own id).
     session: Option<String>,
     resume: bool,
@@ -675,9 +638,9 @@ struct St {
 struct Shared {
     store: QStore,
     /// Each AI's program (Claude's always, the others when installed).
-    tools: Mutex<HashMap<Ai, PathBuf>>,
+    tools: Mutex<HashMap<Agent, PathBuf>>,
     /// Which AI answers new threads.
-    current: Mutex<Ai>,
+    current: Mutex<Agent>,
     /// The questions folder as written and as the filesystem resolves it (~ may be a symlink).
     dirs: Vec<String>,
     st: Mutex<St>,
@@ -756,14 +719,14 @@ impl Questions {
                 }
             }
         }
-        let tools = Mutex::new(HashMap::from([(Ai::Claude, claude)]));
+        let tools = Mutex::new(HashMap::from([(Agent::Claude, claude)]));
         Questions {
-            sh: Arc::new(Shared { store, tools, current: Mutex::new(Ai::Claude), dirs, st: Mutex::new(St { seq: 1, ..St::default() }), cv: Condvar::new(), idle_limit: Mutex::new(IDLE_LIMIT) }),
+            sh: Arc::new(Shared { store, tools, current: Mutex::new(Agent::Claude), dirs, st: Mutex::new(St { seq: 1, ..St::default() }), cv: Condvar::new(), idle_limit: Mutex::new(IDLE_LIMIT) }),
         }
     }
 
     /// Use `program` for `ai` (Live sets the installed ones; tests a fake).
-    pub fn set_tool(&self, ai: Ai, program: Option<PathBuf>) {
+    pub fn set_tool(&self, ai: Agent, program: Option<PathBuf>) {
         let mut t = self.sh.tools.lock().unwrap_or_else(|e| e.into_inner());
         match program {
             Some(p) => t.insert(ai, p),
@@ -771,7 +734,7 @@ impl Questions {
         };
     }
 
-    fn tool(&self, ai: Ai) -> Option<PathBuf> {
+    fn tool(&self, ai: Agent) -> Option<PathBuf> {
         self.sh.tools.lock().unwrap_or_else(|e| e.into_inner()).get(&ai).cloned()
     }
 
@@ -780,23 +743,23 @@ impl Questions {
         let system = gemini_has_system_policies(Path::new(GEMINI_SYSTEM_POLICIES));
         // Claude's program is always set (its installer's usual place when it isn't on PATH), so
         // it counts as installed only when that file is there; said like the others when not.
-        Ai::ALL
+        Agent::ALL
             .into_iter()
             .map(|ai| match self.tool(ai) {
-                Some(p) if ai == Ai::Claude && !p.is_file() => not_installed(ai),
+                Some(p) if ai == Agent::Claude && !p.is_file() => not_installed(ai),
                 p => choice(ai, p.as_deref(), system),
             })
             .collect()
     }
 
     /// Which AI answers new questions from now on (one Wake can't use here falls back to Claude).
-    pub fn set_ai(&self, ai: Ai) {
+    pub fn set_ai(&self, ai: Agent) {
         *self.sh.current.lock().unwrap_or_else(|e| e.into_inner()) = ai;
     }
 
-    fn current_ai(&self) -> Ai {
+    fn current_ai(&self) -> Agent {
         let ai = *self.sh.current.lock().unwrap_or_else(|e| e.into_inner());
-        if self.choices().iter().any(|c| c.ai == ai && c.usable) { ai } else { Ai::Claude }
+        if self.choices().iter().any(|c| c.ai == ai && c.usable) { ai } else { Agent::Claude }
     }
 
     /// Where "just a question" runs.
@@ -1043,7 +1006,7 @@ impl Questions {
             let answered_before = t.turns[..job.turn].iter().any(|x| x.answered_at.is_some());
             let (session, resume) = match (&t.claude_session, answered_before) {
                 (Some(s), true) => (Some(s.clone()), true),
-                _ if ai == Ai::Codex => (None, false),
+                _ if ai == Agent::Codex => (None, false),
                 _ => (Some(new_uuid()), false),
             };
             let prompt = if resume {
@@ -1095,18 +1058,18 @@ impl Questions {
 
     /// The program and arguments for one run, in `cwd`.
     fn command(&self, job: &Job, plan: &Plan) -> Result<(PathBuf, Vec<String>), String> {
-        let missing = |ai: Ai| format!("Wake couldn't find {} here. Install it, or pick another AI in Settings.", ai.id());
+        let missing = |ai: Agent| format!("Wake couldn't find {} here. Install it, or pick another AI in Settings.", ai.id());
         match plan.ai {
-            Ai::Claude => {
-                let prog = self.tool(Ai::Claude).ok_or_else(|| missing(Ai::Claude))?;
+            Agent::Claude => {
+                let prog = self.tool(Agent::Claude).ok_or_else(|| missing(Agent::Claude))?;
                 Ok((prog, claude_args(plan.session.as_deref().unwrap_or_default(), plan.resume, job.ctx.project.is_some())))
             }
-            Ai::Codex => {
-                let prog = self.tool(Ai::Codex).ok_or_else(|| missing(Ai::Codex))?;
+            Agent::Codex => {
+                let prog = self.tool(Agent::Codex).ok_or_else(|| missing(Agent::Codex))?;
                 Ok((prog, codex_args(plan.session.as_deref().filter(|_| plan.resume))))
             }
-            Ai::Gemini => {
-                let prog = self.tool(Ai::Gemini).ok_or_else(|| missing(Ai::Gemini))?;
+            Agent::Gemini => {
+                let prog = self.tool(Agent::Gemini).ok_or_else(|| missing(Agent::Gemini))?;
                 if gemini_has_system_policies(Path::new(GEMINI_SYSTEM_POLICIES)) {
                     return Err(format!("Wake won't ask Gemini here: a system policy in {GEMINI_SYSTEM_POLICIES} would override the rules that keep it read-only."));
                 }
@@ -1144,7 +1107,7 @@ impl Questions {
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
             // Its own process group, so a stop reaches whatever it started too.
             .process_group(0);
-        if ai == Ai::Gemini {
+        if ai == Agent::Gemini {
             // Signed out, gemini would open a browser to sign in (and read the question as the
             // answer to "continue?"); this way it only prints a link and fails, which Wake reports.
             cmd.env("NO_BROWSER", "true");
@@ -1157,7 +1120,7 @@ impl Questions {
                 return (
                     ans,
                     Err(match ai {
-                        Ai::Claude => format!("Wake couldn't find claude ({}). Install Claude Code, or set WAKE_CLAUDE to its path.", prog.display()),
+                        Agent::Claude => format!("Wake couldn't find claude ({}). Install Claude Code, or set WAKE_CLAUDE to its path.", prog.display()),
                         _ => format!("Wake couldn't find {} ({}). Install it, or pick another AI in Settings.", ai.id(), prog.display()),
                     }),
                 );
@@ -1275,9 +1238,9 @@ impl Questions {
             None => {
                 let err = err_text.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 match status {
-                    _ if stalled.load(Ordering::SeqCst) => Err(format!("{} went quiet for too long, so Wake stopped it.", ai.name())),
+                    _ if stalled.load(Ordering::SeqCst) => Err(format!("{} went quiet for too long, so Wake stopped it.", ai.label())),
                     Some(s) if s.success() && !ans.text.trim().is_empty() => Ok(()),
-                    Some(s) if s.success() => Err(format!("{} ended without an answer.", ai.name())),
+                    Some(s) if s.success() => Err(format!("{} ended without an answer.", ai.label())),
                     _ if !err.trim().is_empty() => Err(plain_error_for(ai, &err)),
                     _ if ans.warning.is_some() => Err(plain_error_for(ai, ans.warning.as_deref().unwrap_or_default())),
                     Some(s) => Err(format!("{} stopped with an error ({s}).", ai.id())),
@@ -1394,7 +1357,7 @@ mod tests {
         let mut a = Answer::default();
         a.feed(parse_line(EXEC_ERR));
         assert_eq!(a.done, Some(Err("Something broke".into())));
-        assert_eq!(plain_error_for(Ai::Claude, &"x".repeat(500)).chars().count(), 200);
+        assert_eq!(plain_error_for(Agent::Claude, &"x".repeat(500)).chars().count(), 200);
     }
 
     #[test]
@@ -1751,7 +1714,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
         assert_eq!(parse_codex(CX_START), Event::Init { session_id: "019a8a2e-5b0f-7d61-a4a7-1c2d3e4f5a6b".into() });
         assert_eq!(parse_codex(CX_TURN), Event::Other);
         assert_eq!(parse_codex(CX_CMD), Event::ToolStart("command_execution".into()));
-        let mut a = Answer { ai: Ai::Codex, ..Answer::default() };
+        let mut a = Answer { ai: Agent::Codex, ..Answer::default() };
         for l in [CX_START, CX_TURN, CX_THINK] {
             a.feed(parse_codex(l));
         }
@@ -1764,12 +1727,12 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
         assert_eq!(a.text, "Four.\n\nReally four.", "each message is a paragraph");
         assert_eq!(a.session.as_deref(), Some("019a8a2e-5b0f-7d61-a4a7-1c2d3e4f5a6b"));
         assert_eq!(a.done, Some(Ok(())));
-        let mut a = Answer { ai: Ai::Codex, ..Answer::default() };
+        let mut a = Answer { ai: Agent::Codex, ..Answer::default() };
         a.feed(parse_codex(CX_FAIL));
         assert_eq!(a.done, Some(Err("Codex isn't logged in. Run codex once in a terminal to log in, then retry.".into())));
 
         assert_eq!(parse_gemini(GM_USER), Event::Other, "the question echoed back is not the answer");
-        let mut g = Answer { ai: Ai::Gemini, ..Answer::default() };
+        let mut g = Answer { ai: Agent::Gemini, ..Answer::default() };
         for l in [GM_INIT, GM_USER, GM_A1, GM_A2] {
             g.feed(parse_gemini(l));
         }
@@ -1781,10 +1744,10 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
         assert_eq!(g.text, "Four.\n\nChecked: 4.", "after a tool, a new paragraph");
         assert_eq!(g.session.as_deref(), Some("6f1c0d3e-2b4a-4c5d-8e9f-0a1b2c3d4e5f"));
         assert_eq!(g.done, Some(Ok(())));
-        let mut g = Answer { ai: Ai::Gemini, ..Answer::default() };
+        let mut g = Answer { ai: Agent::Gemini, ..Answer::default() };
         g.feed(parse_gemini(GM_ERR));
         assert_eq!(g.done, Some(Err("Gemini isn't logged in. Run gemini once in a terminal to log in, then retry.".into())));
-        assert_eq!(parse_line_for(Ai::Claude, DELTA), Event::TextDelta("Four.".into()));
+        assert_eq!(parse_line_for(Agent::Claude, DELTA), Event::TextDelta("Four.".into()));
     }
 
     #[test]
@@ -1823,20 +1786,20 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
 
     #[test]
     fn only_installed_ais_wake_can_keep_read_only_are_offered() {
-        assert!(choice(Ai::Claude, None, false).usable);
+        assert!(choice(Agent::Claude, None, false).usable);
         // Claude's program missing from where Wake would run it: said like the others.
         let env = Env::new();
         let q = Questions::new(&env.paths, env.root.join("no-claude-here"));
-        let c = q.choices().into_iter().find(|c| c.ai == Ai::Claude).unwrap();
+        let c = q.choices().into_iter().find(|c| c.ai == Agent::Claude).unwrap();
         assert!(!c.usable && c.hint == "Claude isn't installed here.", "{c:?}");
-        q.set_tool(Ai::Claude, Some(env.root.join("claude-bin")));
+        q.set_tool(Agent::Claude, Some(env.root.join("claude-bin")));
         fs::write(env.root.join("claude-bin"), "").unwrap();
         assert!(q.choices()[0].usable);
-        let c = choice(Ai::Codex, None, false);
+        let c = choice(Agent::Codex, None, false);
         assert!(!c.usable && c.hint == "Codex isn't installed here.");
-        assert!(choice(Ai::Codex, Some(Path::new("/x/codex")), false).usable);
-        assert!(choice(Ai::Gemini, Some(Path::new("/x/gemini")), false).usable);
-        let g = choice(Ai::Gemini, Some(Path::new("/x/gemini")), true);
+        assert!(choice(Agent::Codex, Some(Path::new("/x/codex")), false).usable);
+        assert!(choice(Agent::Gemini, Some(Path::new("/x/gemini")), false).usable);
+        let g = choice(Agent::Gemini, Some(Path::new("/x/gemini")), true);
         assert!(!g.usable && g.hint.contains("system policy"), "{}", g.hint);
         let env = Env::new();
         let dir = env.root.join("policies");
@@ -1846,8 +1809,8 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"fine","se
         assert!(!gemini_has_system_policies(&dir));
         fs::write(dir.join("site.toml"), "").unwrap();
         assert!(gemini_has_system_policies(&dir));
-        assert_eq!(Ai::from_id(" Codex "), Some(Ai::Codex));
-        assert_eq!(Ai::from_id("bard"), None);
+        assert_eq!(Agent::from_id(" Codex "), Some(Agent::Codex));
+        assert_eq!(Agent::from_id("bard"), None);
     }
 
     #[test]
@@ -1866,8 +1829,8 @@ echo '{CX_DONE}'"#,
         fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
         let q = Questions::new(&env.paths, PathBuf::from("/nonexistent/claude"));
-        q.set_tool(Ai::Codex, Some(p));
-        q.set_ai(Ai::Codex);
+        q.set_tool(Agent::Codex, Some(p));
+        q.set_ai(Agent::Codex);
         let id = q.ask(None, "What is 2+2?", just(&q)).unwrap();
         let s = wait_idle(&q);
         let t = s.threads.iter().find(|t| t.id == id).unwrap();
@@ -1877,7 +1840,7 @@ echo '{CX_DONE}'"#,
         assert_eq!(t.claude_session.as_deref(), Some("019a8a2e-5b0f-7d61-a4a7-1c2d3e4f5a6b"));
         assert!(q.hider().hides("019a8a2e-5b0f-7d61-a4a7-1c2d3e4f5a6b", Some("/home/x/Projects/alpha")), "its session stays out of Wake's lists");
         // Settings change: the thread still follows up with Codex.
-        q.set_ai(Ai::Claude);
+        q.set_ai(Agent::Claude);
         q.ask(Some(&id), "And 3+3?", just(&q)).unwrap();
         wait_idle(&q);
         let text = fs::read_to_string(&log).unwrap();
@@ -1905,9 +1868,9 @@ echo '{GM_OK}'"#,
         fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
         let q = Questions::new(&env.paths, PathBuf::from("/nonexistent/claude"));
-        q.set_tool(Ai::Gemini, Some(p));
-        q.set_ai(Ai::Gemini);
-        if !q.choices().iter().any(|c| c.ai == Ai::Gemini && c.usable) {
+        q.set_tool(Agent::Gemini, Some(p));
+        q.set_ai(Agent::Gemini);
+        if !q.choices().iter().any(|c| c.ai == Agent::Gemini && c.usable) {
             return; // this machine has gemini system policies; Wake rightly won't use it
         }
         let id = q.ask(None, "What is 2+2?", just(&q)).unwrap();
@@ -1933,9 +1896,9 @@ echo '{GM_OK}'"#,
         let turns = vec![QTurn { question: "Q1".into(), answer: "A1".into(), asked_at: "t".into(), answered_at: Some("t".into()), error: None }];
         let p = thread_so_far(&turns, "Q2");
         assert!(p.contains("Question: Q1\nAnswer: A1") && p.ends_with("The new question: Q2"), "{p}");
-        assert_eq!(first_prompt(Ai::Claude, "x"), "x", "Claude gets its note as a system prompt");
-        assert_eq!(first_prompt(Ai::Gemini, "x"), "x", "Gemini gets it with -p");
-        assert!(first_prompt(Ai::Codex, "x").ends_with("\n\nx"));
+        assert_eq!(first_prompt(Agent::Claude, "x"), "x", "Claude gets its note as a system prompt");
+        assert_eq!(first_prompt(Agent::Gemini, "x"), "x", "Gemini gets it with -p");
+        assert!(first_prompt(Agent::Codex, "x").ends_with("\n\nx"));
     }
 
     /// The one end-to-end check against the real claude (costs a real request, so ignored):
@@ -1974,7 +1937,7 @@ echo '{GM_OK}'"#,
     #[ignore = "runs the real codex and gemini once each"]
     fn real_other_ai_answers_and_stays_out_of_wake_s_lists() {
         let only = std::env::var("WAKE_REAL_AI").ok();
-        for ai in [Ai::Codex, Ai::Gemini] {
+        for ai in [Agent::Codex, Agent::Gemini] {
             if only.as_deref().is_some_and(|o| o != ai.id()) {
                 continue;
             }
@@ -1982,7 +1945,7 @@ echo '{GM_OK}'"#,
             let q = Questions::new(&paths, find_claude(&paths));
             q.set_tool(ai, find_tool(&paths, ai));
             q.set_ai(ai);
-            assert!(q.choices().iter().any(|c| c.ai == ai && c.usable), "{} isn't usable here", ai.name());
+            assert!(q.choices().iter().any(|c| c.ai == ai && c.usable), "{} isn't usable here", ai.label());
             let id = q.ask(None, "What is 2+2? Answer in one word.", just(&q)).unwrap();
             let end = Instant::now() + Duration::from_secs(240);
             let s = loop {
@@ -1994,7 +1957,7 @@ echo '{GM_OK}'"#,
                 std::thread::sleep(Duration::from_millis(50));
             };
             let t = s.threads.iter().find(|t| t.id == id).unwrap().clone();
-            println!("{}: answer {:?}; error {:?}; session {:?}", ai.name(), t.turns[0].answer, t.turns[0].error, t.claude_session);
+            println!("{}: answer {:?}; error {:?}; session {:?}", ai.label(), t.turns[0].answer, t.turns[0].error, t.claude_session);
             assert!(t.turns[0].error.is_none(), "{:?}", t.turns[0].error);
             assert!(t.turns[0].answer.to_lowercase().contains("four") || t.turns[0].answer.contains('4'));
             check_real_lists(&t.claude_session.clone().unwrap());

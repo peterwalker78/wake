@@ -105,7 +105,7 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
     let show_cmd = {
         let (ui, id, cmd_l, choices) = (ui.clone(), id.clone(), cmd_l.clone(), choices.clone());
         move |at: u32| {
-            let agent = choices.get(at as usize).copied().unwrap_or(brief::Agent::Claude);
+            let agent = choices.get(at as usize).copied().unwrap_or_default();
             cmd_l.set_text(&ui.src.brief_command(agent, &id).unwrap_or_else(|| format!("{} -- \"$(cat <the brief>)\"", agent.id())));
         }
     };
@@ -135,8 +135,8 @@ pub fn open(ui: &Ui, ids: Option<Vec<String>>) {
                 return;
             }
             busy.set(true);
-            let agent = choices.get(agent_dd.selected() as usize).copied().unwrap_or(brief::Agent::Claude);
-            let req = brief::StartAgent { project: project.clone(), ideas: ids.clone(), brief: text, agent: agent.id().into(), id: id.clone() };
+            let agent = choices.get(agent_dd.selected() as usize).copied().unwrap_or_default();
+            let req = brief::StartAgent { project: project.clone(), ideas: ids.clone(), brief: text, agent, id: id.clone() };
             let (err, busy, ids, name) = (err.clone(), busy.clone(), ids.clone(), name.clone());
             err.set_text("Opening the window…");
             let (err2, busy2) = (err.clone(), busy.clone());

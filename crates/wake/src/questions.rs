@@ -389,7 +389,7 @@ fn render_list(ui: &Ui) {
             let when = fmt::short_when(Some(last));
             // Claude's threads say nothing extra; another AI's name its AI.
             let ai = wake_core::questions::thread_ai(t);
-            let when = if ai == wake_core::questions::Ai::Claude { when } else { format!("{} · {when}", ai.name()) };
+            let when = if ai == wake_core::Agent::Claude { when } else { format!("{} · {when}", ai.label()) };
             let project = t.project.as_deref().map(|p| (project_name(ui, p), crate::views::colour_by_id(ui, p)));
             (t.id.clone(), t.title.clone(), project, when, status(&t.id))
         })
@@ -507,7 +507,7 @@ fn render_thread(ui: &Ui) {
             &format!(
                 "Wake asks your own {ai} and keeps every thread here. Just a question: {Ai} can search the web. About a project: it can also read that project's files. It never changes anything. Settings (Ctrl+,) picks which AI answers.",
                 ai = crate::setview::current_ai().id(),
-                Ai = crate::setview::current_ai().name()
+                Ai = crate::setview::current_ai().label()
             ),
         );
         e.set_margin_top(60);
@@ -527,7 +527,7 @@ fn render_thread(ui: &Ui) {
             meta.push_str(" · ");
             meta.push_str(&t.project.as_deref().map_or_else(|| "just a question".to_string(), |p| format!("about {}", project_name(ui, p))));
             // Which AI answers this thread (follow-ups stay with it).
-            meta.push_str(&format!(" · {}", wake_core::questions::thread_ai(&t).name()));
+            meta.push_str(&format!(" · {}", wake_core::questions::thread_ai(&t).label()));
         }
         tb.append(&w::label(&meta, &["qmeta"]));
         let ab = w::vbox(10, &["qa"]);
@@ -716,10 +716,10 @@ fn ctx_note(ui: &Ui) {
     let text = match (&project, follow) {
         (_, true) => {
             let ai = st(|s| s.sel.as_deref().and_then(|id| s.ov.as_ref().and_then(|o| thread_of(o, id)))).map(|t| wake_core::questions::thread_ai(&t)).unwrap_or_default();
-            format!("A follow-up in this thread, answered by {}", ai.name())
+            format!("A follow-up in this thread, answered by {}", ai.label())
         }
-        (None, false) => format!("{} can search the web", crate::setview::current_ai().name()),
-        (Some(p), false) => format!("{} can read {}'s files and search the web; it changes nothing", crate::setview::current_ai().name(), project_name(ui, p)),
+        (None, false) => format!("{} can search the web", crate::setview::current_ai().label()),
+        (Some(p), false) => format!("{} can read {}'s files and search the web; it changes nothing", crate::setview::current_ai().label(), project_name(ui, p)),
     };
     if wd.ctx_note.text() != text {
         wd.ctx_note.set_text(&text);
@@ -903,7 +903,12 @@ fn delete(ui: &Ui) {
     dialogs::confirm(
         ui,
         &format!("Delete \u{201c}{}\u{201d}?", t.title),
-        &[format!("{} goes from Wake. {}'s own copy of the conversation stays in ~/.{}.", fmt::pl(t.turns.len() as u64, "question and its answer", "questions and their answers"), ai.name(), ai.id())],
+        &[format!(
+            "{} goes from Wake. {}'s own copy of the conversation stays in ~/.{}.",
+            fmt::pl(t.turns.len() as u64, "question and its answer", "questions and their answers"),
+            ai.label(),
+            ai.id()
+        )],
         &[],
         "Delete",
         move |ui| {

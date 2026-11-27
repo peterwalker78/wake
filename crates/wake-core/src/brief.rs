@@ -9,36 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::store::{StoreError, Writer};
-
-/// The agents Wake can start with a brief as their first prompt, interactively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Agent {
-    Claude,
-    /// `codex [PROMPT]` starts the interactive CLI with that first prompt (checked with `codex --help`).
-    Codex,
-}
-
-impl Agent {
-    pub const ALL: [Agent; 2] = [Agent::Claude, Agent::Codex];
-
-    pub fn id(self) -> &'static str {
-        match self {
-            Agent::Claude => "claude",
-            Agent::Codex => "codex",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Agent::Claude => "Claude",
-            Agent::Codex => "Codex",
-        }
-    }
-
-    pub fn from_id(id: &str) -> Option<Agent> {
-        Agent::ALL.into_iter().find(|a| a.id() == id)
-    }
-}
+use crate::types::Agent;
 
 /// What the person asked for: these ideas, in this project, with this brief, to this agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +17,7 @@ pub struct StartAgent {
     pub project: String,
     pub ideas: Vec<String>,
     pub brief: String,
-    pub agent: String,
+    pub agent: Agent,
     /// The brief's file name (without `.md`), from [`new_id`]: the dialog shows the command with it.
     pub id: String,
 }
@@ -97,7 +68,7 @@ pub fn command(agent: Agent, path: &Path) -> Option<String> {
 pub fn check_command(cmd: &str, briefs: &Path) -> Option<String> {
     let refuse = || Some("Refused to type this command: it isn't Wake's command for a brief.".to_string());
     let Some((prog, rest)) = cmd.split_once(' ') else { return refuse() };
-    let Some(agent) = Agent::from_id(prog) else { return refuse() };
+    let Some(agent) = Agent::from_id(prog).filter(|a| a.can_brief()) else { return refuse() };
     let Some(path) = rest.strip_prefix("-- \"$(cat '").and_then(|r| r.strip_suffix("')\"")) else { return refuse() };
     let p = Path::new(path);
     let in_briefs = p.parent() == Some(briefs);

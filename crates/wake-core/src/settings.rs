@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use toml::{Table, Value};
 
-use crate::questions::Ai;
 use crate::store::Writer;
+use crate::types::Agent;
 use crate::util;
 
 pub const FILE: &str = "settings.toml";
@@ -63,7 +63,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            ai: "claude".into(),
+            ai: Agent::Claude.id().into(),
             theme: "dark".into(),
             accent: "cyan".into(),
             density: "reduced".into(),
@@ -82,7 +82,7 @@ impl Default for Settings {
 /// What the core needs from the settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CoreOptions {
-    pub question_ai: Ai,
+    pub question_ai: Agent,
     /// None: never ask the remotes.
     pub remote_every: Option<Duration>,
     pub notify_behind: bool,
@@ -104,7 +104,7 @@ fn short_word(s: &str) -> bool {
 impl Settings {
     pub fn core(&self) -> CoreOptions {
         CoreOptions {
-            question_ai: Ai::from_id(&self.ai).unwrap_or_default(),
+            question_ai: Agent::from_id(&self.ai).unwrap_or_default(),
             remote_every: (self.remote_minutes > 0).then(|| Duration::from_secs(u64::from(self.remote_minutes) * 60)),
             notify_behind: self.notify_behind,
             quiet: false,
@@ -118,7 +118,7 @@ impl Settings {
         let word = |sec: &str, key: &str, allowed: &[&str], dflt: &str| {
             get(sec, key).and_then(|v| v.as_str().map(str::to_lowercase)).filter(|v| allowed.contains(&v.as_str())).unwrap_or_else(|| dflt.to_string())
         };
-        let ais: Vec<&str> = Ai::ALL.iter().map(|a| a.id()).collect();
+        let ais: Vec<&str> = Agent::ALL.iter().map(|a| a.id()).collect();
         let mut sorts = BTreeMap::new();
         if let Some(s) = t.get("sort").and_then(Value::as_table) {
             for (k, v) in s {
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!((back.projects_layout.as_str(), back.projects_group.as_str()), ("list", "activity"));
         assert_eq!(back.sorts.get("monitor").map(String::as_str), Some("last reversed"));
         assert_eq!(back.core().remote_every, None);
-        assert_eq!(back.core().question_ai, Ai::Codex);
+        assert_eq!(back.core().question_ai, Agent::Codex);
     }
 
     #[test]

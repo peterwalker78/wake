@@ -234,7 +234,7 @@ fn tilde_path(p: &std::path::Path) -> String {
 fn doctor_sessions(d: &mut Doctor, paths: &store::Paths) {
     d.heading("Sessions");
     let found = wake_core::index::Indexer::new(paths.clone()).discover();
-    let claude = found.iter().filter(|f| f.1 == "claude").count();
+    let claude = found.iter().filter(|f| f.1 == wake_core::Agent::Claude).count();
     let codex = found.len() - claude;
     let (claude_dir, codex_dir) = (tilde_path(&paths.claude.join("projects")), tilde_path(&paths.codex.join("sessions")));
     if found.is_empty() {
@@ -282,7 +282,7 @@ fn doctor_open_now(d: &mut Doctor, paths: &store::Paths) {
     }
 }
 
-fn doctor_index(d: &mut Doctor, paths: &store::Paths, found: &[(String, &str)]) {
+fn doctor_index(d: &mut Doctor, paths: &store::Paths, found: &[(String, wake_core::Agent)]) {
     let dir = paths.index_dir();
     let Some(read) = store::read_json::<std::collections::HashMap<String, serde_json::Value>>(&dir.join("files.json")) else {
         d.ok("Index: not made yet. Wake makes it the first time it opens (or run `wake index`).");
@@ -298,27 +298,28 @@ fn doctor_index(d: &mut Doctor, paths: &store::Paths, found: &[(String, &str)]) 
 }
 
 fn doctor_programs(d: &mut Doctor, paths: &store::Paths) {
-    use wake_core::questions::{Ai, find_tool};
+    use wake_core::Agent;
+    use wake_core::questions::find_tool;
     d.heading("Programs");
     if on_path("git") {
         d.ok("git");
     } else {
         d.line(Mark::Needed, "git isn't installed. Wake reads each project's state with it.", &install("git", "git"));
     }
-    let tools: Vec<(Ai, Option<std::path::PathBuf>)> = Ai::ALL.iter().map(|&ai| (ai, find_tool(paths, ai))).collect();
-    let other_agent = tools.iter().any(|(ai, p)| *ai != Ai::Claude && p.is_some());
+    let tools: Vec<(Agent, Option<std::path::PathBuf>)> = Agent::ALL.iter().map(|&ai| (ai, find_tool(paths, ai))).collect();
+    let other_agent = tools.iter().any(|(ai, p)| *ai != Agent::Claude && p.is_some());
     for (ai, found) in &tools {
         match (ai, found) {
             (_, Some(p)) => d.ok(&format!("{}: {}", ai.id(), tilde_path(p))),
-            (Ai::Claude, None) => d.line(
+            (Agent::Claude, None) => d.line(
                 if other_agent { Mark::Optional } else { Mark::Needed },
                 "claude: Wake can't find it (it looked on your PATH and in ~/.local/bin). Questions and Start an agent need it.",
                 "install Claude Code, or set WAKE_CLAUDE to where claude is.",
             ),
-            (Ai::Codex, None) => {
+            (Agent::Codex, None) => {
                 d.line(Mark::Optional, "codex isn't installed. With it, Questions can also ask Codex.", "only if you want it, install the Codex CLI, or set WAKE_CODEX to where it is.")
             }
-            (Ai::Gemini, None) => {
+            (Agent::Gemini, None) => {
                 d.line(Mark::Optional, "gemini isn't installed. With it, Questions can also ask Gemini.", "only if you want it, install Gemini CLI, or set WAKE_GEMINI to where it is.")
             }
         }

@@ -181,9 +181,9 @@ pub trait Source: Send + Sync {
 
     /// The agents a brief can be sent to here: Claude, and Codex when it is installed. Cheap
     /// (looks for the programs, never runs them).
-    fn agent_choices(&self) -> Vec<brief::Agent>;
+    fn agent_choices(&self) -> Vec<Agent>;
     /// The exact line Wake would type for a brief with this id, to show before it is sent. Cheap.
-    fn brief_command(&self, agent: brief::Agent, id: &str) -> Option<String>;
+    fn brief_command(&self, agent: Agent, id: &str) -> Option<String>;
     /// Start an agent on ideas: write the brief to `<data>/briefs/<id>.md`, open a new window of the
     /// default terminal app in the project's folder running the agent on it, and mark the ideas as
     /// sent. Refuses ideas from another project.

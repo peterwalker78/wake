@@ -1010,8 +1010,8 @@ fn session(ui: &Ui, id: &str) {
     if !d.prompts.is_empty() {
         let n = d.prompts.len();
         folds.append(&fold(ui, "asked", "You asked", &n.to_string(), "", |x| {
-            // Its own page has the room: every prompt.
-            for p in &d.prompts {
+            // Its own page has the room: every prompt, newest first.
+            for p in d.prompts.iter().rev() {
                 let at = p.at.as_deref().and_then(fmt::parse).and_then(|t| t.to_local().ok()).and_then(|t| t.format("%H:%M").ok()).map(|s| s.to_string()).unwrap_or_default();
                 x.append(&asked(&at, &p.text));
             }

@@ -43,7 +43,7 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
   holds and how long it has been idle; a working one carries its readout. Claude's own background
   processes are folded away until you ask for them. You can stop an agent from here; Wake names
   the task and asks first.
-- **Ask** (the speech bubble) asks your own `claude`, `codex` or `gemini` a quick question
+- **Ask** (the last tab) asks your own `claude`, `codex` or `gemini` a quick question
   without opening a terminal, in threads you can come back to. They may only search and read;
   nothing that changes files is allowed.
 - **New project** (in Projects) starts something from nothing. Your own AI asks a few questions,
@@ -92,8 +92,7 @@ anywhere in the details puts the keyboard there. Every action is a button or in 
 |---|---|
 | `Ctrl+F` | find a session by name |
 | `Ctrl+N` | a new idea |
-| `Ctrl+1` to `Ctrl+5` | Monitor, Projects, Ideas, History, Agents |
-| `Ctrl+6` | Ask |
+| `Ctrl+1` to `Ctrl+6` | Monitor, Projects, Ideas, History, Agents, Ask |
 | `Ctrl+,` | Settings |
 | `Ctrl+Tab` | the next view (`Shift` for the one before) |
 | the Menu key or `Shift+F10` | the selected item's ⋯ menu |

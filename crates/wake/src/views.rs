@@ -307,13 +307,25 @@ pub fn render_top(ui: &Ui) {
     ui.st.borrow_mut().top_drawn = sig;
     ui.w.tabs.set_visible(!phone);
     ui.w.tabs_bottom.set_visible(phone);
-    let places: [(View, &[&str], u32, &str, String); 5] = View::TABS.map(|v| match v {
+    let (q_new, q_live) = qbadge.unwrap_or_default();
+    let places: [(View, &[&str], u32, &str, String); 6] = View::TABS.map(|v| match v {
         View::Monitor => (v, w::icons::MONITOR, c.waiting, "attention", format!("{} waiting for you, {} working", c.waiting, c.working)),
         View::Projects => (v, w::icons::PROJECTS, 0, "", "Where you left each project".into()),
         View::Ideas => (v, w::icons::IDEAS, n_ideas, "", fmt::pl(n_ideas, "idea to sort", "ideas to sort")),
         View::History => (v, w::icons::HISTORY, 0, "", "Every session, by day; search it".into()),
         View::Agents => (v, w::icons::AGENTS, n_stale, "attention", if n_stale > 0 { format!("{n_stale} look stale") } else { "Agent processes and their memory".into() }),
-        View::Questions | View::Settings => unreachable!("not a tab"),
+        View::Questions => (
+            v,
+            w::icons::ASK,
+            q_new,
+            "",
+            match (q_live, q_new) {
+                (true, _) => "Ask your own AI a question: answering now".into(),
+                (false, n) if n > 0 => format!("Ask your own AI a question: {}", fmt::pl(n, "new answer", "new answers")),
+                _ => "Ask your own AI a question, read-only".into(),
+            },
+        ),
+        View::Settings => unreachable!("not a tab"),
     });
     for (bar, bottom) in [(&ui.w.tabs, false), (&ui.w.tabs_bottom, true)] {
         w::clear(bar);
@@ -329,6 +341,10 @@ pub fn render_top(ui: &Ui) {
             let head = w::hbox(4, &[]);
             head.set_halign(gtk::Align::Center);
             head.append(&w::icon(icon));
+            // Ask: a dot while an answer is being written.
+            if *v == View::Questions && q_live {
+                head.append(&w::dot("working"));
+            }
             let badge = (*n > 0).then(|| {
                 let badge = w::label(&n.to_string(), &["tabn"]);
                 if !badge_class.is_empty() {
@@ -368,33 +384,6 @@ pub fn render_top(ui: &Ui) {
             bar.append(&b);
         }
     }
-    // Ask, at the end of the bar: lit while an answer comes in, with a count of new ones.
-    ui.w.counts.clear();
-    let ask = gtk::Button::new();
-    ask.add_css_class("flat");
-    ask.add_css_class("askbtn");
-    let inner = w::hbox(6, &[]);
-    inner.append(&w::icon(w::icons::ASK));
-    let tip = match qbadge {
-        Some((_, true)) => {
-            ask.add_css_class("live");
-            "Ask (6): answering now".to_string()
-        }
-        Some((n, false)) if n > 0 => {
-            inner.append(&w::label(&n.to_string(), &["tabn"]));
-            format!("Ask (6): {}", fmt::pl(n, "new answer", "new answers"))
-        }
-        _ => "Ask your own AI a question, read-only (6)".to_string(),
-    };
-    ask.set_child(Some(&inner));
-    ask.set_tooltip_text(Some(&tip));
-    ask.update_property(&[gtk::accessible::Property::Label("Ask")]);
-    if view == View::Questions {
-        ask.add_css_class("on");
-    }
-    let ui2 = ui.clone();
-    ask.connect_clicked(move |_| app::set_view(&ui2, View::Questions));
-    ui.w.counts.add(&ask, 0);
 }
 
 pub fn render_rail(ui: &Ui) {

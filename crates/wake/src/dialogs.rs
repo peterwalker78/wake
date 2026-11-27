@@ -269,8 +269,7 @@ pub fn keys(ui: &Ui) {
             vec![
                 ("Ctrl+F", "find a session".into()),
                 ("Ctrl+N", "a new idea".into()),
-                ("Ctrl+1 to 5", View::TABS.map(View::name).join(", ")),
-                ("Ctrl+6", "Ask".into()),
+                ("Ctrl+1 to 6", View::TABS.map(View::name).join(", ")),
                 ("Ctrl+,", "Settings".into()),
                 ("Ctrl+Tab", "the next view (Shift: back)".into()),
                 ("Menu  Shift+F10", "the selected item's menu".into()),

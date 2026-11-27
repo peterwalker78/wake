@@ -4,8 +4,8 @@
 //! Left, the threads (newest asked first; a dot while answering, waiting or unread). Right, the
 //! selected thread at a readable width, answers drawn from Markdown, and the input under it:
 //! Enter asks, Shift+Enter starts a new line. Follow-ups continue the selected thread; `n` starts a
-//! new one. Next to the input, the context: "Just a question" (Claude may search the web) or a
-//! project (it may also read that project's files). Nothing ever changes files.
+//! new one. Next to the input, the context: "Just a question" or a project to start in. Either way
+//! it may read the person's projects and search the web. Nothing ever changes files.
 //!
 //! Wake's core runs the questions (`Source::ask` and friends, wake-core's questions.rs); this
 //! module only asks for the state, every 200 ms while something is being answered, and draws it.
@@ -505,7 +505,7 @@ fn render_thread(ui: &Ui) {
         let e = w::empty(
             "Ask anything",
             &format!(
-                "Wake asks your own {ai} and keeps every thread here. Just a question: {Ai} can search the web. About a project: it can also read that project's files. It never changes anything. Settings (Ctrl+,) picks which AI answers.",
+                "Wake asks your own {ai} and keeps every thread here. {Ai} can read your projects and search the web, and never changes anything. Pick a project to ask about it in particular. Settings (Ctrl+,) picks which AI answers.",
                 ai = crate::setview::current_ai().id(),
                 Ai = crate::setview::current_ai().label()
             ),
@@ -718,8 +718,8 @@ fn ctx_note(ui: &Ui) {
             let ai = st(|s| s.sel.as_deref().and_then(|id| s.ov.as_ref().and_then(|o| thread_of(o, id)))).map(|t| wake_core::questions::thread_ai(&t)).unwrap_or_default();
             format!("A follow-up in this thread, answered by {}", ai.label())
         }
-        (None, false) => format!("{} can search the web", crate::setview::current_ai().label()),
-        (Some(p), false) => format!("{} can read {}'s files and search the web; it changes nothing", crate::setview::current_ai().label(), project_name(ui, p)),
+        (None, false) => format!("{} can read your projects and search the web; it changes nothing", crate::setview::current_ai().label()),
+        (Some(p), false) => format!("{} starts in {}, can read your projects and search the web; it changes nothing", crate::setview::current_ai().label(), project_name(ui, p)),
     };
     if wd.ctx_note.text() != text {
         wd.ctx_note.set_text(&text);

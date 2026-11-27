@@ -44,8 +44,9 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
   processes are folded away until you ask for them. You can stop an agent from here; Wake names
   the task and asks first.
 - **Ask** (the last tab) asks your own `claude`, `codex` or `gemini` a quick question
-  without opening a terminal, in threads you can come back to. They may only search and read;
-  nothing that changes files is allowed.
+  without opening a terminal, in threads you can come back to. It can read your projects and
+  search the web; nothing that changes files is allowed, files that usually hold secrets (`.env`,
+  keys, credentials) are never read, and it can't fetch web pages, so what it reads stays here.
 - **New project** (in Projects) starts something from nothing. Your own AI asks a few questions,
   one at a time: what you want to make and who it's for, whether it's code or something else like
   writing or planning, which tech (it suggests one if you don't know), and whether to track changes

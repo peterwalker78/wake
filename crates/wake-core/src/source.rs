@@ -1692,11 +1692,23 @@ impl Live {
     /// Where a question runs: Wake's questions folder, or the project's first folder.
     fn question_context(&self, project: Option<&str>) -> Result<crate::questions::Context, String> {
         let q = &self.inner.questions;
-        let Some(id) = project else { return Ok(crate::questions::Context { project: None, cwd: q.dir() }) };
         let projects = self.inner.store.load_projects();
+        // Every kind of question may read the person's projects: each tracked project's folders
+        // that are there, never the home folder itself or anything above it.
+        let home = &self.inner.paths.home;
+        let mut readable: Vec<(String, PathBuf)> = Vec::new();
+        for p in projects.iter().filter(|p| !p.removed) {
+            for r in &p.roots {
+                let d = PathBuf::from(r);
+                if d.is_dir() && !home.starts_with(&d) && !readable.iter().any(|(_, x)| *x == d) {
+                    readable.push((p.name.clone(), d));
+                }
+            }
+        }
+        let Some(id) = project else { return Ok(crate::questions::Context { project: None, cwd: q.dir(), readable }) };
         let p = store::project_by_id(id, &projects).ok_or("That project isn't tracked any more.")?;
         let root = p.roots.iter().find(|r| Path::new(r).is_dir()).ok_or_else(|| format!("{}'s folder isn't there any more.", p.name))?;
-        Ok(crate::questions::Context { project: Some(p.id.clone()), cwd: PathBuf::from(root) })
+        Ok(crate::questions::Context { project: Some(p.id.clone()), cwd: PathBuf::from(root), readable })
     }
 
     fn project_summary_now(&self, p: &ProjectRec) -> ProjectSummary {

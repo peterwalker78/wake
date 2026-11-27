@@ -52,15 +52,13 @@ use crate::store::{self, Paths, Writer};
 use crate::types::{Agent, ProcKind, ProcOverview, QOverview, QThread, QTurn};
 use crate::util;
 
-/// Tools for "just a question".
-pub const JUST_TOOLS: &str = "WebSearch,WebFetch";
-/// Tools for a question about a project: reading and searching only. No WebFetch: what it reads
-/// in the project must not be able to send anything out.
-pub const PROJECT_TOOLS: &str = "Read,Grep,Glob,WebSearch";
-/// Allowed without asking in a project question: reading inside the question's folder only (a
-/// path rule; Claude applies Read rules to Grep and Glob too). Reading elsewhere would need a
-/// permission no one is there to give.
-pub const PROJECT_ALLOWED: &str = "Read(./**),WebSearch";
+/// Tools for every question: reading and searching the person's projects, and searching the web.
+/// No WebFetch: what it reads must never be sent anywhere, and a fetched address could carry it.
+pub const TOOLS: &str = "Read,Grep,Glob,WebSearch";
+/// Never read, even inside a project: the files that usually hold secrets. Claude applies Read
+/// rules to Grep and Glob too.
+pub const SECRETS: &str = "Read(**/.env),Read(**/.env.*),Read(**/*.key),Read(**/*.pem),Read(**/*.p12),Read(**/id_rsa*),Read(**/id_ed25519*),\
+Read(**/credentials*),Read(**/secrets*),Read(**/.git/config),Read(**/.netrc),Read(**/.npmrc),Read(**/.pypirc)";
 /// Settings for every question: none of the person's or the project's hooks run.
 const QUESTION_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
 /// Denied whatever else a settings file may allow.
@@ -355,19 +353,38 @@ pub fn plain_error_for(ai: Agent, raw: &str) -> String {
 
 /// The arguments for one question. `resume` continues `session`; otherwise a new conversation
 /// starts under that id (so Wake knows it before Claude writes anything).
-pub fn claude_args(session: &str, resume: bool, project: bool) -> Vec<String> {
-    let (tools, allowed) = if project { (PROJECT_TOOLS, PROJECT_ALLOWED) } else { (JUST_TOOLS, JUST_TOOLS) };
+/// The arguments for one question to Claude: it may read the folders in `readable` (the person's
+/// projects) and search the web, nothing else; `note` is Wake's note to it.
+pub fn claude_args(session: &str, resume: bool, readable: &[PathBuf], note: &str) -> Vec<String> {
+    let mut allowed: Vec<String> = readable.iter().map(|d| format!("Read(/{}/**)", d.display())).collect();
+    allowed.push("WebSearch".into());
     let mut a: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].map(String::from).to_vec();
     a.push(if resume { "--resume".into() } else { "--session-id".into() });
     a.push(session.into());
-    for (flag, v) in [("--tools", tools), ("--allowedTools", allowed), ("--disallowedTools", DENIED_TOOLS)] {
+    // The projects are added as folders it may work in; outside them reading needs a permission no
+    // one is there to give.
+    if !readable.is_empty() {
+        a.push("--add-dir".into());
+        a.extend(readable.iter().map(|d| d.display().to_string()));
+    }
+    for (flag, v) in [("--tools", TOOLS.to_string()), ("--allowedTools", allowed.join(",")), ("--disallowedTools", format!("{DENIED_TOOLS},{SECRETS}"))] {
         a.push(flag.into());
-        a.push(v.into());
+        a.push(v);
     }
     // Nothing may ask for permission (no one is there to answer); no MCP servers (they could act);
     // only the person's own settings, never the project's, and no hooks at all.
-    a.extend(["--permission-prompts", "none", "--strict-mcp-config", "--setting-sources", "user", "--settings", QUESTION_SETTINGS, "--append-system-prompt", SYSTEM_NOTE].map(String::from));
+    a.extend(["--permission-prompts", "none", "--strict-mcp-config", "--setting-sources", "user", "--settings", QUESTION_SETTINGS, "--append-system-prompt"].map(String::from));
+    a.push(note.into());
     a
+}
+
+/// Wake's note for a question, naming the projects it may read so it knows where to look.
+pub fn question_note(readable: &[(String, PathBuf)]) -> String {
+    if readable.is_empty() {
+        return SYSTEM_NOTE.to_string();
+    }
+    let list: Vec<String> = readable.iter().map(|(name, dir)| format!("{name}: {}", dir.display())).collect();
+    format!("{SYSTEM_NOTE}\n\nThe person's projects, which you can read: {}.", list.join("; "))
 }
 
 /// The arguments for one message of a New project interview: like a question's, but with no tool
@@ -384,31 +401,31 @@ pub fn interview_args(session: &str, resume: bool) -> Vec<String> {
     a
 }
 
-/// Wake's note to the AI: the question note, or the interviewer's instructions.
-fn note(interview: bool) -> &'static str {
-    if interview { crate::newproject::INTERVIEWER } else { SYSTEM_NOTE }
+/// Wake's note to the AI: the question note naming the projects, or the interviewer's instructions.
+fn note(interview: bool, ctx: &Context) -> String {
+    if interview { crate::newproject::INTERVIEWER.to_string() } else { question_note(&ctx.readable) }
 }
 
 /// The first question as sent: Codex takes no system prompt, so Wake's note goes before it
 /// (Claude gets it as `--append-system-prompt`, Gemini after the question with `-p`).
 pub fn first_prompt(ai: Agent, question: &str) -> String {
-    first_prompt_for(ai, question, false)
+    first_prompt_for(ai, question, SYSTEM_NOTE)
 }
 
-fn first_prompt_for(ai: Agent, question: &str, interview: bool) -> String {
+fn first_prompt_for(ai: Agent, question: &str, note: &str) -> String {
     match ai {
-        Agent::Codex => format!("{}\n\n{question}", note(interview)),
+        Agent::Codex => format!("{note}\n\n{question}"),
         _ => question.to_string(),
     }
 }
 
 /// A follow-up for an AI whose session can't be resumed: the thread so far, then the question.
 pub fn thread_so_far(turns: &[QTurn], question: &str) -> String {
-    thread_so_far_for(turns, question, false)
+    thread_so_far_for(turns, question, SYSTEM_NOTE)
 }
 
-fn thread_so_far_for(turns: &[QTurn], question: &str, interview: bool) -> String {
-    let mut out = format!("{}\n\nThe conversation so far:\n", note(interview));
+fn thread_so_far_for(turns: &[QTurn], question: &str, note: &str) -> String {
+    let mut out = format!("{note}\n\nThe conversation so far:\n");
     for t in turns.iter().filter(|t| t.answered_at.is_some()) {
         out.push_str(&format!("\nQuestion: {}\nAnswer: {}\n", t.question, t.answer));
     }
@@ -434,13 +451,18 @@ pub fn codex_args(resume: Option<&str>) -> Vec<String> {
 /// The arguments for one question to Gemini: headless, streaming JSON, plan (read-only) mode and
 /// Wake's admin policy; the question comes on stdin and `-p` adds Wake's note after it.
 pub fn gemini_args(session: &str, resume: bool, policy: &Path) -> Vec<String> {
-    gemini_args_with(session, resume, policy, SYSTEM_NOTE)
+    gemini_args_with(session, resume, policy, SYSTEM_NOTE, &[])
 }
 
-fn gemini_args_with(session: &str, resume: bool, policy: &Path, note: &str) -> Vec<String> {
+fn gemini_args_with(session: &str, resume: bool, policy: &Path, note: &str, readable: &[PathBuf]) -> Vec<String> {
     // No MCP server and no extension starts: a project's own config could name any command.
     let mut a: Vec<String> = ["--output-format", "stream-json", "--approval-mode", "plan", "--allowed-mcp-server-names", "none", "--extensions", "none", "--admin-policy"].map(String::from).to_vec();
     a.push(policy.to_string_lossy().into_owned());
+    // The person's projects, as folders it may read.
+    if !readable.is_empty() {
+        a.push("--include-directories".into());
+        a.push(readable.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(","));
+    }
     a.push(if resume { "--resume".into() } else { "--session-id".into() });
     a.push(session.into());
     a.push("-p".into());
@@ -640,11 +662,18 @@ fn last_asked(t: &QThread) -> &str {
 
 // ------------------------------------------------------------------ the runner
 
-/// Where a question runs: the project (None for "just a question") and its folder.
-#[derive(Debug, Clone, PartialEq)]
+/// The folders a question may read.
+fn readable(ctx: &Context) -> Vec<PathBuf> {
+    ctx.readable.iter().map(|(_, d)| d.clone()).collect()
+}
+
+/// Where a question runs: the project (None for "just a question") and its folder, and the
+/// person's projects it may read (name and folder), whichever kind of question it is.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Context {
     pub project: Option<String>,
     pub cwd: PathBuf,
+    pub readable: Vec<(String, PathBuf)>,
 }
 
 struct Job {
@@ -922,7 +951,7 @@ impl Questions {
         let dir = self.interview_dir();
         self.sh.store.ensure()?;
         self.sh.store.writer.ensure_dir(&dir).map_err(|e| e.0)?;
-        self.ask_as(thread, answer, Context { project: None, cwd: dir }, Some(crate::newproject::KIND))
+        self.ask_as(thread, answer, Context { project: None, cwd: dir, ..Default::default() }, Some(crate::newproject::KIND))
     }
 
     /// True for a New project interview's thread.
@@ -955,7 +984,7 @@ impl Questions {
         if !self.is_interview(id) {
             return Err("That interview is gone.".into());
         }
-        self.retry(id, Context { project: None, cwd: self.interview_dir() })
+        self.retry(id, Context { project: None, cwd: self.interview_dir(), ..Default::default() })
     }
 
     fn ask_as(&self, thread: Option<&str>, question: &str, ctx: Context, kind: Option<&str>) -> Result<String, String> {
@@ -1141,9 +1170,9 @@ impl Questions {
                 question
             } else if answered_before {
                 // Its session is lost: send the thread so far instead.
-                thread_so_far_for(&t.turns[..job.turn], &question, interview)
+                thread_so_far_for(&t.turns[..job.turn], &question, &note(interview, &job.ctx))
             } else {
-                first_prompt_for(ai, &question, interview)
+                first_prompt_for(ai, &question, &note(interview, &job.ctx))
             };
             if !resume && let Some(sid) = &session {
                 t.claude_session = Some(sid.clone());
@@ -1191,7 +1220,7 @@ impl Questions {
             Agent::Claude => {
                 let prog = self.tool(Agent::Claude).ok_or_else(|| missing(Agent::Claude))?;
                 let session = plan.session.as_deref().unwrap_or_default();
-                Ok((prog, if plan.interview { interview_args(session, plan.resume) } else { claude_args(session, plan.resume, job.ctx.project.is_some()) }))
+                Ok((prog, if plan.interview { interview_args(session, plan.resume) } else { claude_args(session, plan.resume, &readable(&job.ctx), &note(false, &job.ctx)) }))
             }
             // Codex can't be run with no tools: an interview is never sent to it.
             Agent::Codex if plan.interview => Err("Codex can't run the New project interview. Pick Claude or Gemini in Settings.".into()),
@@ -1209,7 +1238,10 @@ impl Questions {
                 let (name, rules) = if plan.interview { ("gemini-interview.toml", GEMINI_INTERVIEW_POLICY) } else { ("gemini-readonly.toml", GEMINI_POLICY) };
                 let policy = self.sh.store.dir().join(name);
                 self.sh.store.writer.write_atomic(&policy, rules.as_bytes()).map_err(|e| e.0)?;
-                Ok((prog, gemini_args_with(plan.session.as_deref().unwrap_or_default(), plan.resume, &policy, note(plan.interview))))
+                Ok((
+                    prog,
+                    gemini_args_with(plan.session.as_deref().unwrap_or_default(), plan.resume, &policy, &note(plan.interview, &job.ctx), &if plan.interview { vec![] } else { readable(&job.ctx) }),
+                ))
             }
         }
     }
@@ -1494,29 +1526,44 @@ mod tests {
 
     #[test]
     fn arguments_never_allow_changing_files() {
-        let a = claude_args("sid", false, false);
+        // With no projects tracked: web search only.
+        let a = claude_args("sid", false, &[], SYSTEM_NOTE);
         let joined = a.join(" ");
         assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages --session-id sid"));
         let after = |f: &str| a.iter().position(|x| x == f).map(|i| a[i + 1].clone()).unwrap();
-        assert_eq!(after("--tools"), "WebSearch,WebFetch");
-        assert_eq!(after("--allowedTools"), "WebSearch,WebFetch");
-        assert_eq!(after("--disallowedTools"), "Edit,Write,Bash,NotebookEdit");
+        assert_eq!(after("--tools"), "Read,Grep,Glob,WebSearch");
+        assert_eq!(after("--allowedTools"), "WebSearch");
+        assert!(after("--disallowedTools").starts_with("Edit,Write,Bash,NotebookEdit,"));
         assert_eq!(after("--permission-prompts"), "none");
         assert!(a.contains(&"--strict-mcp-config".to_string()));
-        let p = claude_args("sid", true, true);
+        assert!(!a.contains(&"--add-dir".to_string()));
+        // With projects: it reads every one of them, by absolute path, and nothing outside.
+        let dirs = [PathBuf::from("/home/sam/Projects/a"), PathBuf::from("/home/sam/Projects/b c")];
+        let p = claude_args("sid", true, &dirs, "note");
         assert_eq!(p[5..7], ["--resume".to_string(), "sid".to_string()]);
         let after = |f: &str| p.iter().position(|x| x == f).map(|i| p[i + 1].clone()).unwrap();
-        assert_eq!(after("--tools"), "Read,Grep,Glob,WebSearch");
-        assert_eq!(after("--allowedTools"), "Read(./**),WebSearch", "reading only inside the project");
+        let at = p.iter().position(|x| x == "--add-dir").unwrap();
+        assert_eq!(p[at + 1..at + 3], ["/home/sam/Projects/a".to_string(), "/home/sam/Projects/b c".to_string()]);
+        assert!(p[at + 3].starts_with("--"), "the folder list ends before the next option");
+        assert_eq!(after("--allowedTools"), "Read(//home/sam/Projects/a/**),Read(//home/sam/Projects/b c/**),WebSearch");
         for bad in ["Edit", "Write", "Bash", "NotebookEdit", "WebFetch", "Read"] {
-            assert!(!after("--allowedTools").split(',').any(|t| t == bad));
+            assert!(!after("--allowedTools").split(',').any(|t| t == bad), "{bad}");
         }
+        // Files that usually hold secrets are never read, even inside a project.
+        for secret in ["Read(**/.env)", "Read(**/*.key)", "Read(**/credentials*)", "Read(**/.git/config)"] {
+            assert!(after("--disallowedTools").split(',').any(|t| t == secret), "{secret}");
+        }
+        assert_eq!(after("--append-system-prompt"), "note");
         // Only the person's settings, and no hooks, for either kind.
         for v in [&a, &p] {
             let after = |f: &str| v.iter().position(|x| x == f).map(|i| v[i + 1].clone()).unwrap();
             assert_eq!(after("--setting-sources"), "user");
             assert_eq!(serde_json::from_str::<Value>(&after("--settings")).unwrap()["disableAllHooks"], true);
         }
+        // The note names the projects, so it knows where to look.
+        let n = question_note(&[("Gradebook".into(), PathBuf::from("/home/sam/Projects/gradebook"))]);
+        assert!(n.starts_with(SYSTEM_NOTE) && n.ends_with("Gradebook: /home/sam/Projects/gradebook."), "{n}");
+        assert_eq!(question_note(&[]), SYSTEM_NOTE);
     }
 
     #[test]
@@ -1626,7 +1673,7 @@ mod tests {
     }
 
     fn just(q: &Questions) -> Context {
-        Context { project: None, cwd: q.dir() }
+        Context { project: None, cwd: q.dir(), ..Default::default() }
     }
 
     fn wait_idle(q: &Questions) -> QOverview {

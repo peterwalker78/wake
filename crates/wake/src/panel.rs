@@ -501,7 +501,7 @@ fn page_title(key: &str) -> &'static str {
     match key {
         "subs" => "Subagents",
         "asked" => "You asked",
-        "recap" => "Claude's recap",
+        "recap" => "Recap",
         "files" => "Files it changed",
         "sessions" => "Sessions",
         "ideas" => "Ideas",
@@ -510,6 +510,11 @@ fn page_title(key: &str) -> &'static str {
         "colour" => "Dot colour",
         _ => "Details",
     }
+}
+
+/// A recap's heading, naming the agent that wrote it ("Codex's recap").
+fn recap_title(a: Agent) -> String {
+    format!("{}'s recap", a.label())
 }
 
 /// Adds `w` above the panel's scrolled area (the title, the actions, a banner block).
@@ -569,6 +574,37 @@ fn asked(at: &str, text: &str) -> gtk::Box {
     b.append(&t);
     b.append(&w::wrap(text, &[]));
     b
+}
+
+/// One fact on a Details page: its name, then its value, as a row of "Files it changed" is laid out.
+fn fact(name: &str, value: &str, tip: Option<&str>) -> gtk::Box {
+    let r = w::hbox(9, &["did"]);
+    let n = w::label(name, &["dim"]);
+    n.set_xalign(0.0);
+    n.set_valign(gtk::Align::Start);
+    n.set_size_request(96, -1);
+    r.append(&n);
+    let v = w::wrap(value, &[]);
+    v.set_xalign(0.0);
+    v.set_hexpand(true);
+    r.append(&v);
+    if let Some(t) = tip {
+        r.set_tooltip_text(Some(t));
+    }
+    r
+}
+
+/// A long value to copy (a command, a file's path) under its name, selectable.
+fn long_fact(name: &str, value: &str) -> gtk::Box {
+    let r = w::vbox(3, &["did"]);
+    let n = w::label(name, &["dim"]);
+    n.set_xalign(0.0);
+    r.append(&n);
+    let v = w::wrap(value, &["facts"]);
+    v.set_xalign(0.0);
+    v.set_selectable(true);
+    r.append(&v);
+    r
 }
 
 fn boxed(class: &str) -> gtk::Box {
@@ -775,16 +811,13 @@ fn reveal_into_view(ui: &Ui, rev: &gtk::Revealer, head: &gtk::Widget) {
     *id.borrow_mut() = Some(h);
 }
 
-/// The session's line under its title: its status tag, then its project and where it is.
+/// The session's line under its title: its status tag, then its project, which agent it is and
+/// where it is ("Gradebook · Codex · in Terminal").
 fn session_line(ui: &Ui, s: &SessionSummary) -> gtk::Box {
     let line = w::hbox(8, &["dline"]);
     line.append(&w::state_badge(s.state));
-    let (mut loc, ..) = app::loc_for(ui, s);
-    // "in <app>": the terminal app whose window shows it.
-    if let Some(l) = &s.location {
-        loc = format!("in {}", l.app.as_deref().unwrap_or("a terminal window"));
-    }
-    let wl = w::wrap(&format!("{} · {loc}", crate::disk::project_reason(ui, s)), &["dim"]); // disk.rs hook
+    let loc = app::place_words(ui, s);
+    let wl = w::wrap(&format!("{} · {} · {loc}", crate::disk::project_reason(ui, s), s.agent.label()), &["dim"]); // disk.rs hook
     wl.set_xalign(0.0);
     wl.set_hexpand(true);
     line.append(&wl);
@@ -850,7 +883,7 @@ fn session(ui: &Ui, id: &str) {
     let page = ui.st.borrow().panel_page;
     if let Some(k) = page {
         // A section's page: the way back, its name, and whose it is.
-        page_head(ui, page_title(k), &s.title);
+        page_head(ui, &if k == "recap" { recap_title(s.agent) } else { page_title(k).to_string() }, &s.title);
     } else {
         let mut sub: Vec<gtk::Widget> = vec![session_line(ui, &s).upcast()];
         if let Some(r) = crate::why::stop_reason(&s).filter(|r| r.decision.is_none()) {
@@ -877,15 +910,15 @@ fn session(ui: &Ui, id: &str) {
     }
 
     let b = body(ui);
-    // What it is doing now: the decision or question it is waiting on (with the way there right
-    // under it), else Claude's recap, else your last ask.
+    // What it is doing now: the decision or question it is waiting on (the way there is the main
+    // button above), else the agent's recap, else your last ask.
     let recap = s.away_summary.as_deref().map(fmt::recap).filter(|a| !a.is_empty());
     let mut recap_shown = false;
     let asks = s.question.clone().or_else(|| crate::why::stop_reason(&s).and_then(|r| r.decision)).filter(|_| page.is_none());
     if page.is_some() {
         // A section's page shows only that section.
     } else if let Some(q) = &asks {
-        b.append(&decision_card(ui, &s, q));
+        b.append(&decision_card(ui, &s, q, false));
     } else if let Some(a) = &recap {
         let x = w::vbox(6, &["now"]);
         x.append(&w::sec("Where it got to"));
@@ -985,7 +1018,7 @@ fn session(ui: &Ui, id: &str) {
         }));
     }
     if let Some(a) = recap.filter(|_| !recap_shown) {
-        folds.append(&fold(ui, "recap", "Claude's recap", "", "", |x| x.append(&w::wrap(&a, &["lead"]))));
+        folds.append(&fold(ui, "recap", &recap_title(s.agent), "", "", |x| x.append(&w::wrap(&a, &["lead"]))));
     }
     if !d.files.is_empty() {
         let n = d.files.len();
@@ -1003,41 +1036,53 @@ fn session(ui: &Ui, id: &str) {
         subs_fold(&folds);
     }
     folds.append(&fold(ui, "details", "Details", "", "", |x| {
-        let mut lines = vec![s.evidence.clone()];
-        if s.deleted_by_claude {
-            lines.push("Kept by Wake: Claude deleted its copy of the conversation.".into());
+        // Short labelled rows, then the two long values to copy.
+        x.append(&fact("Agent", s.agent.label(), None));
+        let (loc, _, _, tip) = app::loc_for(ui, &s);
+        let tip = match &s.job_id {
+            Some(j) => format!("{tip}\nTo open it yourself, in a terminal: claude attach {j}"),
+            None => tip,
+        };
+        x.append(&fact("Window", &loc, Some(&tip).filter(|t| !t.is_empty()).map(String::as_str)));
+        if let Some(cwd) = &s.cwd {
+            x.append(&fact("Folder", &fmt::tilde(cwd), None));
         }
-        let mut facts = Vec::new();
+        x.append(&fact("Started", &fmt::when(s.started_at.as_deref()), None));
+        if let Some(r) = res_of(&ui.st.borrow(), &s.id) {
+            x.append(&fact("Memory", &format!("{}, with its terminal", util::bytes(r.rss_bytes)), Some(&format!("Process number {}", r.pid))));
+        }
+        let mut work = Vec::new();
         if d.commands > 0 {
-            facts.push(fmt::pl(d.commands, "command", "commands"));
+            work.push(fmt::pl(d.commands, "command", "commands"));
         }
         if d.tests > 0 {
-            facts.push(fmt::pl(d.tests, "test run", "test runs"));
+            work.push(fmt::pl(d.tests, "test run", "test runs"));
         }
         if let Some(c) = d.cost_usd {
-            facts.push(format!("${c:.2}"));
+            work.push(format!("${c:.2}"));
         }
-        lines.push(facts.join(" · "));
-        lines.extend(d.pr_links.iter().map(|u| u.trim_start_matches("https://github.com/").to_string()));
-        if let Some(cwd) = &s.cwd {
-            lines.push(format!("in {}", fmt::tilde(cwd)));
+        if !work.is_empty() {
+            x.append(&fact("Work done", &work.join(" · "), None));
+        }
+        for u in &d.pr_links {
+            x.append(&fact("Pull request", u.trim_start_matches("https://github.com/"), Some(u)));
         }
         if let Some(r) = &s.resume_command {
-            lines.push(format!("resume: {r}"));
-        }
-        if let Some(j) = &s.job_id {
-            lines.push(format!("background job {j} · attach: claude attach {j}"));
+            x.append(&long_fact("Command to resume", r));
         }
         if let Some(t) = &d.transcript {
-            lines.push(format!("transcript: {t}"));
+            x.append(&long_fact("Conversation file", t));
         }
-        if let Some(r) = res_of(&ui.st.borrow(), &s.id) {
-            lines.push(format!("{} in memory, with its terminal · PID {}", util::bytes(r.rss_bytes), r.pid));
+        if s.deleted_by_claude {
+            x.append(&w::wrap("Kept by Wake: Claude deleted its copy of the conversation.", &["meta"]));
         }
-        lines.push(format!("started {} · id {}", fmt::when(s.started_at.as_deref()), s.id));
-        let f = w::wrap(&lines.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"), &["facts"]);
-        f.set_selectable(true);
-        x.append(&f);
+        // How Wake knows what it shows ("live, updated 40 s ago"), the session's id in its tooltip.
+        if !s.evidence.is_empty() {
+            let e = w::wrap(&format!("How Wake knows: {}", s.evidence), &["meta"]);
+            e.set_xalign(0.0);
+            e.set_tooltip_text(Some(&format!("Session {}", s.id)));
+            x.append(&e);
+        }
     }));
     b.append(&folds);
 }
@@ -1111,21 +1156,27 @@ pub fn go_words(s: &SessionSummary, loc: &str, can_go: bool) -> String {
     }
 }
 
-/// The amber card for a session that wants something from you: what it asks, and the way there
-/// right under it (Go to, or Resume when it has ended).
-fn decision_card(ui: &Ui, s: &SessionSummary, ask: &str) -> gtk::Box {
-    let k = boxed("q");
-    let title = match (s.state, crate::why::stop_reason(s).map(|r| r.words)) {
+/// What a session that wants something from you is waiting on, as a heading: "It is asking you",
+/// "It wants a decision" (the same on the details' card and on Monitor's).
+pub fn ask_heading(s: &SessionSummary) -> &'static str {
+    match (s.state, crate::why::stop_reason(s).map(|r| r.words)) {
         (State::Waiting, Some(w)) if w == "asks you" => "It is asking you",
         (State::Waiting, _) => "It wants a decision",
         (State::Ended, _) => "It ended asking you this",
         _ => "It stopped on this question",
-    };
-    let t = w::sec(title);
+    }
+}
+
+/// The amber card for a session that wants something from you: what it asks, and with `go` the
+/// way there right under it (Go to, or Resume when it has ended). A session's own details leave
+/// the way there to their one main button above.
+fn decision_card(ui: &Ui, s: &SessionSummary, ask: &str, go: bool) -> gtk::Box {
+    let k = boxed("q");
+    let t = w::sec(ask_heading(s));
     t.add_css_class("amber");
     k.append(&t);
     k.append(&w::wrap(ask, &["h"]));
-    if let Some(b) = go_button(ui, s, false) {
+    if let Some(b) = go_button(ui, s, false).filter(|_| go) {
         b.set_halign(gtk::Align::Start);
         b.add_css_class("q-go");
         k.append(&b);
@@ -1428,7 +1479,7 @@ fn project(ui: &Ui, id: &str) {
     let b = body(ui);
     // A session here that wants a decision: the ask, with the way there right under it.
     if let Some((s, ask)) = project_ask(ui, &p).filter(|_| page.is_none()) {
-        b.append(&decision_card(ui, &s, &ask));
+        b.append(&decision_card(ui, &s, &ask, true));
     }
     let x = w::vbox(6, &["now"]);
     x.set_visible(page.is_none());
@@ -1474,7 +1525,8 @@ fn project(ui: &Ui, id: &str) {
         x.append(&w::wrap(&p.next, &["lead", "strong"]));
     } else if let Some(sum) = &p.last_summary {
         x.append(&w::wrap(&fmt::recap(sum), &["lead"]));
-        x.append(&w::wrap("Claude's last recap here; no next step written yet.", &["meta"]));
+        let who = last_session(ui, &p.id).map_or("The agent", |s| s.agent.label());
+        x.append(&w::wrap(&format!("{who}'s last recap here; no next step written yet."), &["meta"]));
     } else {
         x.append(&w::wrap("No next step written yet.", &["lead", "quiet"]));
     }

@@ -62,7 +62,7 @@ down yesterday. Wake reads what the agents already leave on disk and puts it in 
   to leave alone.
 
 The details (`Enter`, or a double click) open a session or a project in full: the question it is
-asking and the way there first, then the prompts you sent, Claude's recap, files changed, and
+asking and the way there first, then the prompts you sent, the agent's recap, files changed, and
 subagents and what each handed back, each on a page of its own. They sit beside the list in a wide
 window, slide over it in a narrower one, and take its place in a narrow one, with Back in the title
 bar.
